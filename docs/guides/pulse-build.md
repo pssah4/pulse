@@ -13,7 +13,7 @@ description: Implement one item test-first against its PLAN, capture bugs, write
 
 ## Start
 
-`pulse show <n>` gives the item, its spec, and its PLAN. `pulse claim <n>` assigns it to this session (exit code 1 means another person or another of your sessions has it). The branch is `<type>/<n>-<slug>` from the base branch; a feature whose one blocker has a ready pull request that is not merged yet branches from the blocker's branch instead, and its PR targets that branch. Without a PLAN, a trivial bug takes the hotfix lane; for anything else the build runs the [planning step](./pulse-plan) first and then continues.
+`pulse show <n>` gives the item, its spec, and its PLAN. `pulse claim <n>` assigns it to this session (exit code 1 means another person or another of your sessions has it, or another item holds one of its files). The branch is `<type>/<n>-<slug>` from the base branch; a feature whose one blocker has a ready pull request that is not merged yet branches from the blocker's branch instead, and its PR targets that branch. Without a PLAN, a trivial bug takes the hotfix lane; for anything else the build runs the [planning step](./pulse-plan) first and then continues.
 
 ## Build
 

@@ -21,8 +21,9 @@ silently:
    feature (`/pulse-re`); design gap -> amend the decision or the PLAN.
 3. Record it BEFORE any change: write the fix spec
    `_devprocess/requirements/fixes/{slug}.md` from `templates/FIX-TEMPLATE.md`,
-   with "Discovered in #<current>" and the root cause in 3 to 10 lines.
-   Commit it on this branch and push, then register it:
+   with "Discovered in #<current>" and the root cause in 3 to 10 lines,
+   and `parent:` set; `pulse number --apply` names it
+   `FIX-{ee}-{ff}-{nn}-{slug}.md`. Commit it on this branch and push, then register it:
    `pulse new fix "<symptom>" --parent <feature> --spec <path>`.
    Headless (an agent started by `pulse go`): do not call `pulse new`;
    write one line into `DISCOVERED.md` at the worktree root instead,

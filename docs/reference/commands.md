@@ -47,6 +47,7 @@ Reads come from a local cache (`--fresh` skips it); `--json` gives machine-reada
 | `pulse setup` | activate Pulse here: config, anchor blocks, labels; --cli and --codex-rules set up this machine<br>`--mode on\|off`: default: keep the current mode, else on<br>`--cap <cap>`: parallel slots for /pulse-go (default: keep, else 4)<br>`--base-branch <base-branch>`: default: keep, else the DIA source branch, else origin's default<br>`--files <files>`: agent files for the anchor block (default: those that exist)<br>`--labels`: create the pulse:* labels on GitHub<br>`--remove`: remove the anchor blocks and the git hook; with --cli or --codex-rules, those files instead<br>`--parallel off\|items\|max`: how far pulse go parallelizes<br>`--agent <agent>`: agents pulse go starts headless: claude, codex, or claude:2,codex:2<br>`--verify <verify>`: the command that runs the project's tests; pulse go runs it before review<br>`--plan-approval auto\|manual`: auto builds a PLAN nothing holds; manual waits for pulse approve-plan<br>`--git-hook`: install a pre-commit hook: protected branches + pulse check<br>`--cli`: the pulse command in ~/.local/bin; it runs the Pulse in $PULSE_HOME, else the newest in the Claude Code plugin cache, else the newest in the Codex cache<br>`--codex-rules`: Codex runs pulse without asking, except approve, approve-plan, rank, done, release, claim, and pulse -- &lt;command&gt;<br>`--dry-run` |
 | `pulse release <n>` | give an item back<br>`--take`: also from another session of mine, or hand another person's claim over (with a comment)<br>`--note <note>`: why, and where the work is, for whoever takes it next |
 | `pulse done <n>` | close an item<br>`--take`: close it whoever holds it |
+| `pulse number` | start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them<br>`--apply`: rename them, rewrite the paths to them, and move their records along |
 
 ### Plumbing
 
@@ -54,7 +55,7 @@ For skills, hooks, and `pulse go`; `pulse --help` lists them apart.
 
 | Command | Does |
 |---|---|
-| `pulse claim <n>` | hold an item for this session; exit 1 when another person or session has it<br>`--take`: take over from a session of mine that has ended<br>`--files <PATH>`: the files the work changes, for work without a PLAN (hotfix lane); default: those of its PLAN here |
+| `pulse claim <n>` | hold an item for this session; exit 1 when another person or session has it, or another running item holds one of its files<br>`--take`: take over from a session of mine that has ended<br>`--files <PATH>`: the files the work changes, for work without a PLAN (hotfix lane); default: those of its PLAN here |
 | `pulse new epic\|feat\|imp\|fix <title>` | create an issue for a spec, or a draft without one; print its number<br>`--parent <parent>`<br>`--blocked-by <blocked-by>`: comma-separated issue numbers<br>`--spec <spec>`: the spec file in the repository, committed and pushed; the record on the board only links it<br>`--draft`: no spec yet: a record claimed for the work on it<br>`--phase analysis\|spec`: with --draft: the work (default: spec)<br>`--issue <issue>`: an open issue without a spec (a draft, an issue from the BA) instead of a new one: with --spec it links the spec and takes &lt;title&gt; as its title, with --draft it becomes the draft |
 | `pulse beat <n> <phase>` | a sign of life: this session's claim on n names its phase and time |
 | `pulse block <n> --by <by>` | item n waits until the given items are done<br>`--by <by>`: comma-separated item numbers |
@@ -78,6 +79,7 @@ For skills, hooks, and `pulse go`; `pulse --help` lists them apart.
 | C7 | every `FIXME(stub):` in the code names an item, an open one when the cache knows |
 | C8 | tasks in one wave of a PLAN touch disjoint files |
 | C9 | every spec's `parent:` and its epic's `## Items` list agree |
+| C10 | every spec's file name starts with the ID its place in the tree calls for (`EPIC-04`, `FEAT-04-02`, `FIX-04-02-01`); `pulse number --apply` fixes what it reports |
 | R1 to R6 | an approved item's spec is one an agent can plan from, read from the base branch (see [/pulse-re](../guides/pulse-re#quality-gates)) |
 
 Files under `_devprocess/temp/` are not checked: temporary test files live there only until they are deleted.

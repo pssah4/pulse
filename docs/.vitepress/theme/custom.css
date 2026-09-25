@@ -1,68 +1,56 @@
 /**
- * Digital Innovation Agents theme
+ * Pulse theme
  *
- * Calm three-zone palette mirroring the V-Model's semantics: sky-blue
- * design, amber coding, rose verification. Brand accent stays orange.
+ * The brand's petrol (docs/public/assets): the mark's gradient from
+ * #005660 to #008E94 with the wordmark's #004852 on light pages, the
+ * dark app icon's aqua (#14A6B0 to #25C7CC) on a petrol-tinted dark page.
  */
 
 :root {
-  /* Lead colour matches the pink-700 fill of the BA/RE/Architecture
-     boxes in the landing SVG. Buttons and body-text links sit at
-     pink-700, hover and active darken to pink-800 and pink-900. */
-  --vp-c-brand-1: #be185d;
-  --vp-c-brand-2: #9d174d;
-  --vp-c-brand-3: #831843;
-  --vp-c-brand-soft: rgba(190, 24, 93, 0.14);
+  --vp-c-brand-1: #007780;
+  --vp-c-brand-2: #005660;
+  --vp-c-brand-3: #004852;
+  --vp-c-brand-soft: rgba(0, 119, 128, 0.14);
 
-  --vp-c-tip-1: #0d9488;
-  --vp-c-tip-2: #0f766e;
-  --vp-c-tip-3: #115e59;
-  --vp-c-tip-soft: rgba(13, 148, 136, 0.14);
+  --vp-c-bg-soft: #f2f7f7;
 
   --vp-button-brand-border: transparent;
   --vp-button-brand-text: #ffffff;
-  --vp-button-brand-bg: #be185d;
+  --vp-button-brand-bg: #007780;
   --vp-button-brand-hover-border: transparent;
   --vp-button-brand-hover-text: #ffffff;
-  --vp-button-brand-hover-bg: #9d174d;
+  --vp-button-brand-hover-bg: #005660;
   --vp-button-brand-active-border: transparent;
   --vp-button-brand-active-text: #ffffff;
-  --vp-button-brand-active-bg: #831843;
+  --vp-button-brand-active-bg: #004852;
 
-  --vp-c-text-accent: #be185d;
+  --vp-nav-logo-height: 30px;
 
-  /* Headline gradient. Pink-700 to purple-700 to indigo-700, matching
-     the Design, Coding, and Testing boxes in that order. Security
-     Audit (cyan-900) is deliberately excluded so the gradient only
-     carries the three warm phases. */
-  --dia-headline-gradient: linear-gradient(
-    115deg,
-    #be185d 0%,
-    #7e22ce 55%,
-    #4338ca 100%
-  );
+  --pulse-headline: linear-gradient(115deg, #004852 0%, #007780 55%, #04bdc7 100%);
+  --pulse-glow: rgba(0, 119, 128, 0.16);
+  --pulse-glow-side: rgba(4, 189, 199, 0.10);
 }
 
 .dark {
-  /* Buttons keep the solid pink-700 background so they match the
-     Design boxes in the SVG. Body-text links, tile hover border, and
-     tile arrows use the pink box *stroke* colour (pink-300) so inline
-     accents stay legible on the dark page background. */
-  --vp-c-brand-1: #f472b6;
-  --vp-c-brand-2: #f9a8d4;
-  --vp-c-brand-3: #fbcfe8;
-  --vp-c-brand-soft: rgba(244, 114, 182, 0.16);
+  --vp-c-brand-1: #25c7cc;
+  --vp-c-brand-2: #04bdc7;
+  --vp-c-brand-3: #14a6b0;
+  --vp-c-brand-soft: rgba(37, 199, 204, 0.16);
 
-  --vp-c-tip-1: #14b8a6;
-  --vp-c-tip-2: #0d9488;
-  --vp-c-tip-3: #0f766e;
-  --vp-c-tip-soft: rgba(20, 184, 166, 0.16);
+  --vp-c-bg: #0f1b1e;
+  --vp-c-bg-alt: #0b1517;
+  --vp-c-bg-elv: #132327;
+  --vp-c-bg-soft: #132327;
+  --vp-c-divider: #22363b;
+  --vp-c-gutter: #07100f;
 
-  --vp-button-brand-bg: #be185d;
-  --vp-button-brand-hover-bg: #9d174d;
-  --vp-button-brand-active-bg: #831843;
+  --vp-button-brand-bg: #00646d;
+  --vp-button-brand-hover-bg: #007780;
+  --vp-button-brand-active-bg: #004e58;
 
-  --vp-c-text-accent: #f472b6;
+  --pulse-headline: linear-gradient(115deg, #14a6b0 0%, #25c7cc 50%, #c9f1f0 100%);
+  --pulse-glow: rgba(37, 199, 204, 0.14);
+  --pulse-glow-side: rgba(0, 100, 109, 0.22);
 }
 
 .vp-doc .mermaid {
@@ -102,16 +90,15 @@
   justify-content: center;
 }
 
-/* Headline: gradient fill matching the three warm phase boxes (pink,
-   purple, indigo). white-space: pre-line respects hard line breaks
-   from the YAML block scalar in hero.text so the comma sits at the
-   end of line 1. */
+/* Headline: the petrol gradient of the mark. white-space: pre-line
+   respects hard line breaks from the YAML block scalar in hero.text so
+   the comma sits at the end of line 1. */
 .VPHero .text {
   max-width: 960px;
   font-weight: 800;
   letter-spacing: -0.02em;
   white-space: pre-line;
-  background: var(--dia-headline-gradient);
+  background: var(--pulse-headline);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -120,7 +107,6 @@
 
 @media (min-width: 960px) {
   .VPHero .text {
-    max-width: 960px;
     font-size: 56px;
     line-height: 64px;
   }
@@ -131,27 +117,13 @@
   max-width: 960px;
 }
 
-@media (min-width: 960px) {
-  .VPHero .tagline {
-    max-width: 960px;
-  }
-}
-
-/* Soft radial glow behind the hero, echoing the headline gradient:
-   pink near the top, fading through purple to indigo on the sides. */
+/* Soft glow behind the hero: petrol from the top, aqua on the sides */
 .VPHero {
   padding-bottom: 12px;
   background:
-    radial-gradient(ellipse 70% 50% at 50% -10%, rgba(190, 24, 93, 0.18), transparent 70%),
-    radial-gradient(ellipse 60% 45% at 15% 20%, rgba(126, 34, 206, 0.10), transparent 65%),
-    radial-gradient(ellipse 60% 45% at 85% 20%, rgba(67, 56, 202, 0.10), transparent 65%);
-}
-
-.dark .VPHero {
-  background:
-    radial-gradient(ellipse 70% 50% at 50% -10%, rgba(244, 114, 182, 0.14), transparent 70%),
-    radial-gradient(ellipse 60% 45% at 15% 20%, rgba(192, 132, 252, 0.08), transparent 65%),
-    radial-gradient(ellipse 60% 45% at 85% 20%, rgba(129, 140, 248, 0.08), transparent 65%);
+    radial-gradient(ellipse 70% 50% at 50% -10%, var(--pulse-glow), transparent 70%),
+    radial-gradient(ellipse 60% 45% at 15% 20%, var(--pulse-glow-side), transparent 65%),
+    radial-gradient(ellipse 60% 45% at 85% 20%, var(--pulse-glow-side), transparent 65%);
 }
 
 /* ========== Landing page below the hero ========== */
@@ -212,62 +184,6 @@
   color: var(--vp-c-brand-1);
 }
 
-/* V-Model diagram sits below the tiles at the same width */
-.landing-diagram {
-  max-width: 960px;
-  margin: 4rem auto 2rem;
-  padding: 0 24px;
-  text-align: center;
-}
-
-.landing-diagram svg {
-  width: 100%;
-  height: auto;
-  display: block;
-  margin: 0 auto;
-}
-
-.landing-diagram svg a {
-  cursor: pointer;
-  text-decoration: none;
-}
-
-.landing-diagram svg a text {
-  text-decoration: none;
-}
-
-.landing-diagram svg a rect,
-.landing-diagram svg a path {
-  transition: filter 0.18s ease, stroke-width 0.18s ease;
-}
-
-.landing-diagram svg a:hover rect {
-  filter: brightness(0.96);
-  stroke-width: 3;
-}
-
-.landing-diagram svg a:hover path {
-  filter: brightness(0.85);
-}
-
-/* ========== Dark-mode overrides for the V-Model SVG ========== */
-
-/* All six phase boxes (petrol design trio, indigo coding, purple
-   testing, pink security) are identical in both modes. Only the
-   neutral pill boxes, the output boxes, and the loop labels still
-   need a dark-mode tweak. */
-
-.dark .landing-diagram svg rect[fill="#f1f5f9"] { fill: #1e293b; }
-.dark .landing-diagram svg rect[fill="#ffffff"] { fill: #0f172a; }
-
-.dark .landing-diagram svg rect[stroke="#cbd5e1"] { stroke: #475569; }
-.dark .landing-diagram svg line[stroke="#cbd5e1"] { stroke: #475569; }
-.dark .landing-diagram svg path[stroke="#94a3b8"] { stroke: #64748b; }
-
-.dark .landing-diagram svg text[fill="#334155"] { fill: #cbd5e1; }
-.dark .landing-diagram svg text[fill="#475569"] { fill: #cbd5e1; }
-.dark .landing-diagram svg text[fill="#6b7280"] { fill: #94a3b8; }
-
 /* live map on the landing page */
 .pulse-live {
   max-width: 640px;
@@ -301,3 +217,86 @@
 .pulse-live .k.ok { background: #2ee59d; }
 .pulse-live .k.hold { background: #ffc857; }
 .pulse-live .k.bad { background: #ff5c5c; }
+
+/* ========== Diagrams on the landing page (docs/diagrams/*.svg) ========== */
+
+:root {
+  --pd-line: rgba(0, 119, 128, 0.28);
+  --pd-edge: #5f7f84;
+  --pd-you: #b45309;
+}
+
+.dark {
+  --pd-line: rgba(37, 199, 204, 0.26);
+  --pd-edge: #7fa3a7;
+  --pd-you: #fbbf24;
+}
+
+/* inline, so they follow the theme; below 720px they scroll sideways */
+.pulse-diagram {
+  margin: 1.75rem 0;
+  overflow-x: auto;
+}
+.pulse-diagram .pd {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: auto;
+}
+.pd text {
+  font-family: var(--vp-font-family-base);
+  font-size: 12.5px;
+  fill: var(--vp-c-text-2);
+}
+.pd .pd-h {
+  font-size: 15px;
+  font-weight: 700;
+  fill: var(--vp-c-text-1);
+}
+.pd .pd-cmd {
+  font-family: var(--vp-font-family-mono);
+  font-size: 14px;
+  font-weight: 600;
+  fill: var(--vp-c-brand-1);
+}
+.pd .pd-mono {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+}
+.pd .pd-you-t {
+  font-weight: 600;
+  fill: var(--pd-you);
+}
+.pd .pd-card,
+.pd .pd-node {
+  fill: var(--vp-c-bg-soft);
+  stroke: var(--pd-line);
+  stroke-width: 1.25;
+}
+.pd .pd-you {
+  stroke: var(--pd-you);
+  stroke-width: 2;
+}
+.pd .pd-people {
+  fill: var(--vp-c-brand-soft);
+  stroke: var(--vp-c-brand-1);
+  stroke-width: 1.5;
+}
+.pd .pd-chip {
+  fill: var(--vp-c-bg);
+  stroke: var(--pd-line);
+}
+.pd .pd-bg {
+  fill: var(--vp-c-bg);
+}
+.pd .pd-edge {
+  fill: none;
+  stroke: var(--pd-edge);
+  stroke-width: 1.5;
+}
+.pd .pd-back {
+  stroke-dasharray: 5 4;
+}
+.pd .pd-head {
+  fill: var(--pd-edge);
+}

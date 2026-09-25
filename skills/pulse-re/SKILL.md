@@ -77,9 +77,10 @@ improvement or fix with an optional Mini-BA, that one.
 
 **Output.**
 
-- Epic spec in `_devprocess/requirements/epics/{slug}.md`
-- Feature specs in `_devprocess/requirements/features/{slug}.md`
-- Improvement and fix specs in `_devprocess/requirements/{improvements,fixes}/{slug}.md`
+- Epic spec in `_devprocess/requirements/epics/EPIC-{nn}-{slug}.md`
+- Feature specs in `_devprocess/requirements/features/FEAT-{ee}-{nn}-{slug}.md`
+- Improvement and fix specs in `_devprocess/requirements/{improvements,fixes}/`,
+  named `IMP-{ee}-{ff}-{nn}-{slug}.md` and `FIX-{ee}-{ff}-{nn}-{slug}.md`
 - `architect-handoff.md` in `_devprocess/requirements/handoff/`
 - One record on the board per epic, feature, improvement, and fix, written by `pulse new`
 
@@ -91,6 +92,15 @@ before the epic lists it, so the git hook takes the first commit of the
 specs. `pulse new --parent <epic>` then sets `issue:` and `parent:` and
 lists the item in the epic's `## Items`. The tree is structure, so it
 lives in the repository.
+
+The file name carries the tree too: it starts with the spec's ID, its
+type, the numbers of its parent, and its own counter (`EPIC-04`,
+`FEAT-04-02`, `FIX-04-02-01`). Write each spec under its slug (starting
+with a letter) with `parent:` set, then run `pulse number --apply`: it
+gives every spec the ID of its place, renames the files, and rewrites
+every path to them. Never pick a number by hand; `pulse number` knows the
+numbers other branches and worktrees took. `pulse check` (C10) reports a
+spec whose name lacks its ID. The issue number stays the ID of the record.
 State (approved, claimed, blocked, done) lives on the board, never in a
 spec. Templates live in `templates/`.
 
@@ -335,12 +345,13 @@ questions, constraints, and the forbidden-terms confirmation go into the
 body as short bullets.
 Push the branch (`git push -u origin docs/<n>-<slug>`, for a Project-BA
 `git push -u origin docs/<slug>`): `pulse new` takes a spec only once
-its commit is on origin. Then attach each spec to
-its draft, epic first:
+its commit is on origin. Run `pulse number --apply` before that commit,
+so the specs carry their IDs. Then attach each spec to its draft, epic
+first; `pulse new` puts the ID in front of the title:
 
 ```bash
-pulse new epic "<title>" --spec _devprocess/requirements/epics/<slug>.md --issue <epic>
-pulse new feat "<title>" --parent <epic> --spec _devprocess/requirements/features/<slug>.md --issue <n>
+pulse new epic "<title>" --spec _devprocess/requirements/epics/EPIC-<nn>-<slug>.md --issue <epic>
+pulse new feat "<title>" --parent <epic> --spec _devprocess/requirements/features/FEAT-<ee>-<nn>-<slug>.md --issue <n>
 # when one feature needs another first
 pulse new feat "<title>" --parent <epic> --blocked-by <feat> --spec ... --issue <n>
 ```

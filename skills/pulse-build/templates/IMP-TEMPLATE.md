@@ -1,14 +1,15 @@
 ---
 title: {what improves, in a few words}
 issue: {N}          # leave it: registering the spec fills it in
-parent: ../features/{feature}.md
+parent: ../features/FEAT-{ee}-{nn}-{feature}.md
 priority: P2          # P0 | P1 | P2
 effort: S             # XS | S | M | L
 risk: []              # any flag means a person approves the PLAN
 ---
 
-<!-- Improvement spec, saved as _devprocess/requirements/improvements/{slug}.md,
-     committed and pushed, then registered:
+<!-- Improvement spec, saved as _devprocess/requirements/improvements/{slug}.md
+     with parent set, named by `pulse number --apply`
+     (IMP-{ee}-{ff}-{nn}-{slug}.md), committed and pushed, then registered:
      pulse new imp "<title>" --parent <feature> --spec <path>,
      which writes issue and parent here. The record on the board only links
      this file. Rules R1 to R6 apply once the item is approved. -->

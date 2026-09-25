@@ -1,0 +1,44 @@
+<svg class="pd" viewBox="0 0 1000 250" role="img" aria-labelledby="wl-title">
+  <title id="wl-title">Business analysis, epics, features, and plans are Markdown files in your repository. GitHub keeps the board, one record per item with its type, whether it is ready, who has it, what it waits for, and whether it is done. pulse new registers a new item on the board. People and agents claim and finish items with pulse claim and pulse done, read the board with pulse status from a local cache, and read the spec in the repository to build.</title>
+  <defs>
+    <marker id="wl-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="pd-head" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+  <path class="pd-edge" d="M150 70V46Q150 36 160 36H840Q850 36 850 46V68" marker-end="url(#wl-head)"/>
+  <rect class="pd-bg" x="398" y="24" width="204" height="22"/>
+  <text x="500" y="40" text-anchor="middle"><tspan class="pd-mono">pulse new</tspan> registers a new item</text>
+  <rect class="pd-card" x="20" y="70" width="260" height="164" rx="14"/>
+  <text class="pd-h" x="44" y="104">Your repository</text>
+  <text x="44" y="126">Markdown next to the code</text>
+  <rect class="pd-chip" x="44" y="146" width="132" height="26" rx="13"/>
+  <text x="110" y="163" text-anchor="middle">business analysis</text>
+  <rect class="pd-chip" x="184" y="146" width="53" height="26" rx="13"/>
+  <text x="210.5" y="163" text-anchor="middle">epics</text>
+  <rect class="pd-chip" x="44" y="182" width="73" height="26" rx="13"/>
+  <text x="80.5" y="199" text-anchor="middle">features</text>
+  <rect class="pd-chip" x="125" y="182" width="53" height="26" rx="13"/>
+  <text x="151.5" y="199" text-anchor="middle">plans</text>
+  <rect class="pd-people" x="410" y="118" width="180" height="76" rx="14"/>
+  <text class="pd-h" x="500" y="161" text-anchor="middle">People and agents</text>
+  <path class="pd-edge" d="M410 156H284" marker-end="url(#wl-head)"/>
+  <text x="345" y="130" text-anchor="middle">read the spec,</text>
+  <text x="345" y="145" text-anchor="middle">build</text>
+  <path class="pd-edge" d="M590 140H716" marker-end="url(#wl-head)"/>
+  <text class="pd-mono" x="655" y="114" text-anchor="middle">pulse claim,</text>
+  <text class="pd-mono" x="655" y="129" text-anchor="middle">pulse done</text>
+  <path class="pd-edge" d="M720 172H594" marker-end="url(#wl-head)"/>
+  <text class="pd-mono" x="655" y="192" text-anchor="middle">pulse status</text>
+  <text x="655" y="207" text-anchor="middle">from a local cache</text>
+  <rect class="pd-card" x="720" y="70" width="260" height="164" rx="14"/>
+  <text class="pd-h" x="744" y="104">GitHub, the sync database</text>
+  <text x="744" y="126">The board, one record per item</text>
+  <rect class="pd-chip" x="744" y="146" width="46" height="26" rx="13"/>
+  <text x="767" y="163" text-anchor="middle">type</text>
+  <rect class="pd-chip" x="798" y="146" width="53" height="26" rx="13"/>
+  <text x="824.5" y="163" text-anchor="middle">ready</text>
+  <rect class="pd-chip" x="859" y="146" width="86" height="26" rx="13"/>
+  <text x="902" y="163" text-anchor="middle">who has it</text>
+  <rect class="pd-chip" x="744" y="182" width="112" height="26" rx="13"/>
+  <text x="800" y="199" text-anchor="middle">waits for what</text>
+  <rect class="pd-chip" x="864" y="182" width="46" height="26" rx="13"/>
+  <text x="887" y="199" text-anchor="middle">done</text>
+</svg>

@@ -19,7 +19,9 @@ When allowed:
 3. Record it. An item from `/pulse-build` has its spec: note the date in
    its "Regression test" section. A draft gets its spec now: write
    `_devprocess/requirements/fixes/{slug}.md` from
-   `templates/FIX-TEMPLATE.md`. Commit fix and spec as `fix: <title>`
+   `templates/FIX-TEMPLATE.md` with `parent:` set and run
+   `pulse number --apply`, which names it `FIX-{ee}-{ff}-{nn}-{slug}.md`.
+   Commit fix and spec as `fix: <title>`
    with `Refs: #<n>` and push: `git push -u origin fix/<n>-<slug>`.
    A draft then gets its spec attached:
    `pulse new fix "<symptom>" --parent <feature> --spec <path> --issue <n>`;

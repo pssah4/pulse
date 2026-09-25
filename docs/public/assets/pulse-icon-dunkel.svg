@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="pulse-icon-dark-title pulse-icon-dark-desc">
+  <title id="pulse-icon-dark-title">Pulse: App-Icon dunkel</title>
+  <desc id="pulse-icon-dark-desc">Helles aquapetrolfarbenes Pulse-Signet auf einer dunkelpetrolfarbenen, abgerundeten App-Kachel. Außerhalb der Kachel transparent. Reine Vektorgrafik.</desc>
+  <defs>
+    <linearGradient id="pulse-icon-dark-background" x1="455" y1="5" x2="45" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#00646D"/>
+      <stop offset="0.42" stop-color="#004E58"/>
+      <stop offset="1" stop-color="#003B44"/>
+    </linearGradient>
+    <linearGradient id="pulse-icon-dark-aqua" x1="50" y1="365" x2="230" y2="10" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14A6B0"/>
+      <stop offset="0.60" stop-color="#04BDC7"/>
+      <stop offset="1" stop-color="#25C7CC"/>
+    </linearGradient>
+    <linearGradient id="pulse-icon-dark-shade" x1="75" y1="285" x2="410" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#002F39" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#002F39" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="pulse-icon-dark-tile-clip"><rect width="512" height="512" rx="100"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="100" fill="url(#pulse-icon-dark-background)"/>
+  <path d="M0 395 199 168 512 433V512H0Z" fill="url(#pulse-icon-dark-shade)" clip-path="url(#pulse-icon-dark-tile-clip)"/>
+  <path transform="translate(99.22 95.22) scale(0.956044)" fill="url(#pulse-icon-dark-aqua)" d="M15 5H235C291.333 5 337 50.667 337 107C337 163.333 291.333 209 235 209H110C79.624 209 55 233.624 55 264V330C55 351.539 37.539 369 16 369H5V263C5 204.458 52.458 157 111 157H230C257.89 157 280.5 134.166 280.5 106C280.5 77.834 257.89 55 230 55H55C32.909 55 15 37.091 15 15Z M78 343V263C78 246.431 91.431 233 108 233H235C231.5 258.5 209.5 278 183 278H155C141.9 278 132.2 284.1 130.2 296.5C126.5 318 107.5 337 78 343Z M5 185V155C5 113.579 38.579 80 80 80H230C244.636 80 256.5 91.865 256.5 106.5C256.5 121.135 244.636 133 230 133H103C65 133 29 153 5 185Z"/>
+</svg>

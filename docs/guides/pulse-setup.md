@@ -60,6 +60,8 @@ The task "Pulse map" has no flag. In VS Code, add it to `tasks` in `.vscode/task
  "problemMatcher": [], "presentation": {"panel": "dedicated"}}
 ```
 
+In Codex, the Pulse hooks run only once you trusted them: `/hooks` in the CLI (`t` trusts them all), or **Trust** on each hook on the Hooks page of the IDE extension's settings, then a new chat. Until then the session gets no rules, no light on the [map](./pulse-map), and no heartbeat on the board; `pulse claim` and `pulse new --draft` say so in one line. The setup report says whether they are trusted.
+
 `--mode off` and `--remove` keep `.pulse/config.toml`, the labels, the local cache in `.git/pulse/`, and the task "Pulse map" in `.vscode/tasks.json`. [Take it out of a project](../tutorials/installation#take-it-out-of-a-project) says what to delete by hand, and when.
 
 Moving a project from the predecessor plugin over is [`/pulse-realign`](./pulse-realign), not setup: it also turns the old backlog file into records on the board.

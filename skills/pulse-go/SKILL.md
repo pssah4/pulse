@@ -60,6 +60,10 @@ wait for blockers, building does.
 the project's tests: the tests gate and the RED check run it. Without it
 `pulse go` claims nothing and says so (`pulse setup --verify "<cmd>"`).
 
+While a live map runs, it starts `pulse go` itself when approved work
+waits and no run of this clone lives (`go_autostart`); `pulse go`
+refuses a second run in the clone, so check `pulse status` first.
+
 1. `pulse go --dry-run`: which items would start, on which branch, from
    which base, in which worktree. Say it to the user before the real run:
    `pulse go` claims those items, pushes their branches, and opens one

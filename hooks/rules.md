@@ -76,6 +76,9 @@ after the user says yes. Ask, do not read: `pulse status`
 (all open work in the team order, what each item waits for, and what
 starts next; `--json` for the same as data), `pulse show <n>`. Specs
 carry `issue:`, `parent:`, and links to other documents, never state.
+A spec's file name starts with its ID (`EPIC-04`, `FEAT-04-02`,
+`FIX-04-02-01`): write it under its slug with `parent:` set, and
+`pulse number --apply` names it. Never pick a number by hand.
 Commits name their item: `Refs: #<n>`.
 
 ## Flow

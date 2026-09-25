@@ -1,8 +1,13 @@
-# Pulse
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/public/assets/pulse-logo-aqua.svg" />
+    <img src="docs/public/assets/pulse-logo-petrol.svg" alt="Pulse" width="260" />
+  </picture>
+</h1>
 
-> **When code costs almost nothing, the plan becomes the product.**
+> **Many people. Many agents. One repo. No collisions.**
 
-Pulse is how a team builds with coding agents. Every idea goes through a method before code gets written. Epics and features live in your repository next to the code. Everyone, people and agents, sees the same board, and all ready work gets built in parallel without two agents getting in each other's way.
+Coding agents are fast alone and chaotic together. Pulse plans the dependencies between tasks, starts them in the right order, gives each to one agent, and never runs two at once that touch the same files. Features start as specs, from business analysis to requirements engineering, and a pull request is ready only after tests, review, and a security audit pass.
 
 **Documentation:** [pssah4.github.io/pulse](https://pssah4.github.io/pulse/)
 
@@ -46,21 +51,31 @@ The business analysis and requirements steps carry 34 innovation methods (qualit
 
 You need Python 3.9 or newer, the GitHub CLI `gh` 2.94 or newer, and a GitHub repository.
 
-In Claude Code:
+1. Claude Code, in the terminal and the VS Code extension alike:
+
+   ```bash
+   claude plugin marketplace add https://github.com/pssah4/pulse.git
+   claude plugin install pulse@pssah4-skills
+   ```
+
+2. Codex, in the CLI and the IDE extension alike (with the extension only, first give your terminal a `codex` command, see [step 4](https://pssah4.github.io/pulse/tutorials/installation#step-by-step)):
+
+   ```bash
+   codex plugin marketplace add pssah4/pulse
+   codex plugin add pulse@pssah4-skills
+   ```
+
+3. The `pulse` command for your terminal, once per machine: `/pulse-setup` offers it, or see [step 5](https://pssah4.github.io/pulse/tutorials/installation#step-by-step).
+4. In Codex, trust the Pulse hooks when it asks at its first start (`/hooks` in the CLI, or one by one on the Hooks page of the IDE extension's settings).
+5. Restart your sessions. Then in each project `/pulse-setup` (in Codex `$pulse:pulse-setup`), and `/pulse` from there on.
+
+Or steps 1 to 3 with one command, which asks before it changes your shell profile and removes nothing:
 
 ```bash
-claude plugin marketplace add https://github.com/pssah4/pulse.git
-claude plugin install pulse@pssah4-skills
+curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
 ```
 
-In the Codex CLI:
-
-```bash
-codex plugin marketplace add pssah4/pulse
-codex plugin add pulse@pssah4-skills
-```
-
-Then, in your project: `/pulse-setup` (in Codex, trust the Pulse hooks when Codex asks at its first start, under `/hooks` in the CLI or one by one on the Hooks page of the IDE extension's settings, and call it `$pulse:pulse-setup`), which also offers the `pulse` command for your terminal, and `/pulse` from there on. The VS Code extensions, updates, and removal: [Installation](https://pssah4.github.io/pulse/tutorials/installation).
+Every step with a check, and removal: [Installation](https://pssah4.github.io/pulse/tutorials/installation#step-by-step). To update: [Update](https://pssah4.github.io/pulse/tutorials/installation#update).
 
 ## Coming from the Digital Innovation Agents plugin
 

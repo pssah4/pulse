@@ -1,7 +1,7 @@
 {
   "name": "pulse",
   "description": "Pulse: an operating model, live collaboration, and the Digital Innovation Agents method for teams that build with coding agents. Specs in the repository, one shared board, parallel builds without collisions.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Sebastian Hanke"
   },

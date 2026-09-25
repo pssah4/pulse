@@ -69,17 +69,17 @@ Full catalog under [Discovery methods](../reference/methods-discovery),
 
 The BA becomes an epic and its features, each a file in the repository:
 
-- `requirements/epics/retro-board.md`: the epic hypothesis in plain prose, business outcomes with baseline and target
-- `requirements/features/anonymous-cards.md`, `vote-and-rank.md`, `action-items.md`: user stories, success criteria without technology ("a participant adds a card in under 10 seconds"), and an Activation Path that names how a user reaches the feature
+- `requirements/epics/EPIC-01-retro-board.md`: the epic hypothesis in plain prose, business outcomes with baseline and target
+- `requirements/features/FEAT-01-01-anonymous-cards.md`, `FEAT-01-02-vote-and-rank.md`, `FEAT-01-03-action-items.md`: user stories, success criteria without technology ("a participant adds a card in under 10 seconds"), and an Activation Path that names how a user reaches the feature
 - `requirements/handoff/architect-handoff.md`: what the plan must respect
 
-Each item is on the board from the moment `/pulse-re` names it, as a draft (`pulse new feat "Vote and rank" --draft` returns #3), so Alice and Bob see a spec in progress and who writes it. Once the specs pass validation, `/pulse-re` commits them on the docs branch, pushes it, and attaches each spec to its draft; before its pull request it runs `pulse check --spec` on the numbered specs:
+Each item is on the board from the moment `/pulse-re` names it, as a draft (`pulse new feat "Vote and rank" --draft` returns #3), so Alice and Bob see a spec in progress and who writes it. Once the specs pass validation, `/pulse-re` runs `pulse number --apply`, which starts each file name with its ID (`EPIC-01`, `FEAT-01-02`: the second feature of the first epic), commits them on the docs branch, pushes it, and attaches each spec to its draft; before its pull request it runs `pulse check --spec` on the numbered specs:
 
 ```bash
-pulse new epic "Retro board" --spec _devprocess/requirements/epics/retro-board.md --issue 1
-pulse new feat "Anonymous cards" --parent 1 --spec _devprocess/requirements/features/anonymous-cards.md --issue 2
-pulse new feat "Vote and rank" --parent 1 --spec _devprocess/requirements/features/vote-and-rank.md --issue 3
-pulse new feat "Action items" --parent 1 --blocked-by 3 --spec _devprocess/requirements/features/action-items.md --issue 4
+pulse new epic "Retro board" --spec _devprocess/requirements/epics/EPIC-01-retro-board.md --issue 1
+pulse new feat "Anonymous cards" --parent 1 --spec _devprocess/requirements/features/FEAT-01-01-anonymous-cards.md --issue 2
+pulse new feat "Vote and rank" --parent 1 --spec _devprocess/requirements/features/FEAT-01-02-vote-and-rank.md --issue 3
+pulse new feat "Action items" --parent 1 --blocked-by 3 --spec _devprocess/requirements/features/FEAT-01-03-action-items.md --issue 4
 ```
 
 Then it commits what `pulse new` wrote into the specs, pushes again, and opens a pull request with the specs into `develop`. Each feature is cut so that its merge reads well on its own: one feature, one traceable merge. Action items need the ranking first, so #4 waits for #3. The team agrees in the sync call that all three are specified well enough. Sebastian merges the pull request, because agents plan from the specs as the base branch has them, and `pulse approve 2 3 4` puts them on the ramp.

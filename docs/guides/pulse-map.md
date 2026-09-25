@@ -37,11 +37,26 @@ The chat never runs the map itself in its own shell and never pastes a frame ins
 
 The agents that `pulse go` starts never open a map. To turn it off, set `map_autostart = false` in `.pulse/config.toml` for the project, or `PULSE_MAP=off` in the environment for one shell ([Configuration](../reference/configuration)).
 
+### It starts pulse go
+
+Approving an item means building it, so nobody has to type `pulse go` afterwards. Each time the live map reads the board, it looks for approved work: an item that starts next on the ramp, or an approved item nobody holds that needs a PLAN. When there is some and no run of this clone lives, the map starts `pulse go` apart from itself, as `pulse go --detach` does, and its footer names the items and the log `.git/pulse/go/run.log` once. The run ends when the ramp is empty, as always, and the next approval starts one again, yours or a teammate's. A minute passes between two starts from the maps of one clone. The map starts nothing, and says why in its footer, when:
+
+- the last run did not finish an item (it failed, hit a usage limit, was stopped, or its claim was refused): the footer names it, and it starts no run until you look at it, though a run started for other work may take it along;
+- the last run the map started took none of the items that wait now: the map starts again once the ramp changes;
+- you stopped the last run, or the last start ended before it wrote its report: no start until `pulse go` runs by hand;
+- `.pulse/config.toml` in your working tree differs from the one on origin's default branch, or on the base branch that one names: the map never runs a `verify` or agent command that a checked-out branch brings, so on someone's pull request branch you start `pulse go` by hand; where git knows no `origin/HEAD` yet, `git remote set-head origin -a` sets it;
+- `verify` is not set: the footer names the command that sets it.
+
+Set `go_autostart = false` in `.pulse/config.toml` to turn it off for the project, or `PULSE_GO=off` (also `0`, `false`, `no`) for one shell. A run has the same rights and environment as the map that started it, and `run.log` marks each start the map made.
+
 ## What you see
 
 ```text
-PULSE  acme/shop                                                           09:28
-● 5 working   ● 3 need you   ● 1 failing
+ ▀▀▀▀▀▀▜▄
+ ▟▛▀▀▀▀▐█▌  pulse  acme/shop                                               09:28
+ ▄█████▛▀   ● 5 working   ● 3 need you   ● 1 failing
+▐█▗█▛▀▘
+▐▛▝▘
 
 BOARD ──────────────────────────────────────────────────────────────────────────
  ready to start ██████░░░░░░░░░░░░░░░░░░   3

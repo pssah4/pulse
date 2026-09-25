@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="pulse-icon-light-title pulse-icon-light-desc">
+  <title id="pulse-icon-light-title">Pulse: App-Icon hell</title>
+  <desc id="pulse-icon-light-desc">Petrolfarbenes Pulse-Signet auf einer hellen, abgerundeten App-Kachel. Außerhalb der Kachel transparent. Reine Vektorgrafik.</desc>
+  <defs>
+    <linearGradient id="pulse-icon-light-petrol" gradientUnits="userSpaceOnUse" x1="10" y1="355" x2="290" y2="0">
+      <stop offset="0" stop-color="#005660"/>
+      <stop offset="0.52" stop-color="#007780"/>
+      <stop offset="1" stop-color="#008E94"/>
+    </linearGradient>
+    <linearGradient id="pulse-icon-light-shade" gradientUnits="userSpaceOnUse" x1="220" y1="120" x2="335" y2="230">
+      <stop offset="0" stop-color="#003D48" stop-opacity="0"/>
+      <stop offset="1" stop-color="#003D48" stop-opacity="0.32"/>
+    </linearGradient>
+    <clipPath id="pulse-icon-light-mark-clip"><path d="M15 5H235C291.333 5 337 50.667 337 107C337 163.333 291.333 209 235 209H110C79.624 209 55 233.624 55 264V330C55 351.539 37.539 369 16 369H5V263C5 204.458 52.458 157 111 157H230C257.89 157 280.5 134.166 280.5 106C280.5 77.834 257.89 55 230 55H55C32.909 55 15 37.091 15 15Z M78 343V263C78 246.431 91.431 233 108 233H235C231.5 258.5 209.5 278 183 278H155C141.9 278 132.2 284.1 130.2 296.5C126.5 318 107.5 337 78 343Z M5 185V155C5 113.579 38.579 80 80 80H230C244.636 80 256.5 91.865 256.5 106.5C256.5 121.135 244.636 133 230 133H103C65 133 29 153 5 185Z"/></clipPath>
+    <linearGradient id="pulse-icon-light-background" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAFAF9"/>
+      <stop offset="1" stop-color="#F4F5F4"/>
+    </linearGradient>
+  </defs>
+  <rect x="0.75" y="0.75" width="510.5" height="510.5" rx="99.25" fill="url(#pulse-icon-light-background)" stroke="#ECEFED" stroke-width="1.5"/>
+  <g transform="translate(99.22 95.22) scale(0.956044)">
+    <path fill="url(#pulse-icon-light-petrol)" d="M15 5H235C291.333 5 337 50.667 337 107C337 163.333 291.333 209 235 209H110C79.624 209 55 233.624 55 264V330C55 351.539 37.539 369 16 369H5V263C5 204.458 52.458 157 111 157H230C257.89 157 280.5 134.166 280.5 106C280.5 77.834 257.89 55 230 55H55C32.909 55 15 37.091 15 15Z M78 343V263C78 246.431 91.431 233 108 233H235C231.5 258.5 209.5 278 183 278H155C141.9 278 132.2 284.1 130.2 296.5C126.5 318 107.5 337 78 343Z M5 185V155C5 113.579 38.579 80 80 80H230C244.636 80 256.5 91.865 256.5 106.5C256.5 121.135 244.636 133 230 133H103C65 133 29 153 5 185Z"/>
+    <path d="M185 215 337 65V377H20Z" fill="url(#pulse-icon-light-shade)" clip-path="url(#pulse-icon-light-mark-clip)"/>
+  </g>
+</svg>

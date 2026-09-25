@@ -32,14 +32,12 @@ one agent, optimise the prompts and the toolchain and ship.
 
 Multiplayer AI development is a coordination question. Multiple people,
 each with their own agent, working on the same codebase, each fast
-enough to ship a feature in an afternoon. Scrum was built for human
-cycle times. Kanban can absorb the pace but loses the rhythm. Shape Up
-runs in six-week cycles. None of them fit a team where the bottleneck
-is no longer implementation, it is alignment.
+enough to ship a feature in an afternoon. Agile frameworks like Scrum
+or Kanban were built for human cycle times. None of them fit a team
+where the bottleneck is no longer implementation and fast parallel
+delivery, it is alignment.
 
-Pulse is what we use day to day at one of Germany's energy companies
-where small teams build internal products with coding agents. It
-exists because the team needed something that does not slow the pairs
+Pulse exists because teams need something that does not slow the pairs
 down but keeps them coherent.
 
 ## The shift
@@ -64,8 +62,11 @@ In the spirit of the original Agile Manifesto, which worked because
 it stated values and not procedures, Pulse values:
 
 > **Shared artifacts** over status meetings.
+
 > **Team coherence** over individual speed.
+
 > **Conscious filters** over unlimited backlogs.
+
 > **Structural governance** over approval gates.
 
 **Shared artifacts over status meetings.** A coding agent has no memory
@@ -84,10 +85,11 @@ becoming work without passing through a deliberate filter. That filter
 separates a product team from a feature factory.
 
 **Structural governance over approval gates.** Nobody wants to wait
-for someone to sign off a PR at 11pm. The answer is governance baked
-into structure: automated quality gates, fitness functions, conventions
-that agents and humans follow equally. The rules live in the code and
-the specs, not in someone's calendar.
+for someone to sign off a PR at 11pm. People decide what gets built
+and whether the result goes in. Everything in between runs on
+structure: tests, fitness functions, a reviewer agent in a fresh
+session, conventions that agents and humans follow equally. The rules
+live in the code and the specs, not in someone's calendar.
 
 ## Three layers, three tempos
 
@@ -136,12 +138,12 @@ The team synchronises through three lightweight rituals:
 - **Sync call (twice a week, 30 min).** Not "what did you do", that is
   in the async status. Resolve blockers, review ideas from the Ideas
   channel, adjust priorities.
-- **Code review (continuous, async).** Before a PR reaches a person,
-  a reviewer agent in a fresh session has checked it against its spec,
-  PLAN, and decisions ([review](/guides/pulse-review)) and put
-  the verdict into the PR. People review within 4 hours and focus on
-  direction and architecture conformance; duplicates, dead code, and
-  syntax are the agents' job.
+- **Merge (continuous, async).** Before a PR reaches a person, a
+  reviewer agent in a fresh session has checked it against its spec,
+  PLAN, and decisions ([review](/guides/pulse-review)) and put the
+  verdict into the PR. The person reads the PR at feature level (does
+  it deliver what the spec promised?) and merges. Architecture
+  conformance, duplicates, dead code, and syntax are the agents' job.
 
 Total meeting overhead: under 2.5 hours per week.
 
@@ -264,7 +266,7 @@ Four channels, in any tool the team uses (Teams, Slack, Discord):
 |---|---|---|
 | Ideas | Free-flowing impulses | "Could we add a CSV export?" |
 | Async status | Daily structured updates | "Done X, next Y, blocked on Z" |
-| Code reviews | PR-level architecture conformance | Comment thread on PR-42 |
+| Pull requests | Collecting PRs waiting for a merge, questions at feature level | "PR-42 lands the CSV export, ready to merge" |
 | Direction | Bi-weekly outcome decisions | Direction session notes |
 
 If something is in Ideas, it is an impulse. Only when it passes the
@@ -277,7 +279,7 @@ In a 3 to 4 person team, these are hats, not dedicated positions:
 | Hat | Responsibility |
 |---|---|
 | Product direction | Owns the BA, runs the direction session, calls the filter decisions |
-| Architecture | Owns the decision records, reviews PRs for architectural conformance |
+| Architecture | Owns the decision records the reviewer agent checks every PR against |
 | Quality | Owns testing strategy, security findings, and the checks |
 
 The person wearing the product direction hat still builds and ships
@@ -352,8 +354,8 @@ people, they bridge agent sessions that have zero memory. Without
 previous one decided.
 
 The artifacts do not replace conversation. They make conversation
-productive. Sync calls, code reviews, and the Ideas channel are the
-interaction loops. The docs ensure those conversations are not
+productive. Sync calls, pull request threads, and the Ideas channel
+are the interaction loops. The docs ensure those conversations are not
 wasted on "wait, what did you build yesterday?".
 
 What changed:
@@ -424,8 +426,9 @@ through the Pulse hooks in every session and every subagent, so no
 completion claim goes out without fresh evidence. The
 [Security Audit](/guides/pulse-audit) phase runs OWASP, OWASP LLM,
 SAST, SCA, and Zero Trust checks before release. A reviewer agent in a
-fresh session checks every item before its PR leaves draft, so human
-code reviews focus on architecture conformance.
+fresh session checks every item against its spec, PLAN, and decisions
+before its PR leaves draft. The person who merges judges whether the
+feature does what its spec promised.
 
 The Digital Innovation Agents are part of Pulse. Every team can adapt
 and add skills for their own needs. Treat Pulse as a starting point,

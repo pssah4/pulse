@@ -182,8 +182,9 @@ def _git(cwd, *args, check=False):
 
 
 def slug(title: str) -> str:
-    """The title in a branch name, ASCII only: ä to ae, ö to oe, ü to ue, ß to ss, other accents go (N3.01)."""
-    text = unicodedata.normalize("NFC", title).lower().translate(SPELLED)       # an ä taken apart is still ä
+    """The title in a branch name, ASCII only: ä to ae, ö to oe, ü to ue, ß to ss, other accents go (N3.01).
+    The spec's ID in front of the title stays out: the branch carries the issue number."""
+    text = unicodedata.normalize("NFC", spec.TITLE_ID.sub("", title)).lower().translate(SPELLED)   # an ä taken apart is still ä
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:40] or "item"
 
@@ -979,6 +980,14 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def running(root: Path) -> bool:
+    """Whether a pulse go run of this clone lives: go.pid names it while it runs."""
+    try:
+        return _alive(int((config.pulse_dir(root) / "go.pid").read_text().strip()))
+    except (OSError, ValueError):
+        return False
+
+
 def phases(root: Path) -> dict:
     """{item: the phase its job is in} while pulse go runs in this clone; {} otherwise."""
     common = config.pulse_dir(root)
@@ -1175,6 +1184,7 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
     if not dry_run:
         handlers = {s: signal.signal(s, _exit) for s in STOPS[1:]}
     try:
+        config.PINNED[str(Path(root).resolve())] = cfg     # the run reads its config once (#44)
         if not dry_run:
             if left.get("holder"):
                 _take_over(root, repo, login, left, gh_run, rep, base_branch)
@@ -1322,6 +1332,7 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
     except KeyboardInterrupt as e:     # Ctrl-C, SIGTERM, SIGHUP: the claims go back, the report stays
         rep["run"]["stopped"] = e.args[0] if isinstance(e, Stopped) else "SIGINT"
     finally:
+        config.PINNED.pop(str(Path(root).resolve()), None)
         # a second Ctrl-C or SIGTERM must not cut the cleanup short: agents would work on unclaimed
         quiet = {} if dry_run else {s: signal.signal(s, signal.SIG_IGN) for s in STOPS}
         stop = f"the run was stopped ({rep['run']['stopped']})" if rep["run"]["stopped"] else \

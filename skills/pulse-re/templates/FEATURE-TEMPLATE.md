@@ -1,7 +1,7 @@
 ---
 title: {short title}
 issue: {N}
-parent: ../epics/{epic}.md
+parent: ../epics/EPIC-{nn}-{epic}.md
 ba-ref: ../../analysis/BA-{slug}.md
 subtype: user-facing  # user-facing | library
 priority: P2          # P0 | P1 | P2
@@ -9,7 +9,9 @@ effort: M             # XS | S | M | L; split XL into smaller items first
 risk: []              # auth, security, data-migration, public-api, new-dependency: a person approves the PLAN
 ---
 
-<!-- See skills/pulse-re/SKILL.md for how to fill. Leave issue as it is:
+<!-- See skills/pulse-re/SKILL.md for how to fill. Save it under its slug
+     with parent set; `pulse number --apply` names it
+     features/FEAT-{ee}-{nn}-{slug}.md. Leave issue as it is:
      `pulse new --parent <epic>` sets issue and parent and lists the feature in
      the epic's Items. Until then pulse check (C9) lets a spec without an issue
      number name its parent. Once the item is approved, pulse check reads this

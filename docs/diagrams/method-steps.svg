@@ -1,0 +1,56 @@
+<svg class="pd" viewBox="0 0 1000 384" role="img" aria-labelledby="ms-title">
+  <title id="ms-title">The method in nine steps. /pulse-ba: why, and for whom, you approve. /pulse-re: what, epics and features, you approve each. Planning: how, tasks and files, pulse go plans. /pulse-build: spec tests first, one branch per feature; it loops back to planning on a bug, a design, or a requirement question, and to /pulse-re on a gap. Then three gates: tests verify, review in a fresh session, /pulse-audit in a fresh session; a red gate gets a fix round, then the gates run again from the tests. Then one pull request per feature, and you merge it into develop.</title>
+  <defs>
+    <marker id="ms-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="pd-head" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+  <path class="pd-edge pd-back" d="M900 86V34Q900 26 892 26H428Q420 26 420 34V84" marker-end="url(#ms-head)"/>
+  <rect class="pd-bg" x="640" y="16" width="40" height="20"/>
+  <text x="660" y="30" text-anchor="middle">gap</text>
+  <path class="pd-edge pd-back" d="M860 86V66Q860 58 852 58H608Q600 58 600 66V84" marker-end="url(#ms-head)"/>
+  <rect class="pd-bg" x="650" y="48" width="160" height="20"/>
+  <text x="730" y="62" text-anchor="middle">bug, design, requirement</text>
+  <rect class="pd-node pd-you" x="20" y="86" width="200" height="84" rx="12"/>
+  <text class="pd-cmd" x="120" y="116" text-anchor="middle">/pulse-ba</text>
+  <text x="120" y="138" text-anchor="middle">why, and for whom</text>
+  <text class="pd-you-t" x="120" y="156" text-anchor="middle">you approve</text>
+  <path class="pd-edge" d="M220 128H271" marker-end="url(#ms-head)"/>
+  <rect class="pd-node pd-you" x="273" y="86" width="200" height="84" rx="12"/>
+  <text class="pd-cmd" x="373" y="116" text-anchor="middle">/pulse-re</text>
+  <text x="373" y="138" text-anchor="middle">what: epics, features</text>
+  <text class="pd-you-t" x="373" y="156" text-anchor="middle">you approve each</text>
+  <path class="pd-edge" d="M473 128H525" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="527" y="86" width="200" height="84" rx="12"/>
+  <text class="pd-h" x="627" y="116" text-anchor="middle">planning</text>
+  <text x="627" y="138" text-anchor="middle">how: tasks, files</text>
+  <text x="627" y="156" text-anchor="middle"><tspan class="pd-mono">pulse go</tspan> plans</text>
+  <path class="pd-edge" d="M727 128H778" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="780" y="86" width="200" height="84" rx="12"/>
+  <text class="pd-cmd" x="880" y="116" text-anchor="middle">/pulse-build</text>
+  <text x="880" y="138" text-anchor="middle">spec tests first,</text>
+  <text x="880" y="156" text-anchor="middle">one branch per feature</text>
+  <path class="pd-edge" d="M880 170V195Q880 203 872 203H110Q102 203 102 211V234" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="20" y="236" width="164" height="84" rx="12"/>
+  <text class="pd-h" x="102" y="266" text-anchor="middle">tests</text>
+  <text x="102" y="288" text-anchor="middle">verify</text>
+  <path class="pd-edge" d="M184 278H217" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="219" y="236" width="164" height="84" rx="12"/>
+  <text class="pd-h" x="301" y="266" text-anchor="middle">review</text>
+  <text x="301" y="288" text-anchor="middle">fresh session</text>
+  <path class="pd-edge" d="M383 278H416" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="418" y="236" width="164" height="84" rx="12"/>
+  <text class="pd-cmd" x="500" y="266" text-anchor="middle">/pulse-audit</text>
+  <text x="500" y="288" text-anchor="middle">fresh session</text>
+  <path class="pd-edge" d="M582 278H615" marker-end="url(#ms-head)"/>
+  <rect class="pd-node" x="617" y="236" width="164" height="84" rx="12"/>
+  <text class="pd-h" x="699" y="266" text-anchor="middle">pull request</text>
+  <text x="699" y="288" text-anchor="middle">one per feature</text>
+  <path class="pd-edge" d="M781 278H814" marker-end="url(#ms-head)"/>
+  <rect class="pd-node pd-you" x="816" y="236" width="164" height="84" rx="12"/>
+  <text class="pd-h" x="898" y="266" text-anchor="middle">merge</text>
+  <text x="898" y="288" text-anchor="middle">into develop</text>
+  <text class="pd-you-t" x="898" y="306" text-anchor="middle">you merge</text>
+  <path class="pd-edge pd-back" d="M500 320V340Q500 348 492 348H110Q102 348 102 340V322" marker-end="url(#ms-head)"/>
+  <text x="301" y="370" text-anchor="middle">a red gate: fix round, then the gates again from the tests</text>
+  <rect class="pd-node pd-you" x="828" y="357" width="18" height="18" rx="5"/>
+  <text x="856" y="370">stops for you</text>
+</svg>

@@ -11,6 +11,7 @@
       issue cache is available
   C8  tasks in one wave of a PLAN touch disjoint files (they run in parallel)
   C9  every spec's parent: link and its epic's Items list agree
+  C10 every spec's file name starts with the ID its place in the tree calls for
   R1 to R6  an approved item's spec is one an agent can plan from (pulse/spec.py),
       read from the base branch; without an issue cache the board is loaded,
       without a board a finding says they were skipped; --spec <path> applies them to spec
@@ -297,6 +298,8 @@ def run(root: Path) -> list:
     found += check_stubs(root)
     found += check_readiness(root)
     found += [Finding(p, 1, "C9", msg) for p, msg in spec.link_problems(root)]
+    found += [Finding(p, 1, "C10", f"{msg}: pulse number --apply fixes it" if new else msg)
+              for p, msg, new in spec.numbering(root)]
     return sorted(found, key=lambda f: (f.path, f.line, f.rule))
 
 
@@ -313,5 +316,5 @@ def main(args) -> int:
     if found:
         print(f"{len(found)} finding{'s' if len(found) != 1 else ''}")
         return 1
-    print("pulse check: C1-C9 clean, R1-R6 not checked" if skipped else "pulse check: clean")
+    print("pulse check: C1-C10 clean, R1-R6 not checked" if skipped else "pulse check: clean")
     return 0

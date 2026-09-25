@@ -62,7 +62,7 @@ Pulse needs `gh` 2.94 or newer for parent links and "blocked by" links. Update i
 A record links a spec that every clone must be able to read, so `pulse new --spec` checks the file before it writes anything, and stops when the check fails (exit 2):
 
 ```text
-pulse new: _devprocess/requirements/features/login.md is not on origin as committed here; commit it, then: git push -u origin docs/12-login
+pulse new: _devprocess/requirements/features/FEAT-01-02-login.md is not on origin as committed here; commit it, then: git push -u origin docs/12-login
 ```
 
 Commit the spec, run the push the message names, and run the same `pulse new` again. A spec you changed after the push needs another commit and push. `write the spec first, <path> does not exist in the repository` means the path is wrong or the spec is not written yet. For work whose spec does not exist yet, register a draft instead: `pulse new <type> "<title>" --draft`.
@@ -77,9 +77,13 @@ Agents plan from the spec as the base branch on origin has it, so an approval wa
 
 `pulse approve` also refuses while the spec of a feature, improvement, or fix on the base branch breaks one of R2 to R6 (an epic needs R1 only), and names the rule; the `a` key on the map does the same. Fix the spec with [`/pulse-re`](../guides/pulse-re), merge it, and approve again.
 
+### The map does not start `pulse go`
+
+Its footer says why, once. The map starts a run only while Pulse is on, `go_autostart` is not `false`, `PULSE_GO` is not `off`, the board answered, and no run of this clone lives. It holds back items the last run did not finish, and after a run you stopped or one that ended before its report it waits until `pulse go` runs by hand (`pulse go --detach`). It also waits while `.pulse/config.toml` differs from the one on origin's default branch, or on the base branch that one names: commit and merge the change, or start `pulse go` by hand. [/pulse-map](../guides/pulse-map#it-starts-pulse-go) has the rules.
+
 ### The map shows "no agent active" although an agent works
 
-The lights come from the Pulse hooks, which record only when `mode = "on"` in `.pulse/config.toml`. Check the mode. A Codex session, in the CLI or the IDE extension, records only after you trusted the plugin's hooks, all of them, with `/hooks` in the CLI or one by one on the Hooks page of the extension's settings. Sessions without the hooks, such as Codex installed from a clone, get no light; the items they hold still show up. An agent that `pulse go` started counts as working while its phase runs, with or without hooks, and an agent silent for five minutes turns grey.
+The lights come from the Pulse hooks, which record only when `mode = "on"` in `.pulse/config.toml`. Check the mode. A Codex session, in the CLI or the IDE extension, records only after you trusted the plugin's hooks, all of them, with `/hooks` in the CLI or one by one on the Hooks page of the extension's settings; a new chat picks them up. Until then `pulse claim`, `pulse new --draft`, and `pulse go` print `pulse: this Codex session reaches no Pulse hook` on the way; with [Codex without the plugin](../tutorials/installation#codex-without-the-plugin) there are no hooks to trust, so that line stays, and the rules come through `AGENTS.md`. Sessions without the hooks, such as Codex installed from a clone, get no light; the items they hold still show up. An agent that `pulse go` started counts as working while its phase runs, with or without hooks, and an agent silent for five minutes turns grey.
 
 ### `pulse map` prints one frame and ends
 
@@ -91,7 +95,9 @@ Check `.pulse/config.toml`: `mode = "off"` silences every hook. In Claude Code, 
 
 ### `pulse check` reports findings
 
-Each finding names the file, the line, and the rule (C1 to C9, or R1 to R6 for an approved item's spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
+Each finding names the file, the line, and the rule (C1 to C10, or R1 to R6 for an approved item's spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
+
+A C10 finding names a spec whose file name lacks the ID of its place in the tree: it has none yet, it moved to another parent, or another branch took the same ID. `pulse number --apply` renames it, rewrites the paths to it, and moves its record along; commit the result. An open record keeps its old path until the rename is on the base branch: after the merge, run `pulse number --apply` once more.
 
 An R finding is about the spec as the base branch on origin has it. A fix on your branch clears it only once it is merged, and until then the git hook refuses every commit, the fix commit included. The way out:
 
@@ -116,7 +122,11 @@ Every claim leaves a mark on the issue that names the session holding it: a Clau
 
 ### The map says `spec in progress by <login>`
 
-The item is a draft: a `/pulse-ba` or `/pulse-re` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. A draft that a session of your own held before it ended: `pulse claim <n> --take` in the new session.
+The item is a draft: a `/pulse-ba`, `/pulse-re`, or `/pulse-realign` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. A draft that a session of your own held before it ended: `pulse claim <n> --take` in the new session.
+
+### `pulse new --draft` says `is the draft ... already`
+
+An open draft of the same type carries the same title, for example a realign (`Realign: <owner/repo>`) or a Project-BA that another session started. The line names its number and who holds it, and nothing new is created. A draft another person holds stays theirs: talk to them. One nobody holds, or one of yours, goes on with the same command plus `--issue <n>`; a session of your own that has ended hands it over with `pulse claim <n> --take`.
 
 ### The map says `no sign of life`
 

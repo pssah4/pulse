@@ -86,6 +86,14 @@ def record(root: Path, payload: dict, t: float | None = None) -> None:
         tmp.replace(path)
 
 
+def seen(root: Path, session: str) -> bool:
+    """Whether any hook event of this session reached the log."""
+    try:
+        return f'"s":{json.dumps(session)}' in _path(root).read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 def _actor(row: dict) -> dict:
     return {"id": row["a"], "type": row["at"], "cwd": row["cwd"], "started": row["t"], "last": row["t"],
             "tool": "", "target": "", "waiting": False, "error": False, "idle": False, "note": ""}

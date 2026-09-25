@@ -13,6 +13,10 @@ Pulse grew out of an earlier plugin, the Digital Innovation Agents (DIA for shor
 - Code without DIA artifacts: **Mode A**, the reverse walk.
 - Both: the migration first, then the reverse walk for the gaps.
 
+## On the board
+
+A realign writes all over `_devprocess/`, so only one runs at a time, and the team sees it from its first step. Before the first artifact, the skill looks for a realign in progress (`pulse status --json`). One that another person or session holds stays theirs: the skill stops, names who holds it, and takes it over only on your yes. Otherwise it registers the realign as a draft this session holds: `pulse new epic "Realign: <owner/repo>" --draft --phase analysis`. A second draft with the same title is refused, and the refusal names the first. From then on the board and every [map](./pulse-map) show the realign in progress and who runs it; the skill writes a heartbeat at the start of each step and closes the draft with `pulse done` once the work lives in its own records. The board needs Pulse set up with its labels: the reverse walk runs [`/pulse-setup`](./pulse-setup) first where Pulse is missing, the migration registers its draft right after it brought the settings over.
+
 ## Mode A: the reverse walk
 
 Code tells you what exists, not whether it solves the right problem. The reverse walk writes sourced drafts, never guesses:
@@ -26,7 +30,7 @@ The walk, scaled to Simple Test, PoC, or MVP:
 1. **Codebase map:** manifests, entry points, tests, CI, existing docs; the source pool for everything after.
 2. **Navigation:** a system map with fast paths into the code, proposals for path-local AGENTS.md files.
 3. **Decisions:** only visible, consequential, non-obvious ones, each with a read-when; the arc42 reference at MVP scope.
-4. **Epics and features:** anticipated epics grouping observed capabilities, one feature spec per capability, one observable success criterion each.
+4. **Epics and features:** anticipated epics grouping observed capabilities, one feature spec per capability, one observable success criterion each. Every feature names its epic in `parent:`, every epic lists all its features under `## Items`, and `pulse number --apply` starts each file name with its ID (`EPIC-04`, `FEAT-04-02`), so a folder listing shows which features belong to which epic.
 5. **BA draft:** from README, docs, and changelogs only; the header counts what came from sources and what still needs you.
 6. **Findings:** TODOs, skipped tests, features without tests, outdated dependencies; each checked against the code before it counts.
 7. **Items:** after the verification gate, epics with open work, partly built features, and verified findings get a record on the board, each pointing at its draft. Nothing is approved before `/pulse-ba` and [`/pulse-re`](./pulse-re) validated it.

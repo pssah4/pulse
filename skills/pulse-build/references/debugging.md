@@ -35,7 +35,9 @@ incorrect, or a fix does not work, follow this 4-phase protocol.
 4. Record the bug as a fix item unless the item you are on already
    is that fix: write the fix spec `_devprocess/requirements/fixes/{slug}.md`
    from `templates/FIX-TEMPLATE.md` (symptom, root cause as a causal
-   chain, fix, regression test), commit it on this branch and push, then
+   chain, fix, regression test) with `parent:` set, run
+   `pulse number --apply` (it names the file `FIX-{ee}-{ff}-{nn}-{slug}.md`),
+   commit it on this branch and push, then
    register it: `pulse new fix "<symptom>" --parent <feature> --spec <path>`.
    The fix's commit names it: `Refs: #<n>`.
 

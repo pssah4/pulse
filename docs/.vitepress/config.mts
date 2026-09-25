@@ -87,6 +87,8 @@ export default withMermaid(
     description: 'Operating model, live collaboration, and the Digital Innovation Agents: from raw idea to shipped code, built in parallel by people and agents.',
     base: '/pulse/',
     head: [
+      ['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/assets/pulse-icon-hell.svg' }],
+      ['meta', { name: 'theme-color', content: '#007780' }],
       ['meta', { property: 'og:title', content: 'Pulse' }],
       ['meta', { property: 'og:description', content: 'Operating model, live collaboration, and a V-Model method for teams of people and coding agents.' }],
       ['meta', { name: 'keywords', content: 'Pulse, V-Model, innovation, business analysis, requirements engineering, parallel agents, GitHub issues, ADR, OWASP, Claude Code, Cursor, Codex' }],
@@ -98,7 +100,8 @@ export default withMermaid(
     lang: 'en',
 
     themeConfig: {
-      siteTitle: 'Pulse',
+      logo: { light: '/assets/pulse-logo-petrol.svg', dark: '/assets/pulse-logo-aqua.svg', alt: 'Pulse' },
+      siteTitle: false,
       nav: [
         { text: 'Tutorials', link: '/tutorials/installation', activeMatch: '/tutorials/' },
         { text: 'Guides', link: '/guides/pulse', activeMatch: '/guides/' },

@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from pulse import config, dispatch, presence, review, setup, state  # noqa: E402
+from pulse import config, dispatch, go, presence, review, setup, state  # noqa: E402
 
 PARALLEL = {
     "off": "Parallel: off (.pulse/config.toml). Work on one item at a time.",
@@ -174,14 +174,6 @@ def last_turn_tools(entries):
     return uses
 
 
-def go_running(root):
-    try:
-        os.kill(int((config.pulse_dir(root) / "go.pid").read_text().strip()), 0)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
 def cached_only(args):
     """gh for state.me in the stop verdict: the login comes from its cache or not at all."""
     raise state.StateError("no cached login")
@@ -189,7 +181,7 @@ def cached_only(args):
 
 def idle_capacity(root, cfg):
     """At parallel = max, ready work with free slots must not wait for the next prompt."""
-    if cfg["parallel"] != "max" or go_running(root):
+    if cfg["parallel"] != "max" or go.running(root):
         return ""
     try:
         login = state.me(root, run=cached_only)

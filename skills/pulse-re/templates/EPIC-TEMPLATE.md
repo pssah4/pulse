@@ -6,10 +6,11 @@ ba-ref: ../../analysis/BA-{slug}.md
 hmw-ref: ../../analysis/BA-{slug}.md#3-solution-hypothesis-and-strongest-assumption
 ---
 
-<!-- See skills/pulse-re/SKILL.md for how to fill. `pulse new --parent <epic>`
-     adds each feature to Items and each fix or improvement indented below its
-     feature; `pulse check` (C9) keeps Items and the children's parent: links
-     in step. -->
+<!-- See skills/pulse-re/SKILL.md for how to fill. Save it under its slug;
+     `pulse number --apply` names it epics/EPIC-{nn}-{slug}.md. `pulse new
+     --parent <epic>` adds each feature to Items and each fix or improvement
+     indented below its feature; `pulse check` (C9) keeps Items and the
+     children's parent: links in step, C10 the IDs in the file names. -->
 
 # Epic: {Name}
 
@@ -36,9 +37,10 @@ hmw-ref: ../../analysis/BA-{slug}.md#3-solution-hypothesis-and-strongest-assumpt
 
 ## Items
 
-<!-- One line per feature as `- [#n title](../features/slug.md)`, its fixes
-     and improvements two spaces deeper below it. Priority and effort live in
-     each item's spec; the order lives in the ramp. -->
+<!-- One line per feature as `- [#n FEAT-{nn}-01 title](../features/FEAT-{nn}-01-slug.md)`,
+     its fixes and improvements two spaces deeper below it. An item without a
+     record (a shipped feature) is listed without `#n`. Priority and effort
+     live in each item's spec; the order lives in the ramp. -->
 
 ## Out of scope
 - {Feature X}: {Rationale}

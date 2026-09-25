@@ -81,15 +81,17 @@ hypothesis explains the user, the problem, the solution category,
 the primary value, the current alternative, and the unfair
 advantage in actual sentences.
 
-**Identity.** The item number is the ID. The file is
-`_devprocess/requirements/epics/{slug}.md`; the record on the board links
-it. Status lives in the record, never in the file.
+**Identity.** The file is `_devprocess/requirements/epics/EPIC-{nn}-{slug}.md`:
+its name starts with the epic's ID, which `pulse number --apply` gives it
+(see [File names and IDs](../reference/artifacts#file-names-and-ids)).
+The record on the board links it, and its item number is what `pulse`
+commands take. Status lives in the record, never in the file.
 
 ## Feature structure
 
 Under each epic, features are the units that get implemented. A
 feature is what a team can ship in one coherent increment. Each one is a
-spec file in `_devprocess/requirements/features/{slug}.md`, and its
+spec file in `_devprocess/requirements/features/FEAT-{ee}-{nn}-{slug}.md`, and its
 record on the board hangs under the epic's. When one feature needs another
 first, that is a "blocked by" link between the records, never prose.
 
@@ -97,7 +99,7 @@ first, that is a "blocked by" link between the records, never prose.
 ---
 title: Auto-resolve password reset tickets
 issue: 14
-parent: ../epics/agent-core.md
+parent: ../epics/EPIC-01-agent-core.md
 ba-ref: ../../analysis/BA-agent-core.md
 subtype: user-facing
 priority: P1
@@ -146,7 +148,7 @@ risk: []
 
 **Requirements in EARS.** Each requirement is one numbered sentence with an uppercase SHALL: `WHEN <trigger> THE SYSTEM SHALL <response>`, `IF <unwanted condition> THEN THE SYSTEM SHALL <response>`, `WHILE <state> THE SYSTEM SHALL <response>`, or `THE SYSTEM SHALL <what always holds>`. Edge cases and error behavior are requirements of their own; what must keep working is marked `(unchanged)`. One line per requirement keeps it testable: each FR becomes one test, named after its id, written before the code. Given/When/Then stays available for a multi-step flow.
 
-**The tree lives in the repository.** `parent:` links the feature to its epic, and the epic lists its features (with their fixes and improvements) under `## Items`. `pulse new --parent` sets `issue:` and `parent:` in the spec and adds its line to `## Items`; `pulse check` (C9) keeps them in step. A spec written from the template names its parent before it is registered: C9 lets a spec without an issue number do that, so the git hook takes the first commit of the specs.
+**The tree lives in the repository.** `parent:` links the feature to its epic, and the epic lists its features (with their fixes and improvements) under `## Items`. `pulse new --parent` sets `issue:` and `parent:` in the spec and adds its line to `## Items`; `pulse check` (C9) keeps them in step. A spec written from the template names its parent before it is registered: C9 lets a spec without an issue number do that, so the git hook takes the first commit of the specs. The file name carries the tree as well: write each spec under its slug, run `pulse number --apply` before the commit, and every spec starts with its ID (`EPIC-01`, `FEAT-01-02`, `FIX-01-02-01`); C10 reports one that does not.
 
 **Risk flags.** `risk: [auth, security, data-migration, public-api, new-dependency]` marks a feature whose PLAN a person approves before anything is built.
 
@@ -177,7 +179,8 @@ specification.
 the activation path before an item may close.
 
 **Fixes and improvements** hang under their feature. Their spec is a
-short file in `_devprocess/requirements/fixes/` or `improvements/`:
+short file in `_devprocess/requirements/fixes/` or `improvements/`, named
+after its ID (`FIX-04-02-01` is the first fix of feature `FEAT-04-02`):
 symptom, root cause as a causal chain, and regression test for a fix;
 description, reason, and success criteria for an improvement.
 
@@ -295,7 +298,7 @@ The final artifact is `architect-handoff.md`, a single document that planning wi
 
 Every item is on the board from the moment the skill names it, as a draft (`pulse new feat "<title>" --draft`), so the team sees a spec in progress and who writes it; an issue you name becomes the draft instead (`--issue <n>`). Before it writes, the skill checks the open drafts and items for overlap and asks you when one covers the same goal.
 
-The skill validates (forbidden-terms grep, NFRs with numbers, ASRs classified, an Activation Path per feature), commits the specs on the docs branch (`docs(re): <epic>`), and pushes it. Then it attaches each spec to its draft, epic first: `pulse new epic "<title>" --spec <path> --issue <n>`, then `pulse new feat "<title>" --parent <epic> --spec <path> --issue <n>` per feature, with `--blocked-by` where one needs another. `pulse new` takes a spec only once its commit is on origin. It writes each item number into its spec as `issue:`, links the spec to its parent (`parent:`), and lists it in the epic's Items. The skill runs `pulse check --spec <path> ...` on the numbered specs and fixes what it reports, commits these lines and the fixes, pushes again, opens a pull request into the base branch, and puts each spec up for approval. When the team wants an item built, a person merges that pull request, because agents plan from the spec as the base branch has it, and then runs `pulse approve <n>`, so [`/pulse-go`](./pulse-go) can pick it up. `pulse approve` refuses while the spec is not on the base branch (R1), and for a feature while the spec there breaks one of R2 to R6; an epic needs R1 only.
+The skill validates (forbidden-terms grep, NFRs with numbers, ASRs classified, an Activation Path per feature), runs `pulse number --apply` so every spec starts with its ID, commits the specs on the docs branch (`docs(re): <epic>`), and pushes it. Then it attaches each spec to its draft, epic first: `pulse new epic "<title>" --spec <path> --issue <n>`, then `pulse new feat "<title>" --parent <epic> --spec <path> --issue <n>` per feature, with `--blocked-by` where one needs another. `pulse new` takes a spec only once its commit is on origin. It writes each item number into its spec as `issue:`, links the spec to its parent (`parent:`), and lists it in the epic's Items. The skill runs `pulse check --spec <path> ...` on the numbered specs and fixes what it reports, commits these lines and the fixes, pushes again, opens a pull request into the base branch, and puts each spec up for approval. When the team wants an item built, a person merges that pull request, because agents plan from the spec as the base branch has it, and then runs `pulse approve <n>`, so [`/pulse-go`](./pulse-go) can pick it up. `pulse approve` refuses while the spec is not on the base branch (R1), and for a feature while the spec there breaks one of R2 to R6; an epic needs R1 only.
 
 Your agent asks before these steps unless its permission settings allow them: Claude Code in its default mode, in the terminal and the VS Code extension alike, before every shell command outside a small read-only set such as `git status`, so before `pulse status`, `pulse check`, `git add`, the commits, the pushes, `pulse new`, and `gh pr create` ([the rules that stop these prompts](../tutorials/installation#fewer-prompts-in-claude-code)), and Codex, whose sandbox keeps `.git` read-only and has no network (with the Codex rules from `/pulse-setup`, it runs `pulse new` without asking). Allow them when asked.
 

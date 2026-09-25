@@ -24,7 +24,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import config, dispatch, go, presence, ready, spec, state
+from pulse import config, dispatch, go, mapstart, presence, ready, spec, state
 
 WIDTH = 80                      # columns without a terminal, and of the demo page and the GIF (D-45)
 FEWEST, MOST = 60, 160          # the map follows its terminal's width within these
@@ -38,6 +38,13 @@ TICK = 0.5                      # seconds per frame of the live map
 BREATH = (1, .8, .6, .45, .6, .8)   # a working light's brightness per frame: one breath in 3 s (D-38)
 GREEN, DARK = (46, 229, 157), (13, 17, 23)   # that light at full brightness, and what it fades toward
 TRUE = 1 << 24                  # the colors of a truecolor terminal; 256 and 16 for the others
+# the signet beside the header, as docs/public/assets/pulse-icon.ansi draws it in 256 colors
+SIGNET = ('\033[0m \033[38;5;37m▀▀▀▀▀▀▜▄\033[0m',
+          '\033[0m \033[38;5;30m▟\033[38;5;31m▛▀\033[38;5;37m▀▀▀▐█▌\033[0m',
+          '\033[0m \033[38;5;30m▄██\033[38;5;31m███▛▀\033[0m',
+          '\033[0m\033[38;5;30m▐█▗█▛▀▘\033[0m',
+          '\033[0m\033[38;5;24m▐\033[38;5;30m▛▝▘\033[0m')
+INSET = 12                      # the header's first column: the signet, 10 wide, and a gap
 # what the map asks of a person, the most urgent first, in the color of its state
 NEXT = {"failing": "31", "asks you": "33", "your review": "33", "waits for merge": "33",
         "plan waits for you": "33", "not approved": "33", "spec rule": "90", "last run": "90", "needs a plan": "90",
@@ -344,15 +351,15 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                                                  pr.get("checks") and f"checks {pr['checks']}"])) if pr else "none"),
                  ("PLAN", seen["plan"] or "none yet")]
         return [section(f"#{n} {i['title']}"), ""] + [f" {k:<12}{v}" for k, v in facts]
-    out = [lr(p("PULSE", "1") + "  " + p(vm["repo"] or "no repo", "90"), p(vm["now"], "1"), w)]
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
     if counts["waiting"]:
         parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
     if counts["error"]:
         parts.append(dot("error") + f" {counts['error']} failing")
-    out.append("   ".join(parts))
-    if vm.get("error"):
-        out.append(p("! " + vm["error"], "33"))
+    head = ["", lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90"), p(vm["now"], "1"), w - INSET),
+            "   ".join(parts), p("! " + vm["error"], "33") if vm.get("error") else ""]
+    signet = [l if p.color >= 256 else re.sub(r"38;5;\d+", "36", l) if p.color else ANSI.sub("", l) for l in SIGNET]
+    out = [fit(mark, INSET) + text for mark, text in zip(signet, head + [""])]   # 256 colors as drawn, else cyan
     out.append("")
     if item:                              # the item view (D-44), live like the map
         return [fit(l, w) for l in out + inside(item)]
@@ -859,7 +866,7 @@ def main(args) -> int:
     if args.once or not sys.stdout.isatty():            # a pipe, a file, a chat: one frame
         print(once(demo(demo_step(time.time())) if args.demo else gather(root), color))
         return 0
-    vm, fetched, ui, status, seen, shown = None, 0.0, {"level": "map"}, "", None, []
+    vm, fetched, ui, status, seen, shown, told, waiting = None, 0.0, {"level": "map"}, "", None, [], "", ""
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
     keys = _keys()                                   # the demo too: no typed key lands in its frame
     read = None if args.demo else keys               # but it takes none
@@ -873,6 +880,11 @@ def main(args) -> int:
                 vm = demo(demo_step(time.time()))
             elif vm is None or time.time() - fetched >= REFRESH:
                 vm, fetched, fresh = gather(root), time.time(), True
+                said = mapstart.runner(root, vm)       # approved work waits: pulse go starts (#44)
+                if said and said != told:
+                    told = waiting = said
+            if waiting and ui["level"] == "map":       # the line waits: never over what a step binds
+                status, waiting = waiting, ""
             if not args.demo:
                 vm["now"] = time.strftime("%H:%M:%S")
             width, level, n = columns(), ui["level"], ui.get("at")

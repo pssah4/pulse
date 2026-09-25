@@ -23,6 +23,8 @@ It also checks the agents of the run before it claims anything. An agent that is
 | `pulse go` | starts the run in this terminal |
 | `pulse go --detach` | starts the run in a session of its own, for the night |
 
+While a [live map](./pulse-map#it-starts-pulse-go) runs, you rarely type these: the map starts `pulse go` on its own when approved work waits and no run of this clone lives (`go_autostart = false` or `PULSE_GO=off` turns that off).
+
 `--agent claude:2,codex:2` and `--cap N` change the agents and the slots for one run; `--json` prints the report as JSON at the end. `--dry-run` claims nothing and starts nothing; it prints `would plan`, `would build`, and `would take up` lines.
 
 `--detach` starts the run apart from this terminal or chat and waits until it holds the clone's run lock and has read the board, at most 10 seconds. Then it prints the pid, the log `.git/pulse/go/run.log`, and the report `.git/pulse/go/report.json`, and returns; `pulse status` shows how far the run got, and `kill <pid>` stops it as Ctrl-C would. A run that refuses to start (no `verify`, a run already in this clone, no agent to build with, a board it cannot read) prints its reason, and `--detach` exits with its code. `/pulse-go` starts the run this way, so it outlives the chat and the shell tool's time limit, and reads the report afterwards. Inside Codex, whose sandbox keeps the network and `.git` closed, `/pulse-go` gives you the command for a terminal instead.
@@ -54,7 +56,7 @@ The board and origin carry the run's progress, so every clone's map shows it ([w
 
 ## One run per clone
 
-A second `pulse go` in the same clone refuses to start while one runs (exit 2), so every agent of the clone belongs in one run. A run stopped with Ctrl-C, `kill`, or by closing the terminal stops its agents, gives the claims of the items still running back with a note, and prints the report so far; a second signal does not cut that short.
+A second `pulse go` in the same clone refuses to start while one runs (exit 2), so every agent of the clone belongs in one run. A run reads `.pulse/config.toml` once, at its start: a branch you check out while it runs changes neither its `verify` nor its base branch. A run stopped with Ctrl-C, `kill`, or by closing the terminal stops its agents, gives the claims of the items still running back with a note, and prints the report so far; a second signal does not cut that short.
 
 A run that ended without its cleanup (SIGKILL, a crash, the power) leaves its agents and claims. The next start in the same clone ends those agents, gives the claims of that run back to the ramp, and prints "took over #n from a stopped run"; the loop then claims them anew. An item with a pull request keeps its claim until the merge, and an item held for a person (below) keeps it too.
 

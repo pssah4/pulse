@@ -27,6 +27,8 @@ nothing is done until the evidence says so.
      request); on the user's yes, after that merge, run
      `pulse approve <n>` and claim again. Never approve on your own.
    - is blocked by an open item: that item comes first.
+   - names a file another item holds (`<file> is in use by #m`): #m
+     comes first; pick the next item.
    - is held by another person or another session, one of your own
      included: pick the next item. The refusal names the command that
      frees it; run that only on the user's yes. `pulse release <n> --take`
@@ -106,7 +108,8 @@ an item is invisible; `pulse check` finds it.
 
 **Found by the user, no fix wanted yet:** write the fix spec
 `_devprocess/requirements/fixes/{slug}.md` from `templates/FIX-TEMPLATE.md`,
-with the symptom and what is known about the cause. Commit it on a docs
+with the symptom and what is known about the cause, and `parent:` set;
+`pulse number --apply` names it `FIX-{ee}-{ff}-{nn}-{slug}.md`. Commit it on a docs
 branch from the base branch and push it, then register it:
 `pulse new fix "<symptom>" --parent <feature> --spec <path>`. Commit what
 it wrote, push again, and open a pull request into the base branch. Ask

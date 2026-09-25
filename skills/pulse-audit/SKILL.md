@@ -296,7 +296,9 @@ it like any other fix:
    finding; Symptom with the risk, the evidence as `path:line`, and a
    relative link to the report; Root cause from the source-to-sink
    trace; the remediation as FR-01 (EARS) and under Fix; what must keep
-   working as FR-02 (unchanged).
+   working as FR-02 (unchanged); `parent:` the affected feature (or
+   epic). Run `pulse number --apply`: it names the file
+   `FIX-{ee}-{ff}-{nn}-<slug>.md` after its place under that parent.
 2. Commit the fix spec and push the branch: `pulse new` takes a spec
    only once its commit is on origin. Then register it:
    `pulse new fix "<title>" --parent <affected feature or epic> --spec <the fix spec>`.

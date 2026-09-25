@@ -119,6 +119,16 @@ pulse setup --codex-rules
 Both write to the home directory, outside the project, which the Codex
 sandbox blocks: ask the person to approve running them outside it.
 
+In Codex, the Pulse hooks run only once the person trusted them: `/hooks`
+in the CLI (`t` trusts them all), or Trust on each hook on the Hooks
+page of the IDE extension's settings, then a new chat. Until then the session gets no rules, no
+light on the map, and no heartbeat, and `pulse claim` and
+`pulse new --draft` say so. Codex keeps the trust in
+`$CODEX_HOME/config.toml` (by default `~/.codex/config.toml`) as tables
+named `[hooks.state."pulse@...`; without one, ask the person to trust
+the hooks. Never write those tables yourself: the trust is the
+person's decision.
+
 In VS Code (the Claude Code or Codex extension, or `TERM_PROGRAM` is
 `vscode`), offer the task "Pulse map": it starts the live map by itself
 in a terminal panel of its own each time the folder opens, and
@@ -155,8 +165,9 @@ report.
 ## 4. Report
 
 Config path, anchor changes per file, `gh` status, labels created, git hook,
-the terminal command, the map task, and Codex rules, and the result of
-`pulse check`, which is clean right after setup.
+the terminal command, the map task, the Codex rules and whether the Codex
+hooks are trusted, and the result of `pulse check`, which is clean right
+after setup.
 
 Then offer to commit `.pulse/config.toml` and the agent files setup
 changed or created on a branch such as `chore/pulse-setup` and push

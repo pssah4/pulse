@@ -22,7 +22,8 @@ except ImportError:            # Python < 3.11, e.g. the macOS system python
 
 DEFAULTS = {"mode": None, "cap": 4, "base_branch": None, "repo": None, "source": None,
             "parallel": "items", "agent": "claude", "agent_timeout": 60, "verify": None,
-            "review_agent": None, "plan_approval": "auto", "map_autostart": True}
+            "review_agent": None, "plan_approval": "auto", "map_autostart": True, "ids_since": None,
+            "go_autostart": True}
 DIA_MODES = {"off": "off", "git-only": "on", "github-sync": "on"}
 PARALLEL = ("off", "items", "max")
 # How `pulse go` starts one headless agent per item, cwd = the item's worktree.
@@ -134,7 +135,15 @@ def _allow(verify) -> str:
     return " ".join(shlex.quote(f"Bash({c}:*)") for c in cmds)
 
 
+PINNED: dict = {}               # a clone's root -> the config its pulse go run read at the start
+
+
 def load(root: Path) -> dict:
+    """.pulse/config.toml of this clone, with defaults. While a pulse go run lives in this process, the
+    config it started with: a branch checked out meanwhile changes nothing (audit of #44, H-1)."""
+    pinned = PINNED.get(str(Path(root).resolve()))
+    if pinned is not None:
+        return {**pinned, "agents": dict(pinned["agents"])}
     cfg = dict(DEFAULTS)
     pulse, dia = root / ".pulse" / "config.toml", root / ".dia" / "config.toml"
     if pulse.is_file():

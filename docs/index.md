@@ -5,9 +5,9 @@ titleTemplate: Parallel, method-driven development with AI coding agents
 
 hero:
   text: |
-    When code costs almost nothing,
-    the plan becomes the product.
-  tagline: Pulse is how a team builds with coding agents. Every idea goes through a method before code gets written. Epics and features live in your repository next to the code. Pulse keeps everyone, people and agents, on the same board and builds all ready work in parallel without two agents getting in each other's way.
+    Many people. Many agents.
+    One repo. No collisions.
+  tagline: "Coding agents are fast alone and chaotic together. Pulse plans the dependencies between tasks, starts them in the right order, gives each to one agent, and never runs two at once that touch the same files. Features start as specs, from business analysis to requirements engineering, and a pull request is ready only after tests, review, and a security audit pass."
   actions:
     - theme: brand
       text: Get started
@@ -65,38 +65,32 @@ Then run `/pulse-setup` in your project (in Codex, trust the Pulse hooks when Co
 
 You never write tickets on GitHub. Epics, features, and plans are Markdown files in your repository, written by the agents together with you and reviewed in pull requests like code. GitHub only keeps the board, one small record per item, so that everyone sees the same state.
 
-```mermaid
-flowchart LR
-  subgraph repo["Your repository"]
-    S["Business analysis, epics,<br/>features, plans<br/>(Markdown next to the code)"]
-  end
-  subgraph gh["GitHub, the sync database"]
-    R["The board, one record per item:<br/>type, ready, who has it,<br/>waits for what, done"]
-  end
-  P["People and agents"]
-  S -- "pulse new registers<br/>a new item" --> R
-  P -- "pulse claim, pulse done" --> R
-  R -- "pulse status<br/>(from a local cache)" --> P
-  P -- "read the spec, build" --> S
-```
+<div class="pulse-diagram">
+<!--@include: ./diagrams/where-the-work-lives.svg-->
+</div>
 
 The `pulse` commands write these records; nobody edits them by hand. Agents ask questions instead of reading files: `pulse status --json` answers "what can I start?" from a local copy. Under the hood the records are GitHub issues with a `pulse:` label, so pull requests close them and GitHub shows dependencies for free. [Where things live](./concepts/where-things-live) has the details.
 
+## Why not just GitHub?
+
+Pulse keeps its records in GitHub issues on purpose: types, sub-issues, dependencies, assignees, and pull requests that close issues all come from GitHub. What GitHub leaves open is the moment several people each run several agents on one repository. GitHub records what exists and who has it; it does not decide what may start now.
+
+| GitHub gives you | Pulse adds |
+|---|---|
+| Dependencies between issues, shown as "blocked" | One ordered ramp: an item starts only when it is approved, its spec passes the rules, its PLAN exists, and its blockers are done |
+| One branch per agent; conflicts show up when the branches merge | The ramp holds back an item whose PLAN touches files another running item holds, before the first line of code |
+| An assignee per issue; nothing stops a second agent from taking it too | A claim per session: a second session is refused, the map shows each claim's phase and last sign of life, and a stalled item can be handed over |
+| A view of the agent sessions GitHub runs, and of Copilot's own clients | Claude Code and Codex on your own machines and subscriptions, on one live map with your teammates' work |
+| Checks and reviews on the pull request | Spec tests first, then tests, review, and security audit in fresh sessions, with fix rounds; the pull request leaves draft only when all three pass, and parallel results are merged and tested together before anyone merges |
+| Spec Kit: spec, plan, tasks, implement | The step before the spec (a business analysis with 34 methods), tech-agnostic success criteria, and checks that keep specs and PLANs to their rules |
+
+When one person works with one agent at a time, GitHub and a spec template may be all you need. Pulse pays off once several people and their agents build on the same repository at once.
+
 ## The method, one command per step
 
-```mermaid
-flowchart LR
-  BA["/pulse-ba<br/>why, and for whom<br/>(you approve)"] --> RE["/pulse-re<br/>what: epics, features<br/>(you approve each)"]
-  RE --> PL["planning<br/>how: tasks, files<br/>(pulse go plans)"]
-  PL --> B["/pulse-build<br/>spec tests first,<br/>one branch per feature"]
-  B --> T["tests<br/>verify"]
-  T --> RV["review<br/>fresh session"]
-  RV --> A["/pulse-audit<br/>fresh session"]
-  A --> PR["one pull request<br/>per feature"]
-  PR --> M["merge into develop<br/>(you merge)"]
-  B -. bug, design, requirement .-> PL
-  B -. gap .-> RE
-```
+<div class="pulse-diagram">
+<!--@include: ./diagrams/method-steps.svg-->
+</div>
 
 The steps run forward on their own and stop for you only where the diagram says so; they loop back when the work teaches something new. A red gate (tests, review, or audit) gets a fix round, and the gates start again at the tests. [`/pulse-go`](./guides/pulse-go) runs planning, build, and the three gates for every approved item in parallel, each feature on its own branch with one pull request back to the base branch. Each command has a [guide](./guides/pulse); `/pulse` tells you where you stand and what comes next.
 

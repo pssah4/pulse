@@ -1,7 +1,7 @@
 ---
 title: {short plan title}
 issue: {N}
-spec: _devprocess/requirements/features/{slug}.md
+spec: _devprocess/requirements/features/FEAT-{ee}-{nn}-{slug}.md
 decisions: []                 # decision records this plan relies on
 files:                        # every file the tasks create or change, the union of the Files column
   - {src/path/file.ext}

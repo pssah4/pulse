@@ -42,12 +42,16 @@ retrospectives.
 In Codex, every other command in this tutorial goes the same way:
 `$pulse:pulse-re` for `/pulse-re`, and so on.
 
-A new project gets a Project-BA. It is no item on the board, so the
-skill writes it on a docs branch it names after the project, here
+A new project gets a Project-BA. It is no item, but while it is
+written it holds a draft on the board, so nobody starts a second one:
+the skill looks for one (`pulse status`), registers
+`pulse new epic "Project BA: <product>" --draft --phase analysis`, and
+writes the BA on a docs branch it names after the project, here
 `docs/retrospectives`. The name comes from your idea, so your agent may
 pick another one, such as `docs/async-retro`. A BA for a new
-epic or feature in a running project starts on the board instead, as a
-draft that shows the team who analyses what (see
+epic or feature in a running project starts on the board as well, as a
+draft whose number goes into the BA as `issue:`, on the branch
+`docs/<n>-<slug>` (see
 [Business Analysis](../guides/pulse-ba#on-the-board)).
 
 ## Step 2: Determine the project scope
@@ -256,11 +260,11 @@ project.
 
 `/pulse-ba` lists the files it wrote and the HMW question, and commits the BA on its docs branch (`docs(ba): <title>`) with the scope, the HMW, the critical hypotheses, and the open questions in the commit body. Then it asks you to approve the BA, the first gate of the flow: in at most eight lines the problem, who has it, the solution hypothesis and its strongest assumption, the scope, the success signal, and the top risk, and then "Is this BA approved? Then I push the docs branch so the team can read it. Or what should change?"
 
-Name what should change, and it goes into the BA before the question comes again. Until you approve, the branch stays on your machine. Approve it, and the BA becomes `validity: Validated`, the skill pushes the branch (`git push -u origin docs/<slug>`, here `docs/retrospectives`) so your team can read it, and it continues with [`/pulse-re`](../guides/pulse-re) in the same session without asking again.
+Name what should change, and it goes into the BA before the question comes again. Until you approve, the branch stays on your machine. Approve it, and the BA becomes `validity: Validated`, the skill pushes the branch (`git push -u origin docs/<slug>`, here `docs/retrospectives`) so your team can read it, closes the Project-BA's draft with `pulse done`, and continues with [`/pulse-re`](../guides/pulse-re) in the same session without asking again.
 
 `/pulse-re` opens the first epic of a new project straight from this Project-BA, without an Item-BA. A later epic starts with an Item-BA of its own: run `/pulse-ba` again and answer "a new epic" (or "a new feature" for a feature the BA of its epic does not cover).
 
-Your agent asks before it runs these steps, unless its permission settings allow them. Claude Code, in the terminal and the VS Code extension alike, asks in its default mode before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`: here the new branch, `mkdir`, `git add`, each `git commit`, and the `git push`, and in `/pulse-re` also `pulse status`, `pulse check`, `pulse new`, and `gh pr create`. This Project-BA runs no `pulse status`; a BA for an item (epic, feature, improvement, or fix) runs it before its first question. [Fewer prompts in Claude Code](./installation#fewer-prompts-in-claude-code) names the rules that let it run these without asking. Codex asks before the branch, the commit, and the push: its sandbox keeps `.git` read-only and has no network. Allow them when asked.
+Your agent asks before it runs these steps, unless its permission settings allow them. Claude Code, in the terminal and the VS Code extension alike, asks in its default mode before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`: here the new branch, `mkdir`, `git add`, each `git commit`, and the `git push`, and in `/pulse-re` also `pulse status`, `pulse check`, `pulse new`, and `gh pr create`. Every BA, this Project-BA included, runs `pulse status` and `pulse new` before its first question, and the Project-BA `pulse done` after the push. [Fewer prompts in Claude Code](./installation#fewer-prompts-in-claude-code) names the rules that let it run these without asking. Codex asks before the branch, the commit, and the push: its sandbox keeps `.git` read-only and has no network. Allow them when asked.
 
 ## What's next
 

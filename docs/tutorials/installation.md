@@ -9,6 +9,95 @@ Pulse installs from its GitHub repository, [pssah4/pulse](https://github.com/pss
 
 **You need** Python 3.9 or newer, the GitHub CLI [`gh`](https://cli.github.com) 2.94 or newer (logged in with `gh auth login`), and a GitHub repository for your project. Pulse keeps its board there, one small record per item; everything else stays in your repository.
 
+## Step by step
+
+These steps take you from nothing to Pulse in your first project, for Claude Code and Codex, in the terminal and in the VS Code extension. Skip the tool you do not use. The sections further down explain each step, with removal; [a script](#or-let-a-script-do-steps-3-to-5) can do steps 3 to 5 for you, and [Update](#update) brings a newer Pulse.
+
+**1. Check what you need.** Python 3.9 or newer, `gh` 2.94 or newer, logged in:
+
+```bash
+python3 --version
+gh --version
+gh auth status
+```
+
+**2. Optional: remove the Digital Innovation Agents plugin.** If you used it, it holds the marketplace name `pssah4-skills` that Pulse takes over. Remove it first as [Coming from the Digital Innovation Agents plugin](#coming-from-the-digital-innovation-agents-plugin) shows.
+
+**3. Claude Code.** One install serves the terminal and the VS Code extension:
+
+```bash
+claude plugin marketplace add https://github.com/pssah4/pulse.git
+claude plugin install pulse@pssah4-skills
+```
+
+Without the `claude` command, install it from the extension instead: type `/plugins` in its prompt box ([VS Code extension](#vs-code-extension)). Check: in a new session, typing `/pulse` lists the Pulse commands.
+
+**4. Codex.** Install with the Codex CLI, also if you work only in the IDE extension; both share the install. If you have only the extension, first give every terminal a `codex` command that runs the newest binary the extension brings, then reload your profile:
+
+```bash
+echo 'codex() { "$(ls ~/.vscode/extensions/openai.chatgpt-*/bin/*/codex | sort -V | tail -1)" "$@"; }' >> ~/.zshrc
+source ~/.zshrc
+```
+
+For bash, use `~/.bash_profile` on macOS and `~/.bashrc` on Linux. Then install Pulse:
+
+```bash
+codex plugin marketplace add pssah4/pulse
+codex plugin add pulse@pssah4-skills
+```
+
+Check: in a new Codex chat, `$pulse:pulse` answers.
+
+**5. The `pulse` command**, once per machine. It runs the newest Pulse you installed, so an update needs no new step:
+
+```bash
+P="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/pssah4-skills/pulse"
+"$P/$(ls "$P" | sort -V | tail -1)/bin/pulse" setup --cli
+```
+
+With Codex only, the first line reads `P="${CODEX_HOME:-$HOME/.codex}/plugins/cache/pssah4-skills/pulse"`. If the report says `"on_path": false`, add `~/.local/bin` to your PATH:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+Open a new terminal. Check: `pulse --help` lists the commands.
+
+**6. Codex: trust the Pulse hooks.** Start `codex` in your project and pick **Trust all and continue**; later, `/hooks` in the CLI shows the list. In the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings. Optional: `pulse setup --codex-rules` lets Codex run `pulse` without asking ([details](#codex-cli-and-ide-extension)).
+
+**7. Restart.** Start a new Claude Code session, or reload the VS Code window (**Developer: Reload Window**), and restart Codex. A session that was running before the install does not see Pulse. After a change to your PATH, quit VS Code and open it again.
+
+**8. In each project.** Type `/pulse-setup` in Claude Code, `$pulse:pulse-setup` in Codex. It asks a few questions and writes `.pulse/config.toml`; commit it on a branch as [Switch it on in your project](#switch-it-on-in-your-project) shows. From then on, `/pulse` (in Codex `$pulse:pulse`) says where the work stands and what comes next.
+
+### Or let a script do steps 3 to 5
+
+```bash
+curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
+```
+
+The script finds `claude` and `codex`, also the binaries the VS Code extensions bring. It installs or updates Pulse in each, writes the `pulse` command, and asks before it adds a line to your shell profile or writes the Codex rules. It shows every command before it runs it and removes nothing: a marketplace `pssah4-skills` from another source stays as it is, and the script points you to step 2. `--dry-run` shows what it would run, and `--yes` answers yes to every question (`curl -fsSL https://pssah4.github.io/pulse/install.py | python3 - --dry-run`). Steps 6 to 8 stay with you; the script lists them at the end. Read it before you run it: [install.py](https://pssah4.github.io/pulse/install.py).
+
+## Update
+
+Pulse does not update itself, and neither Claude Code nor Codex refreshes its marketplace on its own. Update every tool you installed Pulse in:
+
+| Where | Update |
+|---|---|
+| Claude Code, terminal | `claude plugin marketplace update pssah4-skills`, then `claude plugin update pulse@pssah4-skills` |
+| Claude Code, VS Code extension | type `/plugins`, refresh `pssah4-skills` in the **Marketplaces** tab, then click the update icon on the Pulse row in the **Plugins** tab |
+| Codex, CLI and IDE extension | `codex plugin marketplace upgrade pssah4-skills`, then `codex plugin add pulse@pssah4-skills` |
+| Codex without the plugin | `git -C ~/.codex/pulse pull` |
+
+The install script does the same for every install it finds:
+
+```bash
+curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
+```
+
+Then restart: start a new Claude Code session, or reload the VS Code window (**Developer: Reload Window**), and restart Codex or start a new chat in its IDE extension. A session that was running keeps the old version, and a Codex session still points at the folder the update deleted.
+
+Nothing else needs doing. The `pulse` command runs the newest version you installed, and your projects keep their `.pulse/config.toml`. `claude plugin list` and `codex plugin list` show the version. When a release needs a step in your projects, its notes say so under **Upgrading**, in the [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) and on the [release page](https://github.com/pssah4/pulse/releases).
+
 ## Claude Code
 
 One installation serves the terminal and the VS Code extension: a plugin you add in one shows up in the other.
@@ -200,7 +289,7 @@ In VS Code, `/pulse-setup` may also have written the task "Pulse map" to `.vscod
 
 ### Fewer prompts in Claude Code
 
-In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for an item, an epic, a feature, an improvement, or a fix; a Project-BA skips it), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, `pulse new`, and `gh pr create`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. It still asks before `approve`, `approve-plan`, `rank`, and `done`, which a person decides, before a handover with `--take`, and before `pulse -- <command>`:
+In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for the whole project, an epic, a feature, an improvement, or a fix), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, `pulse new`, and `gh pr create`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. It still asks before `approve`, `approve-plan`, `rank`, and `done`, which a person decides, before a handover with `--take`, and before `pulse -- <command>`:
 
 ```json
 {

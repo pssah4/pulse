@@ -79,7 +79,8 @@ new work starts.
 ## 4. Anticipated epics (A4)
 
 Template: `skills/pulse-re/templates/EPIC-TEMPLATE.md`, reduced. Location:
-`_devprocess/requirements/epics/{slug}.md`.
+`_devprocess/requirements/epics/{slug}.md`; `pulse number --apply` renames
+it to `EPIC-{nn}-{slug}.md` once every spec of the run is written.
 
 ```yaml
 ---
@@ -103,7 +104,17 @@ source: /pulse-realign on {date}
 - {module or directory, short description}
 - {route or API surface}
 - {test file describing this capability cluster}
+
+## Items
+
+- [{feature title}](../features/{feature slug}.md)
+  - [{fix title}](../fixes/{fix slug}.md)
 ```
+
+One Items line per feature this epic groups, each fix or improvement two
+spaces deeper below its feature; no `#n` while the item has no record.
+`pulse number --apply` puts the IDs into these lines, and `pulse new`
+adds the issue number when A7 registers an item.
 
 No obvious clusters: a single `observed-capabilities.md`, split later.
 Hypothesis prose is written by `/pulse-ba`, never invented here.
@@ -111,14 +122,17 @@ Hypothesis prose is written by `/pulse-ba`, never invented here.
 ## 5. Feature specs (A4)
 
 Template: `skills/pulse-re/templates/FEATURE-TEMPLATE.md`, reduced scope.
-Location: `_devprocess/requirements/features/{slug}.md`. Leave `parent:`
-out: for a partially implemented feature, A7 pushes the specs, then runs
-`pulse new feat "<title>" --parent <epic> --spec <this spec>`, which
-writes `parent:` and lists the feature in the epic's Items.
+Location: `_devprocess/requirements/features/{slug}.md`, renamed to
+`FEAT-{ee}-{nn}-{slug}.md` by `pulse number --apply`. Every feature
+names its epic in `parent:`, shipped or not; the epic lists it under
+`## Items`. For a partially implemented feature, A7 pushes the specs,
+then runs `pulse new feat "<title>" --parent <epic> --spec <this spec>`,
+which writes `issue:` and adds the number to its Items line.
 
 ```yaml
 ---
 title: {short capability name}
+parent: ../epics/{epic slug}.md
 date: {YYYY-MM-DD}
 validity: Observed (not validated)
 source: /pulse-realign on {date}
@@ -218,7 +232,10 @@ security findings, and wrong behavior get a fix spec from
 `skills/pulse-build/templates/FIX-TEMPLATE.md` under
 `_devprocess/requirements/fixes/{slug}.md`; everything else gets an
 improvement spec from `skills/pulse-build/templates/IMP-TEMPLATE.md`
-under `_devprocess/requirements/improvements/{slug}.md`. The frontmatter
+under `_devprocess/requirements/improvements/{slug}.md`. Its `parent:`
+names the feature (or the epic) the finding belongs to, and the epic lists
+it under that feature; `pulse number --apply` names it
+`FIX-{ee}-{ff}-{nn}-{slug}.md` or `IMP-...`. The frontmatter
 adds `validity: Observed (not validated)` and
 `source: /pulse-realign on {date}`; Symptom (fix) or Reason
 (improvement) carries:

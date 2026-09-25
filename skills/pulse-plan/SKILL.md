@@ -133,7 +133,11 @@ decision changes). `pulse go` and the ramp check P1 to P5 mechanically:
 
 Once the PLAN is saved, run `pulse claim <n>` again (this session holds
 the item already): the claim then carries the PLAN's `files:`, and every
-ramp keeps other items off those files without a fetch. Commit the PLAN
+ramp keeps other items off those files without a fetch. If it answers
+`<file> is in use by #m`, the claim stays without them and the item
+waits for #m: commit and push the PLAN as below, then, unless `pulse go`
+holds the item, give it back with `pulse release <n> --note "waits for
+#m: <file>"` and build nothing. Commit the PLAN
 alone as `docs(plan): #<n>` on the item's branch (`<type>/<n>-<slug>`)
 and push it: the ramp and every teammate see it there, and the build
 continues on that branch. `pulse go` plans approved items with a ready

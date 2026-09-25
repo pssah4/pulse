@@ -5,6 +5,88 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-25
+
+### Added
+
+- Logical IDs for specs. A spec's file name starts with its type, the
+  numbers of its parent, and its own counter: `EPIC-04`, `FEAT-04-02`,
+  `FIX-04-02-01`, `IMP-04-02-01`. A folder listing groups the features of
+  an epic, and every ID names its epic and feature. The issue number
+  stays the ID of the record.
+- `pulse number` shows every spec whose file name lacks the ID of its
+  place in the tree; `--apply` renames them, rewrites every path to them,
+  puts the IDs into the epics' `## Items` lines, and moves the records
+  along (an open record once the base branch has the new path). A new ID
+  never repeats one that any branch, the history, or a worktree has used.
+- `pulse check` rule C10 reports a spec without the ID of its place.
+- `ids_since` in `.pulse/config.toml` lets a project number its specs
+  anew from a commit, for example version 2 on the history of version 1.
+- The installation page starts with one numbered sequence, from the
+  prerequisites to `/pulse-setup` in a project, for Claude Code and
+  Codex in the terminal and the VS Code extension; the README's quick
+  start follows it.
+- An optional install script:
+  `curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -`
+  installs or updates Pulse with every tool it finds, also the binaries
+  the VS Code extensions bring, writes the `pulse` command, asks before
+  it changes your shell profile or writes the Codex rules, and removes
+  nothing. `--dry-run` shows what it would run.
+- The live map starts `pulse go` apart from itself when approved work
+  waits and no run of this clone lives, so an approval, yours or a
+  teammate's, starts the build without anyone typing `pulse go`. It
+  starts only with the `.pulse/config.toml` that origin holds, never with
+  the one of a checked-out branch, and what the last run did not finish
+  waits for a person. `go_autostart = false` in `.pulse/config.toml` or
+  `PULSE_GO=off` turns it off.
+
+### Changed
+
+- The new logo: the wordmark in the navigation of the documentation
+  site and at the top of the README, the app icon as the favicon, petrol
+  as the brand color, and a petrol-tinted dark mode. The landing page
+  says what Pulse adds to GitHub, and its two diagrams follow the theme.
+- The map shows the Pulse signet beside its header: in 256 colors as
+  drawn, cyan in a terminal with 16 colors, plain without color.
+- The installation page has one Update section: the commands for every
+  tool, the install script, what to restart, and where a release names
+  a step for your projects.
+- The operating model and the review skill: a reviewer agent in a fresh
+  session checks every pull request against its spec, PLAN, and
+  decisions, and the person reads it at feature level and merges.
+- `pulse new` puts the spec's ID in front of the record's title and its
+  `## Items` line. An `## Items` line may stand without an issue number,
+  for a shipped feature that has no record.
+- `/pulse-realign` names the epic of every feature, shipped or not, and
+  lists all features in their epic's `## Items`.
+- A `pulse go` run reads `.pulse/config.toml` once, at its start: a
+  branch checked out while it runs changes neither its `verify` nor its
+  base branch.
+- `/pulse-realign` and a Project-BA start with a draft on the board, as an
+  Item-BA and `/pulse-re` do: the team and every map see the work from its
+  first step, a heartbeat keeps it alive, and the draft closes once the
+  work lives in its own records or the pushed BA.
+- `pulse new --draft` refuses a title that an open draft of the same type
+  has already and names that draft and who holds it, so two people
+  cannot start the same realign or Project-BA.
+- A Codex session whose Pulse hooks never ran hears so the first time it
+  claims work: `/hooks` in the CLI, or the Hooks page of the IDE
+  extension's settings, trusts them, and a new chat picks them up.
+  `/pulse-setup` reports whether they are trusted.
+
+### Fixed
+
+- `pulse claim` refuses an item whose files another running item holds,
+  as the ramp does, and names the file and the holder: a build started
+  by hand with an item number no longer works on the same file as
+  another item.
+
+### Upgrading
+
+- Run `pulse number --apply` once and commit the result; until then
+  `pulse check` reports C10 for every spec. After the merge, run it once
+  more so the open records link the new paths.
+
 ## [0.1.0] - 2026-09-25
 
 The first public release. Pulse replaces the Digital Innovation Agents

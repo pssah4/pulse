@@ -7,6 +7,10 @@ file counts (the base branch, which every worktree starts from).
 The tree epic > feature > fix or improvement lives in the repository too:
 every spec names its `parent:` as a relative path, and the epic lists its
 items under `## Items`. link_problems() compares both directions locally.
+Each file name starts with the spec's ID, its type and the numbers of its
+parent plus its own counter (EPIC-04, FEAT-04-02, FIX-04-02-01); numbering()
+finds the specs whose name does not carry the ID their place calls for,
+renumber() moves them. The issue number stays the ID of the record.
 """
 from __future__ import annotations
 
@@ -29,8 +33,14 @@ REQ = re.compile(r"^[^\S\n]*[-*]\s*(?:\*\*|`)?(FR-\d+)\b(.*)$", re.M)  # [^\S\n]
 MODAL = re.compile(r"\b(SHALL|MUST|SOLL|MUSS)\b")
 PRIORITY = ("P0", "P1", "P2")
 EFFORT = ("XS", "S", "M", "L")                              # XL: split it first
-# an open entry ends at the next item
-ITEM = re.compile(r"^( *)- \[#(\d+)(?!\d)(?:(?!\n *- \[#)[^\]])*\]\(([^)\s]+)\)", re.M)
+# an open entry ends at the next item; `#n ` leads it once the item has a record
+ITEM = re.compile(r"^( *)- \[(?:(?!\n *- \[)[^\]])*\]\(([^)\s]+)\)", re.M)
+FOLDERS = {"epics": "EPIC", "features": "FEAT", "improvements": "IMP", "fixes": "FIX"}
+SPEC_ID = re.compile(r"^(EPIC|FEAT|IMP|FIX)-(\d+(?:-\d+)*?)-(?=[^\W\d_])")     # the name goes on with a letter
+LETTER = re.compile(r"[^\W\d_]")                          # any letter, ü too, as SPEC_ID reads one
+LIKE_ID = re.compile(r"^(?:EPIC|FEAT|IMP|FIX)-\d")
+TITLE_ID = re.compile(r"^(?:EPIC|FEAT|IMP|FIX)(?:-\d+)+\s+")
+ENTRY = re.compile(r"^( *- \[)(#\d+ )?(?:(?:EPIC|FEAT|IMP|FIX)(?:-\d+)+ )?([^\]\n]*\]\(([^)\s]+)\))", re.M)
 TERMS = Path(__file__).resolve().parents[1] / "skills" / "pulse-re" / "references" / "tech-agnostic-rules.md"
 REQUIREMENTS = "_devprocess/requirements"
 
@@ -161,28 +171,42 @@ def set_front(path: Path, key: str, value: str) -> None:
 def items(text: str) -> list:
     """[(depth, link)] of the epic's Items list, in order."""
     content = sections(text).get("items", "")
-    return [(len(m.group(1)) // 2, m.group(3)) for m in ITEM.finditer(content)]
+    return [(len(m.group(1)) // 2, m.group(2)) for m in ITEM.finditer(content)
+            if Path(m.group(2)).parent.name in FOLDERS]      # a board link or the BA is no item
 
 
 def add_item(epic: Path, number: int, title: str, link: str, under: str = None) -> None:
-    """Append `- [#n title](link)` to the epic's Items list; under a feature when given."""
+    """Append `- [#n title](link)` to the epic's Items list; under a feature when given. A line for
+    the link without its number, as /pulse-realign lists an item that has no record, gets it."""
     lines = epic.read_text(encoding="utf-8").splitlines()
     entry = ("  " if under else "") + f"- [#{number} {title}]({link})"
-    if any(f"[#{number} " in l and f"]({link})" in l for l in lines):      # listed already, by hand or a rerun
-        return
     start = next((k for k, l in enumerate(lines) if re.match(r"^## +Items\s*$", l)), None)
     if start is None:
         lines += ["", "## Items", "", entry]
     else:
         end = next((k for k in range(start + 1, len(lines)) if lines[k].startswith("## ")), len(lines))
+        have = next((k for k in range(start + 1, end) if f"]({link})" in lines[k]), None)
+        if have is not None and f"[#{number} " in lines[have]:       # listed already, by hand or a rerun
+            return
         at = max([k for k in range(start + 1, end) if lines[k].lstrip().startswith("- [")], default=start + 1)
+        parent = None
         if under:
             parent = next((k for k in range(start + 1, end) if f"]({under})" in lines[k]), None)
             if parent is not None:
                 at = parent
                 while at + 1 < end and lines[at + 1].startswith("  - ["):
                     at += 1
-        lines.insert(at + 1, entry)
+            else:                                                # its feature is not listed yet: it comes first
+                found = id_of(under)
+                lines.insert(at + 1, f"- [{id_text(*found) if found else Path(under).stem}]({under})")
+                parent, at, end = at + 1, at + 1, end + 1
+        if have is not None and (not under or parent is None or parent < have <= at):
+            lines[have] = entry                                  # in its place already
+        else:
+            if have is not None:                                 # listed under another feature
+                del lines[have]
+                at -= have < at
+            lines.insert(at + 1, entry)
     epic.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -215,3 +239,168 @@ def link_problems(root: Path) -> list:
         elif listed.get(child) != up and str(front(specs[child]).get("issue", "")).lstrip("#").isdigit():
             out.append((rel(child), f"parent {front(specs[child])['parent']} does not list it under Items"))
     return sorted(out)
+
+
+def id_of(name) -> tuple:
+    """("FEAT", (4, 2)) for a spec file named FEAT-04-02-speech-input.md; None without an ID."""
+    m = SPEC_ID.match(Path(str(name)).name)
+    return (m.group(1), tuple(int(n) for n in m.group(2).split("-"))) if m else None
+
+
+def id_text(kind: str, numbers: tuple) -> str:
+    return kind + "".join(f"-{n:02d}" for n in numbers)
+
+
+def with_id(path, title: str) -> str:
+    """The title with the ID of its spec's file name in front, once; a spec without one keeps it."""
+    found = id_of(path) if path else None
+    return f"{id_text(*found)} {TITLE_ID.sub('', title, count=1)}" if found else title
+
+
+def registered(root: Path) -> dict:
+    """{issue number: spec path} for every spec that names its record in issue:."""
+    out = {}
+    for folder in FOLDERS:
+        for p in (root / REQUIREMENTS / folder).glob("*.md"):
+            n = str(front(p.read_text(encoding="utf-8", errors="replace")).get("issue", "")).lstrip("#")
+            if n.isdigit():
+                out[int(n)] = p.relative_to(root).as_posix()
+    return out
+
+
+def _git_out(root: Path, *args) -> str:
+    out = subprocess.run(["git", "-C", str(root), "-c", "core.quotePath=false", *args],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return out.stdout if out.returncode == 0 else ""
+
+
+def _taken(root: Path) -> set:
+    """(kind, numbers) of every ID a spec's file name has had: in the history of every ref, branches
+    of other clones as far as the last fetch brought them, and in the working tree of every worktree.
+    With ids_since in the config, a project numbers anew from that commit: only what came after it,
+    on refs and in worktrees that have it, counts."""
+    since = config.load(root).get("ids_since")
+    if since and not _git_out(root, "rev-parse", "--verify", "-q", f"{since}^{{commit}}"):
+        config._warn(f"ids_since {since} is no commit here, so all history counts")
+        since = None
+    if since:
+        refs = _git_out(root, "for-each-ref", "--contains", since, "--format=%(refname)").split()
+        names = _git_out(root, "log", *refs, f"^{since}", "--name-only", "--format=", "--",
+                         REQUIREMENTS).splitlines() if refs else []
+    else:
+        names = _git_out(root, "log", "--all", "--name-only", "--format=", "--", REQUIREMENTS).splitlines()
+    trees, head = [root], None
+    for line in _git_out(root, "worktree", "list", "--porcelain").splitlines() + [""]:
+        if line.startswith("worktree "):
+            tree = Path(line[9:])
+        elif line.startswith("HEAD "):
+            head = line[5:]
+        elif not line and head:
+            if not since or subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", since, head],
+                                           capture_output=True).returncode == 0:
+                trees.append(tree)
+            head = None
+    names += [p.name for t in trees for p in (t / REQUIREMENTS).glob("*/*.md")]
+    return {found for n in names if (found := id_of(n))}
+
+
+def numbering(root: Path) -> list:
+    """[(spec path, problem, new path or None)] for each spec whose file name does not carry the ID its
+    place in the tree calls for: it has none, one of another folder's type, one that does not fit its
+    parent, or one another spec holds too (the one on the base branch keeps it). Parents come first and
+    their children are measured against the parent's new ID. A new ID is the next after every one that
+    _taken() finds, so none is handed out twice, and a gap stays a gap."""
+    base, top = root / REQUIREMENTS, root.resolve()
+    specs = []                                    # (path, kind, parent), parents before children
+    for folder, kind in FOLDERS.items():
+        found = []
+        for p in (base / folder).glob("*.md"):
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if not split(text)[0]:                # a README beside the specs is no spec
+                continue
+            fm = front(text)
+            n = str(fm.get("issue", "")).lstrip("#")
+            found.append((int(n) if n.isdigit() else float("inf"), p.name, p.resolve(),
+                          (p.parent / fm["parent"]).resolve() if fm.get("parent") else None))
+        specs += [(p, kind, up) for _, _, p, up in sorted(found)]
+    holders = {}
+    for p, _, _ in specs:
+        if id_of(p):
+            holders.setdefault(id_of(p), []).append(p)
+    rel = lambda p: p.relative_to(top).as_posix()
+    final, out, taken = {}, [], None
+    for p, kind, up in specs:
+        if up is not None and up not in final:    # a parent that is gone, or has no ID yet: C9 names it
+            continue
+        above, got = final[up][1] if up is not None else (), id_of(p)
+        if got is None:
+            why = "no ID in the file name"
+        elif got[0] != kind:
+            why = f"{id_text(*got)} is no ID for the folder {p.parent.name}"
+        elif got[1][:-1] != above:
+            why = f"{id_text(*got)} does not fit " + (f"its parent {id_text(*final[up])}" if up else "a spec without parent")
+        else:
+            same = holders[got]
+            keeper = next((q for q in same if on_base(root, rel(q)) is not None), same[0]) if len(same) > 1 else p
+            if keeper == p:
+                final[p] = got
+                continue
+            why = f"{id_text(*got)} is taken by {rel(keeper)}"
+        name = p.name[SPEC_ID.match(p.name).end():] if got else p.name
+        if not LETTER.match(name) or (got is None and LIKE_ID.match(name)):
+            out.append((rel(p), "the name must start with a letter, rename it by hand", None))
+            continue
+        taken = _taken(root) if taken is None else taken
+        n = 1 + max((t[1][-1] for t in taken if t[0] == kind and t[1][:-1] == above), default=0)
+        final[p] = (kind, above + (n,))
+        taken.add(final[p])
+        out.append((rel(p), why, rel(p.parent / f"{id_text(*final[p])}-{name}")))
+    return out
+
+
+def _bytes_text(path: Path) -> str:
+    """The file as text, every byte kept: not UTF-8 and CRLF come back as they were."""
+    return path.read_bytes().decode("utf-8", "surrogateescape")
+
+
+def renumber(root: Path, moves: list) -> None:
+    """Rename each spec (old path, new path), with git where git tracks it, and rewrite every path to it
+    in the repository's text files, tracked or not: a path that leads to the old file, from the file's
+    folder or from the repository root, gets the new name; every other byte stays. An epic's Items
+    lines take the new ID into their text."""
+    top = root.resolve()
+    moves = [(Path(old), Path(new)) for old, new in moves if new]
+    if not moves:
+        return
+    olds = {(top / o).resolve(): n.name for o, n in moves}
+    for old, new in moves:
+        _git_out(root, "mv", "-k", old.as_posix(), new.as_posix())
+        if (root / old).exists():                 # not tracked yet
+            (root / old).rename(root / new)
+    # a path token that ends in an old name: `../features/x.md`, `features/x.md`, `./x.md`, `x.md`
+    token = re.compile(r"(?<![\w./-])((?:[\w.-]*/)*)(" + "|".join(re.escape(o.name) for o, _ in moves) + r")(?!\w)")
+
+    def moved(m, here):
+        for base, path in ((here, m.group(1)), (top, m.group(1).lstrip("/"))):      # /x from the root, as GitHub reads it
+            name = olds.get((base / (path + m.group(2))).resolve())
+            if name:
+                return m.group(1) + name
+        return m.group(0)
+    grep = ["grep", "-l", "-I", "--untracked", "-F"] + [a for o, _ in moves for a in ("-e", o.name)]
+    for f in _git_out(root, *grep).splitlines():
+        path = top / f
+        text = _bytes_text(path)
+        new = token.sub(lambda m: moved(m, path.parent), text)
+        if new != text:
+            path.write_bytes(new.encode("utf-8", "surrogateescape"))
+    ids = {n.name: id_text(*id_of(n)) for _, n in moves}
+    for epic in (root / REQUIREMENTS / "epics").glob("*.md"):
+        text = _bytes_text(epic)
+        m = re.search(r"^## +Items[ \t]*\r?$(.*?)(?=^## |\Z)", text, re.M | re.S)
+        if not m:
+            continue
+        one = lambda e: (f"{e.group(1)}{e.group(2) or ''}{ids[Path(e.group(4)).name]} {e.group(3)}"
+                         if Path(e.group(4)).name in ids else e.group(0))
+        new = text[:m.start(1)] + ENTRY.sub(one, m.group(1)) + text[m.end(1):]
+        if new != text:
+            epic.write_bytes(new.encode("utf-8", "surrogateescape"))

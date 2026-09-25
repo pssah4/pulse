@@ -200,6 +200,11 @@ def set_rank(root: Path, repo_name: str, n: int, value: float, run=gh) -> None:
     _set_line(root, repo_name, n, RANK, "Rank: " + ("%f" % value).rstrip("0").rstrip("."), run)
 
 
+def set_spec(root: Path, repo_name: str, n: int, path: str, run=gh) -> None:
+    """The record links its spec at a new path (pulse number renamed it)."""
+    _set_line(root, repo_name, n, SPEC, f"Spec: `{path}`", run)
+
+
 def drop_cache(root: Path) -> None:
     try:
         cache_path(root).unlink()

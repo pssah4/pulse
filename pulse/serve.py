@@ -44,14 +44,21 @@ def style(code: str) -> str:
 
 
 def to_html(line: str) -> str:
-    out = []
+    """A code adds to the ones before it, as in a terminal (a span inside the open ones); a reset
+    ends them all, and so does the end of the line."""
+    out, open_ = [], 0
     for part in re.split(r"(\033\[[0-9;]*m)", line):
         if part.startswith("\033["):
             code = part[2:-1]
-            out.append("</span>" if code == "0" else f'<span style="{style(code)}">')
+            if code == "0":
+                out.append("</span>" * open_)
+                open_ = 0
+            else:
+                out.append(f'<span style="{style(code)}">')
+                open_ += 1
         else:
             out.append(part.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-    return "".join(out)
+    return "".join(out) + "</span>" * open_
 
 
 def frame_html(vm: dict, frame: int = 0) -> str:

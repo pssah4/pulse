@@ -9,6 +9,7 @@ import argparse
 import collections
 import json
 import os
+import posixpath
 import signal
 import subprocess
 import sys
@@ -203,17 +204,9 @@ def _detach(root, args):
     (go.pid names it) and for a board read since its start (the cache); a run that ended before,
     e.g. refused without verify or unable to read the board, prints what it wrote and returns its
     exit code."""
-    common = config.pulse_dir(root)
-    log = common / "go" / "run.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    argv = [str(setup.PULSE_BIN), "go"] + (["--agent", args.agent] if args.agent else []) + \
-        (["--cap", str(args.cap)] if args.cap else [])
-    with open(log, "a", encoding="utf-8") as out:
-        out.write(f"--- pulse go --detach, {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        out.flush()
-        since, started = out.tell(), time.time()
-        p = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                             start_new_session=True)
+    common, started = config.pulse_dir(root), time.time()
+    p, log, since = mapstart.start_go(root, (["--agent", args.agent] if args.agent else []) +
+                                      (["--cap", str(args.cap)] if args.cap else []))
     end = time.time() + 10
     while p.poll() is None and time.time() < end:
         try:           # the board read after the lock is where gh fails: offline, no login (f9-docs)
@@ -341,6 +334,15 @@ def cmd_new(args):
             print(f"pulse new: {args.spec} is not on origin as committed here; "
                   f"commit it, then: git push -u origin {branch}")
             return 2
+    if args.draft and not args.issue:      # one draft per type and title: two people start the same realign or BA
+        same = next((i for i in state.load(root, repo, run=run, fresh=True) if i.get("draft")
+                     and i["type"] == args.type and i["title"].casefold() == args.title.casefold()), None)
+        if same:
+            print(f"pulse new: #{same['number']} is the draft \"{same['title']}\" already, held by "
+                  f"{same.get('claimed_by') or 'nobody'}; a free one or one of yours goes on with "
+                  f"--issue {same['number']}, one another person holds stays theirs")
+            return 1
+    args.title = spec.with_id(args.spec, args.title)          # FEAT-04-02 Speech input, on the board too
     rel = {"parent": args.parent, "blocked_by": args.blocked_by or []}
     if args.issue:
         ok, why = state.attach(root, repo, args.issue, args.type, args.spec, run=run, title=args.title, **rel)
@@ -367,7 +369,8 @@ def link(root, repo, n, args, run):
     if not spec.split(path.read_text(encoding="utf-8"))[0]:
         return
     spec.set_front(path, "issue", str(n))
-    up = state.spec_of(repo, args.parent, run) if args.parent else None     # a done feature is a parent too
+    # the spec that names the parent here, else the one its record links (a done feature is a parent too)
+    up = (spec.registered(root).get(args.parent) or state.spec_of(repo, args.parent, run)) if args.parent else None
     if not up or not (root / up).is_file():
         return
     spec.set_front(path, "parent", os.path.relpath(root / up, path.parent))
@@ -377,6 +380,58 @@ def link(root, repo, n, args, run):
         feature, epic = epic, (epic.parent / grand).resolve()
     rel = lambda p: os.path.relpath(p, epic.parent)
     spec.add_item(epic, n, args.title, rel(path), under=rel(feature) if feature else None)
+
+
+def cmd_number(args):
+    """Every spec's file name starts with the ID its place in the tree calls for; with --apply the specs
+    move there, every path to them follows, and so do their records."""
+    root = _root()
+    found = spec.numbering(root)
+    for old, why, new in found:
+        print(f"{old} -> {Path(new).name}: {why}" if new else f"{old}: {why}")
+    moves = [(old, new) for old, _, new in found if new]
+    done = "pulse number: every spec has its ID"
+    if not args.apply:
+        if moves or not found:
+            print("pulse number --apply renames them" if moves else done)
+        return 1 if len(moves) < len(found) else 0         # a name to change by hand
+    spec.renumber(root, moves)
+    try:
+        _follow(root)
+    except state.StateError as e:
+        print(f"pulse number: {e}; the records follow on the next pulse number --apply")
+    if moves or not found:
+        print(f"renamed {len(moves)} spec{'s' if len(moves) != 1 else ''}: commit them" if moves else done)
+    return 1 if len(moves) < len(found) else 0
+
+
+def _follow(root):
+    """Each record links its spec where the spec now lies and carries its ID in the title. A record moves
+    once the base branch has the new path and no longer the one it links, since agents read the spec
+    there: before the merge it waits, and a clone behind the base branch changes nothing."""
+    local = spec.registered(root)
+    if not local:
+        return
+    run = state.gh
+    repo = state.repo(root, run=run)
+    ready.fetch(root)
+    base = config.base_ref(root)
+    records = json.loads(run(["issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
+                              "--json", "number,title,body"]))
+    for r in sorted(records, key=lambda r: r["number"]):
+        path, m = local.get(r["number"]), state.SPEC.search(r.get("body") or "")
+        if not path or not m:                    # no spec of ours, or a draft
+            continue
+        n, now, title = r["number"], m.group(1), spec.with_id(path, r["title"])
+        if now != path and (spec.on_base(root, now) is not None or spec.on_base(root, path) is None):
+            print(f"#{n} keeps its record until {path} is on {base}: run pulse number --apply again after the merge")
+            continue
+        if now != path:
+            state.set_spec(root, repo, n, path, run=run)
+        if title != r["title"]:
+            run(["issue", "edit", str(n), "--repo", repo, "--title", title])
+        if now != path or title != r["title"]:
+            print(f"#{n} links {path}")
 
 
 def _refs(numbers):
@@ -469,9 +524,18 @@ def cmd_beat(args):
 
 def cmd_claim(args):
     """The claim carries the files the work changes, so every ramp holds them without a fetch (WP-56):
-    those of the PLAN this clone has, or --files for work without one (hotfix lane)."""
+    those of the PLAN this clone has, or --files for work without one (hotfix lane). A file another
+    running item holds refuses it, as the ramp locks it (#46)."""
     root, repo, run = _ctx()
-    files = args.files or dispatch.plan_files(root).get(args.n)
+    plans = dispatch.plan_files(root)
+    files = args.files or plans.get(args.n)
+    if files:
+        # ponytail: read, then claim; two claims on different items that share a file in the same
+        # seconds can both win, and the ramp shows both. A read after the claim would close it.
+        others = [i for i in state.load(root, repo, run=run, fresh=True) if i["number"] != args.n]
+        hit = dispatch.clash([posixpath.normpath(f) for f in files], dispatch.held(others, plans))
+        if hit:
+            return _said((False, f"#{args.n}: {hit[0]} is in use by #{hit[1]}; start #{args.n} once #{hit[1]} is done"))
     rc = _said(state.claim(root, repo, args.n, run=run, take=args.take, files=files))
     if rc == 0:
         mapstart.ensure(root)
@@ -586,7 +650,8 @@ def parser() -> argparse.ArgumentParser:
             ("release", cmd_release, "give an item back",
              "also from another session of mine, or hand another person's claim over (with a comment)"),
             ("done", cmd_done, "close an item", "close it whoever holds it"),
-            ("claim", cmd_claim, "hold an item for this session; exit 1 when another person or session has it",
+            ("claim", cmd_claim, "hold an item for this session; exit 1 when another person or session has it, "
+                                 "or another running item holds one of its files",
              "take over from a session of mine that has ended")):
         c = add(name, fn, text, plumb=name == "claim")
         c.add_argument("n", type=int)
@@ -637,6 +702,9 @@ def parser() -> argparse.ArgumentParser:
     c = add("check", check.main, "drift a script can see: links, paths, state, caps, stubs", plumb=True)
     c.add_argument("--spec", nargs="+", action="extend", metavar="PATH", help="only R1 to R6, on these spec "
                    "files as they are here: what pulse approve refuses once they are merged; asks GitHub nothing")
+    c = add("number", cmd_number, "start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them")
+    c.add_argument("--apply", action="store_true", help="rename them, rewrite the paths to them, "
+                                                        "and move their records along")
     c = add("migrate", cmd_migrate, "DIA project -> Pulse: preview, then --local, then --issues", plumb=True)
     step = c.add_mutually_exclusive_group()
     step.add_argument("--local", action="store_true",

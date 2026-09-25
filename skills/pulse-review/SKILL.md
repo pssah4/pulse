@@ -94,7 +94,7 @@ git check-ignore -q _devprocess/temp/testing/x || printf '\n_devprocess/temp/\n'
 | Tests | a test that asserts nothing, or mocks the unit under test | slow or brittle tests |
 | Security | an obvious hole: a secret in code, unchecked input into a shell, a query, or a path. Recommend `/pulse-audit` with branch scope | |
 
-Block only what must change before a person reviews the PR. Everything
+Block only what must change before a person merges the PR. Everything
 else is a note. A review full of notes gets skimmed, and the one finding
 that mattered goes with it.
 
@@ -118,8 +118,8 @@ The builder fixes blocking findings test-first and commits, then a fresh
 review looks again. At most two fix rounds; after that the pull request
 stays draft and its body names what is still open. Notes do not block.
 The builder may take them along, or ask the user once whether they
-become improvement items (a short spec each, committed and pushed, then
-`pulse new imp ... --spec`).
+become improvement items (a short spec each with `parent:` set, named by
+`pulse number --apply`, committed and pushed, then `pulse new imp ... --spec`).
 
 ## Repo mode
 
@@ -144,8 +144,8 @@ feels like it is drifting. `/pulse` offers it when the newest
 Write `_devprocess/analysis/REVIEW-<YYYY-MM-DD>.md`: at most ten
 findings, ordered by harm, each with place, evidence, and a suggested
 change. Then ask the user once which findings become improvement items;
-each gets a short spec, committed on a docs branch and pushed, then
-`pulse new imp "<title>" --spec <path>`.
+each gets a short spec with `parent:` set, named by `pulse number --apply`,
+committed on a docs branch and pushed, then `pulse new imp "<title>" --spec <path>`.
 
 ## Keywords
 Code review, review, PR review, clean code, maintainability, lean code,

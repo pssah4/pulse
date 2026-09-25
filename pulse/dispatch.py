@@ -125,13 +125,26 @@ def _stackable(items: list) -> list:
     return out
 
 
+def held(items: list, files: dict) -> dict:
+    """{file: item} of the running items: the files of their PLANs here and the files their claims
+    name, which hold even where a PLAN is unpushed or there is none."""
+    return {f: i["number"] for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")
+            for f in files.get(i["number"], []) + (i.get("claimed_files") or [])}
+
+
+def clash(mine: list, held: dict, skip=None):
+    """(file, holder) for the first of mine another item holds, else None. A held directory holds
+    what is in it; skip, the item this one stacks on, holds nothing for it."""
+    return next(((f, n) for f in mine for h, n in held.items() if n != skip
+                 and (f == h or f.startswith(h + "/") or h.startswith(f + "/"))), None)
+
+
 def ramp(items: list, files: dict, cap: int, me: str, level: str = "items", gates=None) -> dict:
     """gates: {issue: why it waits} from ready.gates; a gated item never goes out. A draft (its
     spec is being written, D-43) is a row whoever holds it, never goes out, and takes no bay."""
     cap = 1 if level == "off" else cap
     running = [i for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")]
-    # a claim carries its files on the board: they hold even where its PLAN is unpushed or there is none
-    held = {f: i["number"] for i in running for f in files.get(i["number"], []) + (i.get("claimed_files") or [])}
+    taken = held(items, files)
     busy = [i for i in running if me in i["assignees"] and not i.get("pr")]   # in review: no slot
     free = max(0, cap - len(busy))
     pos = {i["number"]: k for k, i in enumerate(order(items))}
@@ -142,14 +155,12 @@ def ramp(items: list, files: dict, cap: int, me: str, level: str = "items", gate
     nxt, wait, locked = [], [], []
     for i in pool:
         mine = files.get(i["number"], [])
-        # a held directory holds what is in it; the item this one stacks on holds nothing for it
-        clash = next(((f, n) for f in mine for h, n in held.items() if n != i.get("stacked_on")
-                      and (f == h or f.startswith(h + "/") or h.startswith(f + "/"))), None)
-        if clash:
-            locked.append({**i, "file": clash[0], "holder": clash[1]})
+        hit = clash(mine, taken, i.get("stacked_on"))
+        if hit:
+            locked.append({**i, "file": hit[0], "holder": hit[1]})
         elif len(nxt) < free:
             nxt.append(i)
-            held.update({f: i["number"] for f in mine})
+            taken.update({f: i["number"] for f in mine})
         else:
             wait.append(i)
     pooled = {i["number"] for i in pool}

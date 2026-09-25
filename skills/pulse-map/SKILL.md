@@ -64,6 +64,21 @@ The agents `pulse go` starts never open one. `map_autostart = false` in
 `.pulse/config.toml` turns it off for the project, `PULSE_MAP=off` in
 the environment for one shell.
 
+## It starts pulse go
+
+Each time the live map reads the board and finds approved work (an item
+that starts next, or an approved item nobody holds that needs a PLAN)
+while no run of this clone lives, it starts `pulse go` apart from itself
+and names the items and the log in its footer once. A run ends when the
+ramp is empty; the next approval starts one again, at most once a
+minute. It starts nothing, and names why, for an item the last run did
+not finish (failed, usage limit, stopped, claim refused), after a run a
+person stopped or one that ended before its report (until
+`pulse go` runs by hand), when `.pulse/config.toml` differs from the one
+on origin's default branch or the base it names (a checked-out branch never runs its
+own commands), and without `verify`. `go_autostart = false` turns it
+off for the project, `PULSE_GO=off` for one shell.
+
 ## Reading it
 
 - **Lights:** green breathes = working, yellow = waits for you (a question,
