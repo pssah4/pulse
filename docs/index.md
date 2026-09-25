@@ -4,9 +4,8 @@ title: Pulse
 titleTemplate: Parallel, method-driven development with AI coding agents
 
 hero:
-  text: |
-    Many people. Many agents.
-    One repo. No collisions.
+  name: "Multiplayer is on."
+  text: Your team and all its agents build one repo without a single collision.
   tagline: "Coding agents are fast alone and chaotic together. Pulse plans the dependencies between tasks, starts them in the right order, gives each to one agent, and never runs two at once that touch the same files. Features start as specs, from business analysis to requirements engineering, and a pull request is ready only after tests, review, and a security audit pass."
   actions:
     - theme: brand
@@ -16,11 +15,6 @@ hero:
       text: A full run, start to finish
       link: /tutorials/full-v-model-run
 ---
-
-<div class="pulse-live">
-  <iframe src="/pulse/map-demo.html" title="The Pulse map: a morning at acme/shop in time-lapse" loading="lazy"></iframe>
-  <p>A morning at a small shop project, in time-lapse. Sebastian runs five agents at once; Alice and Bob work on several items in parallel. <span class="k ok"></span> working <span class="k hold"></span> waiting for you <span class="k bad"></span> a check failed. The same view runs in your terminal: <code>pulse map</code>.</p>
-</div>
 
 <div class="landing-features">
   <a class="tile" href="/pulse/tutorials/first-business-analysis">

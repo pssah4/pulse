@@ -68,17 +68,20 @@ def order(items: list) -> list:
 
 
 def _row(i: dict) -> bool:
-    """A ramp row: a work item nobody holds, or a draft of any kind, epics too, held or not (D-43)."""
-    return bool(i.get("draft")) or i["type"] in state.WORK and not i["assignees"]
+    """A ramp row: a work item or a draft of any kind, epics too, that nobody holds (D-43). A held
+    draft is in progress and stands under its holder only (#55)."""
+    return not i["assignees"] and (bool(i.get("draft")) or i["type"] in state.WORK)
 
 
 def place(items: list, n: int, before=None, after=None, top=False, bottom=False) -> list:
     """[(number, rank)] to write so that n stands where it was put: one record per move, the first
     sort too, so two people sorting at once end in an order one of them chose (F9.01). Only a move
     into the unranked part ranks the unranked items up to n. The rows are the ramp's: free items
-    and drafts, held or not."""
+    and free drafts; ValueError for anything else, as for a neighbour that is none."""
     rows = [i for i in order(items) if _row(i)]
     own = {i["number"]: i.get("rank") for i in rows}
+    if n not in own:
+        raise ValueError(f"#{n} is no ramp row")
     eff = effective(items)
     nums = [m for m in own if m != n]
     at = 0 if top else len(nums) if bottom else nums.index(before) if before is not None else nums.index(after) + 1
@@ -140,8 +143,8 @@ def clash(mine: list, held: dict, skip=None):
 
 
 def ramp(items: list, files: dict, cap: int, me: str, level: str = "items", gates=None) -> dict:
-    """gates: {issue: why it waits} from ready.gates; a gated item never goes out. A draft (its
-    spec is being written, D-43) is a row whoever holds it, never goes out, and takes no bay."""
+    """gates: {issue: why it waits} from ready.gates; a gated item never goes out. A draft nobody
+    holds (its spec is to be written, D-43) is a row, never goes out, and takes no bay."""
     cap = 1 if level == "off" else cap
     running = [i for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")]
     taken = held(items, files)
@@ -172,8 +175,7 @@ def ramp(items: list, files: dict, cap: int, me: str, level: str = "items", gate
         if not _row(i):
             continue
         n = i["number"]
-        who = i.get("claimed_by") or next(iter(i["assignees"]), "")
-        s = ("spec in progress" + (f" by {who}" if who else "") if i.get("draft") else None) or \
+        s = ("spec in progress" if i.get("draft") else None) or \
             stage.get(n) or gates.get(n) or ("not approved" if not i["approved"] else None) or \
             ("waits for " + ", ".join(f"#{b}" for b in i["blocked_by"]) if i["blocked_by"] else "ready")
         rows.append({**i, "stage": s, "via": eff[n][1]})     # via: the item whose rank it carries

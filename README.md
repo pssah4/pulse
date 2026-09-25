@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-> **Many people. Many agents. One repo. No collisions.**
+> **Multiplayer is on.** Your team and all its agents build one repo without a single collision.
 
 Coding agents are fast alone and chaotic together. Pulse plans the dependencies between tasks, starts them in the right order, gives each to one agent, and never runs two at once that touch the same files. Features start as specs, from business analysis to requirements engineering, and a pull request is ready only after tests, review, and a security audit pass.
 

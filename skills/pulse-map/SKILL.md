@@ -9,22 +9,27 @@ description: >
 
 # Pulse map
 
-`pulse map` is the live map in a terminal of its own: it redraws every
-two seconds and takes keys, none with Shift, and its last line lists the
-keys of the level it is on. On the map `↑` `↓` (or `j` `k`) pick an item,
-`Enter` opens it, `m` moves a ramp row (arrows, `Enter` places it, and
-the map stays), `?` shows the help, `q` quits. With color, each `#n` is
-a link to its issue in a terminal that knows links (VS Code, iTerm).
-In the item view (goal,
-stage, holder with phase and last sign of life, blockers, PR, PLAN) `a`
-approves it, `p` approves its PLAN (both show what they bind first,
-`Enter` confirms), `o` opens its spec in a window while the map runs on
-(`PULSE_EDITOR`, else VS Code or Cursor, else the system's app, else the
-path), and `m` moves it on the ramp (arrows, `Enter` places it). `Esc`,
-`←`, or Backspace go back one level and never end the map. `a` refuses
-what `pulse approve` refuses: a spec that is not on `origin/<base>` (R1)
-and, for a feature, improvement, or fix, one there that breaks R2 to R6;
-an epic needs R1 only.
+`pulse map` is the live map in a terminal of its own: it reads the board
+every two seconds beside its keys, so no key waits for GitHub, and its
+last line lists the keys of the level it is on, none with Shift. On the
+map `↑` `↓` (or `j` `k`) pick an item, `Enter` or `→` opens it, `m` moves
+a ramp row (arrows, `Enter` places it, and the map stays), `?` shows the
+help, `q` quits. With color, each `#n` is a link to its issue in a
+terminal that knows links (VS Code, iTerm). The item view shows goal,
+stage, holder with phase and last sign of life, blockers, PR, and plan,
+then only what the item's stage allows, each with what it does, picked
+with `↑` `↓` and done with `Enter`: approve (or unapprove when it is
+approved and on the ramp), approve plan, read plan, prioritize (top of
+the ramp, one write), read spec. Both approvals and unapprove show
+what they do first and `Enter` confirms; reading opens a window while the map runs
+on (`PULSE_EDITOR`, else VS Code or Cursor, else the system's app, else
+the path). A write names itself in the footer while it runs; keys typed
+meanwhile are dropped. `Esc`, `q`,
+`←`, or Backspace go back one level and drop what is not written yet;
+only `q` on the map ends it. `a` refuses what `pulse approve` refuses,
+and approve names it in its line: a spec that is not on `origin/<base>`
+(R1) and, for a feature, improvement, or fix, one there that breaks R2
+to R6; an epic needs R1 only.
 `pulse map --demo` plays a time-lapse of a sample project without a
 repository.
 
@@ -82,6 +87,13 @@ on origin's default branch or the base it names (a checked-out branch never runs
 own commands), and without `verify`. `go_autostart = false` turns it
 off for the project, `PULSE_GO=off` for one shell.
 
+## After an update
+
+A live map restarts itself, in its own terminal, once the `pulse`
+command starts a newer Pulse than it runs, within a minute of the
+update. Once a day it asks for the newest release; a newer one gets one
+footer line with the update commands, and the next session names it.
+
 ## Reading it
 
 - **Lights:** green breathes = working, yellow = waits for you (a question,
@@ -89,8 +101,8 @@ off for the project, `PULSE_GO=off` for one shell.
   review), red = the last test or build failed, or a pull request's checks
   fail, grey = idle. Nothing blinks. The worst light rolls up to the
   feature and the person; the header counts all lights.
-- **Board:** ready to start, in progress, in review, blocked, not ready yet
-  (drafts count here);
+- **Board:** ready to start, in progress (a held draft counts here), in
+  review, blocked, not ready yet (a draft nobody holds counts here);
   then each open epic with its children closed as completed, of those
   and its open children (`1 of 14 done`); one closed as not planned
   counts in neither.
@@ -100,28 +112,30 @@ off for the project, `PULSE_GO=off` for one shell.
   running`, `review running`, `audit running`, `fix round`) or
   its pull request (draft with a red gate, waits for merge), and `on #n`
   when it is stacked; below it what its agent does right now (the one
-  that needs me or failed first). An agent outside any feature gets a
-  line with its branch. Each teammate gets one line per item they hold,
+  that needs me or failed first). An agent counts for the item its
+  session holds; without a claim, for the item its branch builds (a Codex
+  agent: the branch where its last command ran). An agent outside any
+  feature gets a line with its branch. Each teammate gets one line per item they hold,
   lit from GitHub (needs your review, checks failing, otherwise grey);
   without a pull request the line says `<phase>, <age> ago` from their
   last sign of life, `no sign of life for <age>` after 30 minutes, or
   `merged, closes on the next pulse status` when the pull request merged
-  into a branch other than the default one. A draft stands under its
-  holder, me or a teammate, with its ramp words:
+  into a branch other than the default one. A held draft stands only
+  under its holder, me or a teammate, not on the ramp:
   `spec in progress by <login>, <age>`, the age of its last sign of life,
   else of the claim.
 - **Next:** one line per kind of thing that waits for a person, the most
   urgent first, with the step that moves it; items that wait for an open
   blocker are left out. For a draft it is `spec in progress` with
   `<login> writes the spec of #n`.
-- **Ramp:** every open item nobody holds and every draft, in the team's
+- **Ramp:** every open item and draft nobody holds, in the team's
   order, each with what it waits for (not approved, spec or plan rule, plan waits for
   you, waits for #n with `+n` for more than fit, locked by a file,
-  queued, `spec in progress by <login>, <age>` for a draft); `last run: <why>`
+  queued, `spec in progress` for a draft); `last run: <why>`
   follows when a run of `pulse go`, or a session with `pulse release
   <n> --note`, gave the item back. `starts next`
   takes a free slot, the busy ones stand on my row above. The order
-  changes with `m` on `pulse map` or in its item view, or with
+  changes with `m` on `pulse map`, prioritize in its item view, or with
   `pulse rank <n> --before <m>`; only a person decides it, an agent moves
   nothing unless asked.
 

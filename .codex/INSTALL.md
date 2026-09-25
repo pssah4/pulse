@@ -28,7 +28,7 @@ The plugin serves the Codex CLI and the Codex IDE extension alike: both read `~/
    P=${CODEX_HOME:-~/.codex}/plugins/cache/pssah4-skills/pulse
    "$P/$(ls "$P" | sort -V | tail -1)/bin/pulse" setup --cli
    ```
-   The second line runs the newest version folder in the cache. This writes `~/.local/bin/pulse`, a short script that runs the newest Pulse in the Claude Code plugin cache, or in the Codex cache when Claude Code has none, so an update needs no new setup. With Pulse installed in both, `pulse` runs the Claude Code copy, so update both. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile (`~/.zshrc` for zsh; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux) and open a new terminal.
+   The second line runs the newest version folder in the cache. This writes `~/.local/bin/pulse`, a short script that runs the Pulse of the agent that calls it: a Codex session its Codex copy, a Claude Code session its Claude Code copy, and your own terminal the newest of both. An update needs no new setup. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile (`~/.zshrc` for zsh; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux) and open a new terminal.
 
 4. Optional: let Codex run `pulse` outside its sandbox without asking. The sandbox has no network access, so otherwise every `pulse` command that reads or writes the board on GitHub asks you first. Codex still asks before `approve`, `approve-plan`, `rank`, and `done`, which a person decides, and before every `release` and `claim`: a rule sees only how a command starts, so it cannot tell a handover with `--take` from the rest. A rule matches a plain `pulse ...` command: a pipeline or a redirection, such as `pulse status --json | head`, runs inside the sandbox, where `.git` is read-only and GitHub is out of reach. The full path works before your PATH has the command:
    ```bash
@@ -37,7 +37,7 @@ The plugin serves the Codex CLI and the Codex IDE extension alike: both read `~/
 
 5. Restart Codex. In the IDE extension, start a new chat; if you just added `~/.local/bin` to your PATH, quit VS Code and open it again instead: a new chat keeps the PATH VS Code started with, and without `pulse` on it the Pulse hooks point the agent at the full path of the plugin copy, which the rules of step 4 do not match, so Codex asks before every `pulse` command.
 
-Update, then restart Codex, or start a new chat in the IDE extension: the update deletes the old version folder, and a running session still points its skills and hooks there.
+Update with the two lines below, then start a new chat in the IDE extension or restart Codex: the update deletes the old version folder, and a running session still points its skills and hooks there. When Codex asks, trust the Pulse hooks again: it asks after an update that changes them. A running live map restarts itself with the new Pulse, and the next session in each project refreshes its Pulse block with `pulse setup --anchors`.
 
 ```bash
 codex plugin marketplace upgrade pssah4-skills

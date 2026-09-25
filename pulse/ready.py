@@ -101,7 +101,12 @@ def _issue(text: str):
 
 
 def _branch_plan(root: Path, base: str, ref: str, n: int):
-    for path in _git(root, "diff", "--name-only", "--diff-filter=AM", f"{base}...{ref}", "--", PLANS).split():
+    """The PLAN of #n on its pushed branch: a Markdown file in the plans folder itself, as in the
+    working tree; the map opens it with the system's app (audit of #55)."""
+    for path in _git(root, "diff", "-z", "--name-only", "--diff-filter=AM", f"{base}...{ref}", "--",
+                     f":(glob){PLANS}/*.md").split("\0"):
+        if Path(path).parent.as_posix() != PLANS or not path.endswith(".md"):   # a space splits nothing now
+            continue
         text = _git(root, "show", f"{ref}:{path}")
         if _issue(text) == n:
             return {"path": path, "ref": ref, "text": text}

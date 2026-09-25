@@ -27,6 +27,9 @@ CHECK = re.compile(
     r"|go (test|build|vet)|cargo (test|build|check|clippy)|dotnet (test|build)"
     r"|mvn|gradle|tsc|mypy|ruff|eslint|make (test|check)"
     r"|(npm|pnpm|yarn|bun)( run)? (test|build|lint|check|typecheck))\b")
+TAIL = 256 * 1024              # the end of a Codex rollout that names where its last command ran
+SHELL = {"exec_command", "shell", "shell_command"}
+WORKDIR = re.compile(r"""\bworkdir["']?\s*:\s*["']([^"']+)["']""")
 
 
 def _path(root: Path) -> Path:
@@ -43,6 +46,37 @@ def target(tool: str, inp: dict, cwd: str) -> str:
     return raw[:80]
 
 
+def ran_in(payload: dict) -> str:
+    """Where a Codex command ran: its hook names the session's directory, the workdir of the call
+    stands only in its rollout (transcript_path). The last shell call there; '' when none says."""
+    try:
+        with open(payload.get("transcript_path") or "", "rb") as f:
+            start = max(0, f.seek(0, 2) - TAIL)
+            f.seek(start)
+            lines = f.read().decode("utf-8", "replace").split("\n")[1 if start else 0:]   # a cut first line
+    except (OSError, TypeError):
+        return ""
+    for line in reversed(lines):
+        try:                                   # Codex's format: a line of another shape is skipped
+            item = json.loads(line)["payload"]
+            if item["type"] == "function_call" and item["name"] in SHELL:
+                wd = json.loads(item["arguments"]).get("workdir")
+            elif item["type"] == "custom_tool_call" and item["name"] != "apply_patch" \
+                    and "exec_command" in item["input"]:
+                # ponytail: code mode may call exec_command more than once; the last workdir stands for all
+                found = WORKDIR.findall(item["input"])
+                if "workdir" in item["input"] and not found:
+                    return ""                  # a workdir it computes: the place stays as it was
+                wd = found[-1] if found else None
+            else:
+                continue
+            cwd = payload.get("cwd") or ""
+            return os.path.join(cwd, wd) if wd else cwd
+        except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
+            continue
+    return ""
+
+
 def compact(payload: dict, t: float) -> dict | None:
     event, session = payload.get("hook_event_name"), payload.get("session_id")
     if not event or not session:
@@ -52,6 +86,9 @@ def compact(payload: dict, t: float) -> dict | None:
     if "tool_name" in payload:
         row["tool"] = payload["tool_name"]
         row["target"] = target(payload["tool_name"], payload.get("tool_input"), row["cwd"])
+        wd = ran_in(payload) if payload["tool_name"] == "Bash" and "turn_id" in payload else ""   # Codex
+        if wd:
+            row["wd"] = wd
     if event == "SessionStart" and payload.get("model"):
         row["model"] = payload["model"]
     if event == "Notification":
@@ -96,7 +133,7 @@ def seen(root: Path, session: str) -> bool:
 
 def _actor(row: dict) -> dict:
     return {"id": row["a"], "type": row["at"], "cwd": row["cwd"], "started": row["t"], "last": row["t"],
-            "tool": "", "target": "", "waiting": False, "error": False, "idle": False, "note": ""}
+            "tool": "", "target": "", "waiting": False, "error": False, "idle": False, "note": "", "wd": ""}
 
 
 def fold(rows: list, now: float) -> list:
@@ -116,6 +153,8 @@ def fold(rows: list, now: float) -> list:
         actor["last"] = r["t"]
         if r.get("cwd"):
             actor["cwd"] = r["cwd"]
+        if r.get("wd"):                        # where its last Codex command ran, until another says
+            actor["wd"] = r["wd"]
         if r.get("model"):
             s["model"] = r["model"]
         e = r["e"]
@@ -142,6 +181,7 @@ def fold(rows: list, now: float) -> list:
     for s in sessions.values():
         s["agents"] = sorted(s["agents"].values(), key=lambda a: a["started"])
         for a in [s, *s["agents"]]:
+            a["home"], a["cwd"] = a["cwd"], a.pop("wd") or a["cwd"]      # home: the directory its hooks name
             a["state"] = ("waiting" if a["waiting"] else "error" if a["error"]
                           else "idle" if a["idle"] else "working")
         # ponytail: a question waits as long as it takes, so a session killed while it asked

@@ -30,7 +30,7 @@ claude plugin marketplace add https://github.com/pssah4/pulse.git
 claude plugin install pulse@pssah4-skills
 ```
 
-Without the `claude` command, install it from the extension instead: type `/plugins` in its prompt box ([VS Code extension](#vs-code-extension)). Check: in a new session, typing `/pulse` lists the Pulse commands.
+Without the `claude` command, install it from the extension instead: type `/plugins` in its prompt box ([VS Code extension](#vs-code-extension)). Then let Claude Code keep Pulse up to date by itself, once: in a session, type `/plugin` (in VS Code `/plugins`), open the **Marketplaces** tab, select `pssah4-skills`, and pick **Enable auto-update**. Claude Code turns it on only for its own marketplaces; the command line has no switch for it. Check: in a new session, typing `/pulse` lists the Pulse commands.
 
 **4. Codex.** Install with the Codex CLI, also if you work only in the IDE extension; both share the install. If you have only the extension, first give every terminal a `codex` command that runs the newest binary the extension brings, then reload your profile:
 
@@ -65,7 +65,7 @@ Open a new terminal. Check: `pulse --help` lists the commands.
 
 **6. Codex: trust the Pulse hooks.** Start `codex` in your project and pick **Trust all and continue**; later, `/hooks` in the CLI shows the list. In the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings. Optional: `pulse setup --codex-rules` lets Codex run `pulse` without asking ([details](#codex-cli-and-ide-extension)).
 
-**7. Restart.** Start a new Claude Code session, or reload the VS Code window (**Developer: Reload Window**), and restart Codex. A session that was running before the install does not see Pulse. After a change to your PATH, quit VS Code and open it again.
+**7. Restart.** Type `/reload-plugins` in a running Claude Code session or start a new one, and restart Codex or start a new chat in its IDE extension. A session that was running before the install does not see Pulse. After a change to your PATH, quit VS Code and open it again.
 
 **8. In each project.** Type `/pulse-setup` in Claude Code, `$pulse:pulse-setup` in Codex. It asks a few questions and writes `.pulse/config.toml`; commit it on a branch as [Switch it on in your project](#switch-it-on-in-your-project) shows. From then on, `/pulse` (in Codex `$pulse:pulse`) says where the work stands and what comes next.
 
@@ -79,24 +79,41 @@ The script finds `claude` and `codex`, also the binaries the VS Code extensions 
 
 ## Update
 
-Pulse does not update itself, and neither Claude Code nor Codex refreshes its marketplace on its own. Update every tool you installed Pulse in:
+Pulse does not update itself. What each tool needs, in this order:
 
-| Where | Update |
-|---|---|
-| Claude Code, terminal | `claude plugin marketplace update pssah4-skills`, then `claude plugin update pulse@pssah4-skills` |
-| Claude Code, VS Code extension | type `/plugins`, refresh `pssah4-skills` in the **Marketplaces** tab, then click the update icon on the Pulse row in the **Plugins** tab |
-| Codex, CLI and IDE extension | `codex plugin marketplace upgrade pssah4-skills`, then `codex plugin add pulse@pssah4-skills` |
-| Codex without the plugin | `git -C ~/.codex/pulse pull` |
+### Claude Code
 
-The install script does the same for every install it finds:
+1. **Get the new version.** With auto-update on (**Enable auto-update** in [step 3](#step-by-step)), Claude Code fetches it by itself when a session starts and says `Plugin updated: pulse · Run /reload-plugins to apply`. Without it, in a terminal: `claude plugin marketplace update pssah4-skills`, then `claude plugin update pulse@pssah4-skills`; in the VS Code extension: type `/plugins`, refresh `pssah4-skills` in the **Marketplaces** tab, then click the update icon on the Pulse row in the **Plugins** tab.
+2. **Load it.** Type `/reload-plugins` in a running session, or start a new one. Claude Code runs the plugin's hooks without a separate trust step.
+
+### Codex
+
+Codex has no auto-update; the live map and the next session tell you when a new Pulse is out.
+
+1. **Get the new version.** In a terminal, also if you work only in the IDE extension:
+
+   ```bash
+   codex plugin marketplace upgrade pssah4-skills
+   codex plugin add pulse@pssah4-skills
+   ```
+
+   Codex without the plugin: `git -C ~/.codex/pulse pull`.
+2. **Load it.** Start a new chat in the IDE extension, or restart `codex`. The update deletes the old version folder, and a running chat still points its skills and hooks there.
+3. **When Codex asks, trust the Pulse hooks again.** Codex asks after an update that changes them: in the CLI it lists them at the start (`/hooks`, then `t`); in the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings, then start a new chat. Without trusted hooks, a session gets no rules and no light on the map.
+
+### Both at once
+
+The install script updates every tool it finds and names only the steps that are still open:
 
 ```bash
 curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
 ```
 
-Then restart: start a new Claude Code session, or reload the VS Code window (**Developer: Reload Window**), and restart Codex or start a new chat in its IDE extension. A session that was running keeps the old version, and a Codex session still points at the folder the update deleted.
+### What happens by itself
 
-Nothing else needs doing. The `pulse` command runs the newest version you installed, and your projects keep their `.pulse/config.toml`. `claude plugin list` and `codex plugin list` show the version. When a release needs a step in your projects, its notes say so under **Upgrading**, in the [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) and on the [release page](https://github.com/pssah4/pulse/releases).
+- The `pulse` command in your terminal runs the newest Pulse you have; a Claude Code or Codex session runs its own copy.
+- A live map that is running restarts itself with the new Pulse within a minute, in its own terminal.
+- In each project, the next session refreshes the Pulse block in `CLAUDE.md` and `AGENTS.md`: its agent runs `pulse setup --anchors`, which changes nothing else, and the change goes into the next commit.
 
 ## Claude Code
 

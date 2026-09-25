@@ -113,9 +113,32 @@ def context(event, root, cfg, env):
             parts.append(idle)
         stale = stale_anchors(root, cfg["mode"])
         if stale:
-            parts.append(f"The Pulse block in {', '.join(stale)} is out of date. Tell the user that "
-                         "`/pulse-setup` (in Codex `$pulse:pulse-setup`) writes it anew.")
+            parts.append(f"The Pulse block in {', '.join(stale)} is out of date. Run `pulse setup --anchors` "
+                         "yourself: it does to the block what `/pulse-setup` (in Codex `$pulse:pulse-setup`) does, "
+                         "without questions, and changes nothing else. Take the change into your next commit "
+                         "and tell the user.")
+        news = release_note(root, env)
+        if news:
+            parts.append(news)
     return "\n\n".join(parts)
+
+
+def release_note(root, env):
+    """A newer Pulse the live map found (IMP-14), with the update for this session's agent; '' else.
+    It reads the map's answer only: a session start asks no network."""
+    try:
+        found = (state.cache_dir(root) / "latest").read_text(encoding="utf-8").strip()
+        own = setup._version(ROOT)
+    except (OSError, ValueError, KeyError):
+        return ""
+    if setup.version_key(found) <= setup.version_key(own):
+        return ""
+    how = ("with auto-update on, Claude Code brings it by itself (/plugin, Marketplaces); else claude plugin "
+           "marketplace update pssah4-skills, then claude plugin update pulse@pssah4-skills; then /reload-plugins "
+           "or a new session" if env.get("CLAUDECODE") == "1" else
+           "codex plugin marketplace upgrade pssah4-skills, then codex plugin add pulse@pssah4-skills; then a "
+           "new chat, and trust the Pulse hooks again when Codex asks")
+    return f"Pulse {found} is out; this session runs {own}. Tell the user: {how}."
 
 
 def stale_anchors(root, mode):

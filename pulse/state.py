@@ -29,6 +29,7 @@ from pulse import config
 
 TTL = 30                 # a full reload at least this often: PR checks move without a new tag
 POLL = 2                 # seconds between the free conditional checks for a change
+FORMAT = 2               # of the issue cache, raised when normalize gains a field: another one is read again
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
 FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments"
@@ -122,6 +123,7 @@ def normalize(issue: dict) -> dict:
         "plan_ok": _plan_ok(labels, issue.get("body") or ""),
         "assignees": assignees,
         "claimed_by": mark["author"] if mark else (assignees[0] if assignees else None),
+        "claimed_holder": mark["id"] if mark else None,       # the session that holds it: codex:<thread>
         "claimed_at": (mark["at"] or None) if mark else None,
         "claimed_phase": mark["phase"] if mark else None,
         "claimed_beat": mark["beat"] if mark else None,
@@ -271,7 +273,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
             cached = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cached = {}
-        if cached.get("repo") == repo_name:
+        if cached.get("repo") == repo_name and cached.get("format") == FORMAT:
             if now - max(cached.get("fetched_at", 0), cached.get("checked_at", 0)) < POLL:
                 return cached["items"]
             if now - cached.get("fetched_at", 0) < TTL:
@@ -292,7 +294,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
               for pr in prs for n in pr_items(pr)}
     for i in items:
         i["pr"] = closes.get(i["number"])
-    _keep(path, {"repo": repo_name, "fetched_at": now, "checked_at": now, "etag": etag, "items": items})
+    _keep(path, {"repo": repo_name, "format": FORMAT, "fetched_at": now, "checked_at": now, "etag": etag, "items": items})
     return items
 
 

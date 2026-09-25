@@ -9,8 +9,9 @@ It installs Pulse with every tool it finds (the claude and codex commands, or th
 VS Code extensions bring) and puts the pulse command into ~/.local/bin. It asks before it adds a
 line to your shell profile or writes the Codex rules (--yes answers yes, --no answers no, a run
 without a terminal answers no), shows every command before it runs it, and removes nothing.
-Trusting the Codex hooks, restarting your sessions, and /pulse-setup in each project stay with
-you: the end of the run names them. The manual way is on the installation page.
+Turning on auto-update in Claude Code once, trusting the Codex hooks while Codex has no trust for
+them, loading the new Pulse in your sessions, and /pulse-setup in a new project stay with you: the
+end of the run names what is still open. The manual way is on the installation page.
 Python 3.9 or newer, standard library only.
 """
 import argparse
@@ -129,14 +130,19 @@ def codex(exe, source, override, dry):
 
 
 def copy():
-    """The newest cached Pulse: Claude Code's cache first, then Codex's, as the pulse command finds it."""
-    for var, default in (("CLAUDE_CONFIG_DIR", ".claude"), ("CODEX_HOME", ".codex")):
-        cache = config_dir(var, default) / "plugins/cache" / MARKET / "pulse"
-        found = sorted((p for p in cache.glob("*/bin/pulse") if not (p.parents[1] / ".orphaned_at").exists()),
-                       key=lambda p: version(p.parents[1].name))
-        if found:
-            return found[-1]
-    return None
+    """The newest cached Pulse of Claude Code and Codex together, as the pulse command finds it in a terminal."""
+    found = [p for var, default in (("CLAUDE_CONFIG_DIR", ".claude"), ("CODEX_HOME", ".codex"))
+             for p in (config_dir(var, default) / "plugins/cache" / MARKET / "pulse").glob("*/bin/pulse")
+             if not (p.parents[1] / ".orphaned_at").exists()]
+    return max(found, key=lambda p: version(p.parents[1].name), default=None)
+
+
+def hooks_trusted():
+    """Whether Codex keeps a trust entry for a Pulse hook: the person gave it, Codex asks again on a change."""
+    try:
+        return f'[hooks.state."{PLUGIN}:' in (config_dir("CODEX_HOME", ".codex") / "config.toml").read_text()
+    except OSError:
+        return False
 
 
 def profile():
@@ -222,16 +228,22 @@ def main(argv=None):
             run([pulse, "setup", "--codex-rules"], args.dry_run)
 
     say()
+    if "Codex" in done and hooks_trusted():
+        say("Codex: the Pulse hooks are trusted; Codex asks again when an update changes them.")
     tools = " and ".join(done)
     say(f"Dry run, nothing changed. Pulse would be installed in {tools}. Left for you after a real run:"
         if args.dry_run else f"Pulse is installed in {tools}. Left for you:")
-    if "Codex" in done:
+    if "Claude Code" in done:
+        say("  - Claude Code, once: let it update Pulse by itself: /plugin (in VS Code /plugins), Marketplaces,")
+        say(f"    {MARKET}, Enable auto-update.")
+    if "Codex" in done and not hooks_trusted():
         say("  - Codex: trust the Pulse hooks. In the CLI, start codex in a project and pick")
         say("    Trust all and continue (later: /hooks in the CLI); in the IDE extension, click Trust")
         say("    on each Pulse hook on the Hooks page of its settings.")
-    say("  - Restart: new Claude Code sessions, or reload the VS Code window (Developer: Reload Window);")
-    say("    restart Codex; after a change to your PATH, quit VS Code and open it again.")
-    say("  - In each project: /pulse-setup (in Codex $pulse:pulse-setup).")
+    say("  - Load the new Pulse: /reload-plugins in a running Claude Code session, or a new one; a new")
+    say("    Codex chat, or restart codex; after a change to your PATH, quit VS Code and open it again.")
+    say("  - In each new project: /pulse-setup (in Codex $pulse:pulse-setup); a project set up before")
+    say("    refreshes its Pulse block in its next session.")
     say(f"Details: {GUIDE}")
     return 0
 

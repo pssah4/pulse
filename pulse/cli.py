@@ -91,6 +91,8 @@ def cmd_show(args):
     p = ready.plans(root).get(args.n) or {}
     row = next((x for x in r["rows"] if x["number"] == args.n), {})
     stage = row.get("stage", "in progress" if i["assignees"] else "")
+    if i.get("draft") and i["assignees"]:     # no ramp row: whose spec is in progress, as the map says (#55)
+        stage = f"spec in progress by {i.get('claimed_by') or i['assignees'][0]}"
     if i["assignees"] and ready.approvable(root, items, cfg, args.n)[0]:
         stage = "plan waits for you"       # a claim changes no PLAN; /pulse-build waits for approve-plan
     i = {**i, "stage": stage, "plan": p.get("path"), "plan_ref": p.get("ref")}
@@ -642,6 +644,8 @@ def parser() -> argparse.ArgumentParser:
                    help="auto builds a PLAN nothing holds; manual waits for pulse approve-plan")
     s.add_argument("--git-hook", action="store_true",
                    help="install a pre-commit hook: protected branches + pulse check")
+    s.add_argument("--anchors", action="store_true",
+                   help="rewrite only the Pulse block in the agent files that have one; config and labels stay")
     s.add_argument("--cli", action="store_true",
                    help="the pulse command in ~/.local/bin; it runs the Pulse in $PULSE_HOME, else the agent's "
                         "own: a Codex session the newest in the Codex cache, a Claude Code session the newest "

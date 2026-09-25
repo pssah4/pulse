@@ -26,9 +26,7 @@
 
   --vp-nav-logo-height: 30px;
 
-  --pulse-headline: linear-gradient(115deg, #004852 0%, #007780 55%, #04bdc7 100%);
-  --pulse-glow: rgba(0, 119, 128, 0.16);
-  --pulse-glow-side: rgba(4, 189, 199, 0.10);
+  --vp-home-hero-name-color: #004852;
 }
 
 .dark {
@@ -48,9 +46,7 @@
   --vp-button-brand-hover-bg: #007780;
   --vp-button-brand-active-bg: #004e58;
 
-  --pulse-headline: linear-gradient(115deg, #14a6b0 0%, #25c7cc 50%, #c9f1f0 100%);
-  --pulse-glow: rgba(37, 199, 204, 0.14);
-  --pulse-glow-side: rgba(0, 100, 109, 0.22);
+  --vp-home-hero-name-color: #25c7cc;
 }
 
 .vp-doc .mermaid {
@@ -60,83 +56,120 @@
 
 /* ========== Hero ========== */
 
-/* Center the entire hero block when no hero image is present */
-.VPHero:not(.has-image) .container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
+/* Two columns on the content's left edge: the words, and the live map
+   in the image slot (theme/index.ts). Stacked below 960px, text first. */
+.VPHero.has-image .main {
+  text-align: left;
 }
 
-.VPHero:not(.has-image) .main {
-  text-align: center;
-  /* Override VitePress's scoped width: calc((100%/3)*2) rule at 960px+.
-     Width matches the landing tile row (960px) so the headline, the
-     tagline, and the tiles all share one visual column. */
+/* Selectors match VitePress's scoped ones in weight, which center the
+   heading, tagline, and buttons below 960px */
+.VPHero.has-image .main .name,
+.VPHero.has-image .main .text,
+.VPHero.has-image .main .tagline {
+  margin: 0;
+}
+
+.VPHero.has-image .main .text {
+  margin-top: 20px;
+}
+
+.VPHero.has-image .main .actions {
+  justify-content: flex-start;
+}
+
+.VPHero.has-image .image {
+  order: 2;
+  margin: 48px 0 0;
+}
+
+.VPHero.has-image .image-container {
+  display: block;
   width: 100%;
-  max-width: 960px;
-  margin: 0 auto;
+  height: auto;
+  transform: none;
 }
 
-.VPHero:not(.has-image) .text,
-.VPHero:not(.has-image) .tagline {
-  text-align: center;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.VPHero:not(.has-image) .actions {
-  justify-content: center;
-}
-
-/* Headline: the petrol gradient of the mark. white-space: pre-line
-   respects hard line breaks from the YAML block scalar in hero.text so
-   the comma sits at the end of line 1. */
-.VPHero .text {
-  max-width: 960px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  white-space: pre-line;
-  background: var(--pulse-headline);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+.VPHero .image-bg {
+  display: none;
 }
 
 @media (min-width: 960px) {
-  .VPHero .text {
-    font-size: 56px;
-    line-height: 64px;
+  .VPHero.has-image .container {
+    align-items: center;
+  }
+
+  .VPHero.has-image .container .main {
+    flex: 0 1 44%;
+    width: auto;
+    max-width: none;
+  }
+
+  .VPHero.has-image .image {
+    flex: 1 1 0;
+    margin: 0 0 0 56px;
   }
 }
 
-/* Tagline matches the headline (and the tile row) width */
-.VPHero .tagline {
-  max-width: 960px;
+/* Headline in solid petrol ink; text-wrap: balance breaks it as
+   "Multiplayer / is on." wherever it needs two lines */
+.VPHero .name {
+  max-width: none;
+  font-size: 40px;
+  line-height: 1.05;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
 }
 
-/* Soft glow behind the hero: petrol from the top, aqua on the sides */
-.VPHero {
-  padding-bottom: 12px;
-  background:
-    radial-gradient(ellipse 70% 50% at 50% -10%, var(--pulse-glow), transparent 70%),
-    radial-gradient(ellipse 60% 45% at 15% 20%, var(--pulse-glow-side), transparent 65%),
-    radial-gradient(ellipse 60% 45% at 85% 20%, var(--pulse-glow-side), transparent 65%);
+.VPHero .text {
+  max-width: 24em;
+  font-size: 22px;
+  line-height: 1.35;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.VPHero .tagline {
+  max-width: 34em;
+  padding-top: 16px;
+  font-size: 16px;
+  line-height: 1.65;
+  font-weight: 400;
+}
+
+@media (min-width: 640px) {
+  .VPHero .name {
+    font-size: 56px;
+    line-height: 1;
+  }
+
+  .VPHero .text {
+    font-size: 26px;
+  }
+
+  .VPHero .tagline {
+    font-size: 17px;
+    line-height: 1.65;
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHero .name {
+    font-size: clamp(56px, 7vw, 88px);
+    line-height: 0.95;
+  }
 }
 
 /* ========== Landing page below the hero ========== */
 
-/* Two entry-point tiles sit directly under the hero buttons */
+/* Two entry-point tiles sit directly under the hero */
 .landing-features {
-  max-width: 960px;
-  margin: 0.5rem auto 1.5rem;
-  padding: 0 24px;
+  margin: 0.5rem 0 1.5rem;
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 24px;
-  text-align: center;
 }
 
 @media (max-width: 768px) {
@@ -184,12 +217,7 @@
   color: var(--vp-c-brand-1);
 }
 
-/* live map on the landing page */
-.pulse-live {
-  max-width: 640px;
-  margin: 0 auto 2.5rem;
-  padding: 0 24px;
-}
+/* live map in the hero (theme/HeroMap.vue) */
 .pulse-live iframe {
   display: block;
   width: 100%;
@@ -204,7 +232,10 @@
   font-size: 0.88rem;
   line-height: 1.55;
   color: var(--vp-c-text-2);
-  text-align: center;
+}
+.pulse-live code {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.9em;
 }
 .pulse-live .k {
   display: inline-block;

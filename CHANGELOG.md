@@ -5,6 +5,46 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-09-25
+
+### Changed
+
+- A live map restarts itself with a newer Pulse within a minute of an
+  update, in its own terminal. Once a day it asks for the newest release
+  and names a newer one in its footer with the update commands for
+  Claude Code and Codex; the next session names it too.
+- A session in a project whose Pulse block is out of date has its agent
+  run `pulse setup --anchors`, which rewrites only the block.
+- The live map reads the board beside its keys, so a key never waits for
+  GitHub. A write names itself in the footer while it runs, and the map
+  then shows the board as the write left it.
+- A draft someone writes stands only under its holder and counts as in
+  progress; the ramp keeps the drafts nobody holds.
+- The item view offers only what the item's stage allows, each with what
+  it does: approve or unapprove, approve plan, read plan, prioritize (top
+  of the ramp), and read spec. `q`, `Esc`, `←`, and Backspace go back on
+  every level below the map, `→` opens an item, and `Esc` on the map says
+  that `q` quits. Unapprove asks for `Enter` as the approvals do, and keys
+  typed while a write runs are dropped. The map writes "plan" in lower case.
+- A plan on a pushed item branch counts only as a Markdown file in the
+  plans folder itself, as in the working tree.
+- The installation page walks through an update step by step, for Claude
+  Code and for Codex: getting the new version, loading it
+  (`/reload-plugins` or a new chat), trusting the Codex hooks again when
+  Codex asks, and what happens by itself. Claude Code users turn on
+  auto-update for `pssah4-skills` once.
+- The install script sets up the `pulse` command with the newest copy of
+  both tools and names only the steps that are still open: the Codex
+  hook trust only while Codex has none, auto-update once for Claude Code.
+
+### Fixed
+
+- The map shows an agent under the item its session holds, also when the
+  session's directory has another item's branch checked out, and a Codex
+  agent on the branch where its last command ran. Codex tells the hooks
+  only its session's directory, so its work in another worktree showed
+  under the wrong item.
+
 ## [0.1.2] - 2026-09-25
 
 ### Changed

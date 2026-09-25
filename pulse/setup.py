@@ -234,6 +234,11 @@ def _version(root: Path) -> str:
     return json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
 
 
+def version_key(text) -> tuple:
+    """(0, 1, 10) for "0.1.10": versions compare by their numbers."""
+    return tuple(int(n) for n in re.findall(r"\d+", text or ""))
+
+
 def _gh(*args) -> bool:
     """gh through state.gh, looked up per call so tests can swap it; True when it succeeded."""
     try:
@@ -295,6 +300,20 @@ def main(args) -> int:
         print("pulse setup: not inside a git repository")
         return 2
     known = config.load(root)
+    if getattr(args, "anchors", False):        # the Pulse block only, where a file has one (IMP-14)
+        changes = []
+        for t in TARGETS:
+            path = root / t.path
+            before = path.read_text(encoding="utf-8") if path.is_file() else ""
+            if not t.block_re(MARKERS).search(before):
+                continue
+            after = write_anchor(before, t, known["mode"] or "on")
+            if after != before and not args.dry_run:
+                path.write_text(after, encoding="utf-8")
+            changes.append({"path": t.path, "status": "unchanged" if after == before else
+                            "would change" if args.dry_run else "written"})
+        print(json.dumps({"root": str(root), "changes": changes}, indent=2))
+        return 0
     rep = run(root, args.mode or known["mode"] or "on", args.cap or known["cap"],
               args.base_branch or known["base_branch"] or config.default_branch(root),
               args.files or [], args.labels, args.remove, args.dry_run, args.git_hook,
