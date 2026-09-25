@@ -111,7 +111,25 @@ def context(event, root, cfg, env):
         idle = idle_capacity(root, cfg)
         if idle:
             parts.append(idle)
+        stale = stale_anchors(root, cfg["mode"])
+        if stale:
+            parts.append(f"The Pulse block in {', '.join(stale)} is out of date. Tell the user that "
+                         "`/pulse-setup` (in Codex `$pulse:pulse-setup`) writes it anew.")
     return "\n\n".join(parts)
+
+
+def stale_anchors(root, mode):
+    """The agent files whose Pulse block differs from the one pulse setup writes now (IMP-10): a
+    project set up before the text changed keeps its old block until setup runs again."""
+    out = []
+    for t in setup.TARGETS:
+        try:
+            m = t.block_re(setup.MARKERS).search((root / t.path).read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if m and m.group(0).rstrip("\n") != setup.anchor_block(t, mode).rstrip("\n"):
+            out.append(t.path)
+    return out
 
 
 def codex_uses(call):

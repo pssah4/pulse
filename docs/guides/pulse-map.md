@@ -178,6 +178,7 @@ The map is a tree: the map itself, an item, and what acts on that item. No key n
 |---|---|---|
 | map | `↑` `↓` (or `k` `j`) | pick an item: a feature in the tree or a ramp row; `›` marks it |
 | map | `Enter` | open the picked item |
+| map | `m` | move the picked ramp row; `Enter` places it and you stay on the map |
 | map | `?` | show the help |
 | map | `q` | quit; `q` quits only here |
 | item | `a` | show what the approval binds (goal, risk flags); `Enter` approves it |
@@ -211,7 +212,9 @@ The goal is the first line of its spec on the base branch. The stage says what t
 
 ### Moving
 
-`m` works on ramp rows, drafts included; an item someone holds has no place in the order. The arrows move the item among the other rows, and nothing is written until `Enter` places it, however far it went. Like [`pulse rank`](../reference/commands), this writes the rank of the moved item and no other, unless items above it have no rank yet: those get one too. `Esc` puts it back and writes nothing.
+`m` works on ramp rows, drafts included, on the map and in the item view; an item someone holds has no place in the order. The arrows move the item among the other rows, and nothing is written until `Enter` places it, however far it went. Like [`pulse rank`](../reference/commands), this writes the rank of the moved item and no other, unless items above it have no rank yet: those get one too. `Esc` puts it back and writes nothing. Either way you land where you pressed `m`.
+
+With color, every `#n` on the map and in the item view is a link to its issue on GitHub: a click opens it in a terminal that knows links (OSC 8), such as VS Code or iTerm. Other terminals show the plain number, and tmux passes links on only with `terminal-features` set to `hyperlinks`.
 
 ### Opening the spec
 

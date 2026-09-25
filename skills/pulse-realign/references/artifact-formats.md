@@ -125,9 +125,11 @@ Template: `skills/pulse-re/templates/FEATURE-TEMPLATE.md`, reduced scope.
 Location: `_devprocess/requirements/features/{slug}.md`, renamed to
 `FEAT-{ee}-{nn}-{slug}.md` by `pulse number --apply`. Every feature
 names its epic in `parent:`, shipped or not; the epic lists it under
-`## Items`. For a partially implemented feature, A7 pushes the specs,
-then runs `pulse new feat "<title>" --parent <epic> --spec <this spec>`,
-which writes `issue:` and adds the number to its Items line.
+`## Items`. Once A7 has pushed the specs, it gives every feature its
+record with
+`pulse new feat "<title>" --parent <epic> --spec <this spec>`, which
+writes `issue:` and adds the number to its Items line, and closes it
+with the other records of code that exists.
 
 ```yaml
 ---
@@ -149,6 +151,21 @@ Source: {file paths and line ranges that implement this feature}
 ## User stories
 
 [NEEDS USER INPUT]
+
+## Requirements
+
+- FR-01: WHEN a caller asks for the stored chats THE SYSTEM SHALL list them with id, title, and last change, newest first.
+  Source: src/chats/handlers.ts:42. Test: tests/chats.test.ts:18.
+- FR-02: IF the chat id is unknown THEN THE SYSTEM SHALL answer "not found" and change nothing.
+  Source: src/chats/handlers.ts:61. Test: none.
+- FR-03: WHEN the app stores a chat THE SYSTEM SHALL write it with these fields.
+  Source: src/chats/store.ts:12. Test: tests/store.test.ts:30.
+
+  | Field | Type | Required |
+  |---|---|---|
+  | id | string (UUID) | yes |
+  | title | string | yes |
+  | updatedAt | ISO 8601 timestamp | yes |
 
 ## Success criteria
 
@@ -172,18 +189,28 @@ Source: {config or middleware locations}
 Names stay short and capability-focused ("User login", "Project
 export"). One capability per feature, never lumped.
 
+Every operation the description names has at least one FR, and every
+error a caller sees has an `IF ... THEN` FR. A data contract a rebuild
+must keep (stored data, a file format, an API or protocol to the
+outside, config and env) is an FR with a field table (field, type,
+required); a contract several features share gets a feature of its own.
+Each FR stands on one line, its `Source:` and `Test:` on the next. The
+Activation Path names every identifier, not only one.
+
 ## 6. Observable success criteria (A4)
 
-One criterion per observable capability, derived from routes, handlers,
-tests. Target and measurement are `[AWAITING BA]` unless the code
-declares a deterministic target (timeout constants, rate limits, perf
-assertions); then the observed value goes in with `Source:`.
+One criterion per outcome a user sees; the FRs carry the detail. The
+target is what the code shows: it works (yes), or the number it sets,
+with `Source:`. `[AWAITING BA]` only for a business target the code
+cannot show (adoption, time saved, satisfaction). The measurement
+always names the test or the check.
 
 ```
 | ID | Criterion (observable) | Target | Measurement |
 |---|---|---|---|
-| SC-01 | User can reopen a conversation | [AWAITING BA] | pilot interview |
+| SC-01 | A user can reopen, rename, and delete a conversation | yes (Source: src/chats/handlers.ts:42-88) | tests/chats.test.ts |
 | SC-02 | Startup aborts when the sandbox is not ready after 30 s | 30 s (Source: src/main/index.ts:1088) | integration test |
+| SC-03 | Teams reuse conversations instead of starting over | [AWAITING BA] | pilot interview |
 ```
 
 `/pulse-ba` later replaces `[AWAITING BA]` with validated targets.
@@ -248,7 +275,13 @@ Verified against the code: {what was checked}.
 Then register it once A7 has pushed its commit, which writes `issue:`
 and `parent:` into the spec:
 `pulse new fix|imp "<title>" --parent <feature or epic> --spec <that spec>`.
-The record links the spec and holds nothing else.
+The record links the spec and holds nothing else. It stays open: the
+finding is the open work, while the feature above it is closed.
+
+A known defect gets an FR for the expected behavior, and the fix spec
+below it says where the code departs today.
+FRs without a test give one improvement spec per feature, "Spec tests
+for FR-..", that names the FR ids.
 
 Target already satisfied: no spec, one line in the realign report.
 Undecidable: no spec yet; list it in the report with the open question.

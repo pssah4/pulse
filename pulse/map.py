@@ -29,7 +29,7 @@ from pulse import config, dispatch, go, mapstart, presence, ready, spec, state
 WIDTH = 80                      # columns without a terminal, and of the demo page and the GIF (D-45)
 FEWEST, MOST = 60, 160          # the map follows its terminal's width within these
 STATE = .45                     # the most of a line a state takes when its title needs the rest
-ANSI = re.compile(r"\033\[[0-9;]*m")
+ANSI = re.compile(r"\033\[[0-9;]*m|\033\]8;;[^\033]*\033\\")     # colors, and terminal links (OSC 8)
 DOT = {"working": ("●", "32"), "error": ("●", "31"), "waiting": ("●", "33"), "idle": ("●", "90")}
 RANK = ("error", "waiting", "working", "idle")
 ROWS_SHOWN = 40                 # the ramp lists all open work; past this, a count
@@ -54,12 +54,13 @@ PHASE = {"plan": "planning", "build": "building", "spec tests": "RED check runni
          "review": "review running", "audit": "audit running", "fix": "fix round"}   # pulse go, per feature
 # the live map is a tree walked without Shift (D-44): the map, an item, and what acts on it
 UP, DOWN, ENTER, BACK = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n"), ("\x1b", "\x1b[D", "\x7f", "\x08")
-KEYS = {"map": "↑ ↓ pick  enter open  ? help  q quit",
+KEYS = {"map": "↑ ↓ pick  enter open  m move  ? help  q quit",
         "item": "a approve  p approve plan  o open spec  m move  esc back",
         "move": "↑ ↓ move  enter place  esc cancel",
         "confirm": "enter confirm  esc cancel",
         "help": "esc back"}
 HELP = """map      ↑ ↓ or j k pick an item, enter opens it
+         m moves a ramp row, enter places it
          ? shows this help, q quits
 item     its goal, stage, holder, blockers, PR, and PLAN
          a approves it, p approves its PLAN: both show
@@ -85,14 +86,14 @@ def fit(s: str, w: int) -> str:
     """Exactly w visible characters: cut without splitting an escape, then pad."""
     if vlen(s) > w:
         out, used = [], 0
-        for part in re.split(r"(\033\[[0-9;]*m)", s):
-            if part.startswith("\033["):
+        for part in re.split(f"({ANSI.pattern})", s):
+            if part.startswith("\033"):
                 out.append(part)
                 continue
             take = part[:w - used]
             out.append(take)
             used += len(take)
-        s = "".join(out) + ("\033[0m" if ANSI.search(s) else "")
+        s = "".join(out) + ("\033[0m" if ANSI.search(s) else "") + ("\033]8;;\033\\" if "\033]8" in s else "")
     return s + " " * (w - vlen(s))
 
 
@@ -134,6 +135,10 @@ class Paint:
 
     def __call__(self, s: str, code: str) -> str:
         return f"\033[{code}m{s}\033[0m" if self.color and s else s
+
+    def link(self, text: str, url) -> str:
+        """text as a terminal link to url (OSC 8), with color only: a pipe gets no escapes."""
+        return f"\033]8;;{url}\033\\{text}\033]8;;\033\\" if self.color and url else text
 
 
 def roll(states) -> str:
@@ -350,7 +355,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                                                  pr.get("draft") and "draft",
                                                  pr.get("checks") and f"checks {pr['checks']}"])) if pr else "none"),
                  ("PLAN", seen["plan"] or "none yet")]
-        return [section(f"#{n} {i['title']}"), ""] + [f" {k:<12}{v}" for k, v in facts]
+        return [section(f"{p.link(f'#{n}', i.get('url'))} {i['title']}"), ""] + [f" {k:<12}{v}" for k, v in facts]
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
     if counts["waiting"]:
         parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
@@ -375,8 +380,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         done = vm.get("closed", {}).get(e["number"], 0)
         total = done + sum(i.get("parent") == e["number"] for i in vm["items"])
         if total:
-            k = round(10 * done / total)
-            out.append(lr(f" #{e['number']} {e['title']}",
+            k, ref = round(10 * done / total), p.link(f"#{e['number']}", e.get("url"))
+            out.append(lr(f" {ref} {e['title']}",
                           p("█" * k, "32") + p("░" * (10 - k), "90") + f" {done} of {total} done", w))
     out.append("")
 
@@ -398,7 +403,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 rows.append(lr(stem + dot(roll(states)) + " " + e, p(doing, code), w))
                 continue
             st, words = gate(e)
-            label = f"#{e['number']} {e['title']}"
+            label = p.link(f"#{e['number']}", e.get("url")) + f" {e['title']}"
             if e["number"] not in shown:
                 shown.append(e["number"])
             if e["number"] == selected:
@@ -452,7 +457,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     # --- ramp ---------------------------------------------------------------
     out.append(section("RAMP", "all open work, in team order"))
     for row in rows[:ROWS_SHOWN]:
-        title = f"#{row['number']} {row['title']}"
+        title = p.link(f"#{row['number']}", row.get("url")) + f" {row['title']}"
         if row["number"] not in shown:
             shown.append(row["number"])
         left = p("▲ " + title, "36") if row["stage"].startswith("starts next") else "  " + title
@@ -497,9 +502,14 @@ def key(ui: dict, picks: list, rows: list, ch: str) -> tuple:
             return {**ui, "at": picks[max(0, k - 1) if ch in UP else min(len(picks) - 1, k + 1)]}, None
         if ch in ENTER and n in picks:
             return {"level": "item", "at": n}, None
+        if ch == "m" and n in picks:            # sort the ramp without opening the item
+            if n not in rows:
+                return ui, ("say", f"#{n} is held: only items on the ramp move")
+            return {"level": "move", "at": n, "to": rows.index(n), "from": "map"}, None
         return ({"level": "help", "at": n} if ch == "?" else ui), None
+    back = {"level": ui.get("from", "item"), "at": n}     # a move ends on the level it began on
     if ch in BACK:                              # one level up; the map itself only q ends
-        return {"level": "item" if level in ("move", "confirm") else "map", "at": n}, None
+        return (back if level in ("move", "confirm") else {"level": "map", "at": n}), None
     if level == "item":
         if ch != "m":
             return ui, {"a": ("approve", n), "p": ("approve-plan", n), "o": ("open", n)}.get(ch)
@@ -508,7 +518,7 @@ def key(ui: dict, picks: list, rows: list, ch: str) -> tuple:
         return {**ui, "level": "move", "to": rows.index(n)}, None
     if level == "move":
         if n not in rows:                       # claimed since the move began
-            return {"level": "item", "at": n}, ("say", f"#{n} left the ramp; nothing moved")
+            return back, ("say", f"#{n} left the ramp; nothing moved")
         rest = [m for m in rows if m != n]
         to = min(ui["to"], len(rest))           # the rows it moved among may have left the ramp since
         if ch in UP + DOWN:
@@ -516,7 +526,7 @@ def key(ui: dict, picks: list, rows: list, ch: str) -> tuple:
         if ch not in ENTER:
             return ui, None
         where = None if to == rows.index(n) else {"before": rest[to]} if to < len(rest) else {"after": rest[-1]}
-        return {"level": "item", "at": n}, where and ("rank", n, where)
+        return back, where and ("rank", n, where)
     if level == "confirm":                      # any other key: no approval
         return {"level": "item", "at": n}, ui["sure"] if ch in ENTER else None
     return ui, None

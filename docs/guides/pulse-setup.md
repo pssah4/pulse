@@ -8,7 +8,7 @@ description: Activate, configure, or deactivate Pulse in a project.
 `/pulse-setup` (in Codex `$pulse:pulse-setup`) asks a few questions, one at a time, and runs `pulse setup`. It writes:
 
 - **`.pulse/config.toml`**: the settings, see [Configuration](../reference/configuration).
-- **An anchor block** in the agent files that exist (CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .github/copilot-instructions.md, .windsurfrules): a short pointer for agents without hook support. A block left by the predecessor plugin (Digital Innovation Agents) is replaced in place, never duplicated.
+- **An anchor block** in the agent files that exist (CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .github/copilot-instructions.md, .windsurfrules): a short pointer for agents without hook support, and the rule that an item's plan is its PLAN file, which a plan mode only shows. The project's own files win over the rules the hooks bring, so this rule stands in them. When a later Pulse changes the block, a new session names each file whose block is out of date, and running setup again writes it anew. A block left by the predecessor plugin (Digital Innovation Agents) is replaced in place, never duplicated.
 - **Seven GitHub labels** (`pulse:epic`, `pulse:feat`, `pulse:imp`, `pulse:fix`, `pulse:approved`, `pulse:plan-ok`, `pulse:draft`), only after you agree, because that writes to the repository.
 
 On your yes it also adds:

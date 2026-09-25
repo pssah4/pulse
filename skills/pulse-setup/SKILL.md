@@ -95,9 +95,10 @@ pulse setup --cli
 ```
 
 It is a short script that runs, at each call, the Pulse in `$PULSE_HOME`
-when set, else the newest in the Claude Code plugin cache, else the
-newest in the Codex cache, so a plugin update needs no new setup. With
-Pulse installed in both, it runs the Claude Code copy: update both.
+when set, else the agent's own: in a Codex session the newest in the
+Codex cache, in a Claude Code session the newest in the Claude Code
+plugin cache, so neither agent needs the other. A terminal of its own
+runs the newest of both. A plugin update needs no new setup.
 When the report says `"on_path": false`, tell the person to add
 `~/.local/bin` to PATH in their shell profile:
 `export PATH="$HOME/.local/bin:$PATH"`. A status

@@ -26,9 +26,13 @@ Saved in `_devprocess/plans/{n}-{slug}.md` on the item's branch, with `issue:`, 
 | Decisions | each open question with the chosen option and the rejected ones with their reason |
 | Interfaces | signatures, types, schemas the item creates or changes |
 | Tasks | the requirement and criterion ids each covers, files, wave, diff budget, and the check that proves it; wave 1 holds the spec tests, one per requirement |
+| Not touched | the files and modules near the change that stay as they are: the blast radius |
+| Verification | build first, then the checks that prove the goal, then the regression checks |
 | Stop conditions | when the builder stops and reports instead of guessing |
 
 The rejected options matter most: the code will only ever show the winner.
+
+The PLAN file is the item's only plan. A plan mode, such as the one in Claude Code, shows it for approval and keeps no plan of its own: a plan outside the repository reaches no teammate, no other agent, and no ramp.
 
 **Coverage gate.** Before any code, checked mechanically as P1 to P5: the frontmatter names issue, spec, files, and verify, and the file is UTF-8; every requirement and success criterion is covered by a task or deferred with a reason, and every requirement has its spec test in wave 1; every task names files and a check, and `files` is exactly their union; tasks in one wave touch disjoint files; no placeholder is left. Every decision the plan relies on has a task that puts it into effect. The gate runs again whenever the spec or a decision changes.
 

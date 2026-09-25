@@ -326,6 +326,10 @@ def cmd_new(args):
         if not (root / args.spec).is_file():
             print(f"pulse new: write the spec first, {args.spec} does not exist in the repository")
             return 2
+        had = str(spec.front((root / args.spec).read_text(encoding="utf-8")).get("issue") or "").strip()
+        if had.isdigit() and not args.issue:        # a rerun, after a rate limit say: no second record
+            print(f"pulse new: {args.spec} has its record #{had} already; nothing created")
+            return 0
         branch = subprocess.run(["git", "-C", str(root), "branch", "--show-current"],
                                 capture_output=True, text=True).stdout.strip()
         ready.net_git(root, "fetch", "-q", "origin", branch)
@@ -554,7 +558,7 @@ def cmd_done(args):
     if _go_agent("done"):
         return 1
     root, repo, run = _ctx()
-    return _said(state.done(root, repo, args.n, run=run, take=args.take))
+    return max(_said(state.done(root, repo, n, run=run, take=args.take)) for n in args.n)   # one line each
 
 
 def cmd_setup(args):
@@ -639,8 +643,9 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--git-hook", action="store_true",
                    help="install a pre-commit hook: protected branches + pulse check")
     s.add_argument("--cli", action="store_true",
-                   help="the pulse command in ~/.local/bin; it runs the Pulse in $PULSE_HOME, else the newest "
-                        "in the Claude Code plugin cache, else the newest in the Codex cache")
+                   help="the pulse command in ~/.local/bin; it runs the Pulse in $PULSE_HOME, else the agent's "
+                        "own: a Codex session the newest in the Codex cache, a Claude Code session the newest "
+                        "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
                    help="Codex runs pulse without asking, except approve, approve-plan, rank, done, "
                         "release, claim, and pulse -- <command>")
@@ -649,12 +654,12 @@ def parser() -> argparse.ArgumentParser:
     for name, fn, text, take in (
             ("release", cmd_release, "give an item back",
              "also from another session of mine, or hand another person's claim over (with a comment)"),
-            ("done", cmd_done, "close an item", "close it whoever holds it"),
+            ("done", cmd_done, "close items, one line each", "close it whoever holds it"),
             ("claim", cmd_claim, "hold an item for this session; exit 1 when another person or session has it, "
                                  "or another running item holds one of its files",
              "take over from a session of mine that has ended")):
         c = add(name, fn, text, plumb=name == "claim")
-        c.add_argument("n", type=int)
+        c.add_argument("n", type=int, nargs="+" if name == "done" else None)
         c.add_argument("--take", action="store_true", help=take)
         if name == "release":
             c.add_argument("--note", default="", help="why, and where the work is, for whoever takes it next")

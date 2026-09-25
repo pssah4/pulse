@@ -54,6 +54,9 @@ a shared board on GitHub with one record per item, and parallel agents.
   and only `pulse` writes it. Never write status into Markdown.
 - Parallel work runs through `pulse go`, as far as `parallel` in the
   settings allows: ready items with disjoint files never wait for each other.
+- An item's plan is its PLAN file `_devprocess/plans/{{n}}-{{slug}}.md`. A
+  plan mode, where the agent has one, only shows that PLAN for approval and
+  keeps no plan of its own; in this project this holds over any other rule about plans.
 - The always-on rules arrive through the Pulse hooks. An agent without
   hook support reads them from hooks/rules.md in the Pulse plugin.
 
@@ -136,17 +139,19 @@ def write_git_hook(root: Path, remove: bool = False) -> dict:
 MARK = "written by `pulse setup"      # in every file pulse setup owns outside the project
 SHIM = r"""#!/bin/sh
 # pulse, written by `pulse setup --cli`. Each call looks the Pulse up again,
-# so a plugin update needs no new setup: $PULSE_HOME, else the highest
-# version in the Claude Code plugin cache, else the one in the Codex cache.
+# so a plugin update needs no new setup: $PULSE_HOME, else the agent's own
+# copy, so neither agent needs the other, else the newest of both caches.
 newest() {
-  for b in "$1"/plugins/cache/*/pulse/*/bin/pulse; do
+  for c; do for b in "$c"/plugins/cache/*/pulse/*/bin/pulse; do
     d=${b%/bin/pulse}
     [ -x "$b" ] && [ ! -e "$d/.orphaned_at" ] && printf '%s %s\n' "${d##*/}" "$b"
-  done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f2-
+  done; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f2-
 }
+cl=${CLAUDE_CONFIG_DIR:-$HOME/.claude} cx=${CODEX_HOME:-$HOME/.codex}
 bin=${PULSE_HOME:+$PULSE_HOME/bin/pulse}
-[ -n "$bin" ] || bin=$(newest "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
-[ -n "$bin" ] || bin=$(newest "${CODEX_HOME:-$HOME/.codex}")
+[ -n "$bin" ] || [ -z "${CODEX_THREAD_ID:-}" ] || bin=$(newest "$cx")   # a Codex session
+[ -n "$bin" ] || [ "${CLAUDECODE:-}" != 1 ] || bin=$(newest "$cl")      # a Claude Code session
+[ -n "$bin" ] || bin=$(newest "$cl" "$cx")                               # a terminal of its own
 [ -z "${PULSE_WHICH:-}" ] || { echo "$bin"; exit 0; }    # for the Pulse hook
 if [ ! -x "$bin" ]; then
   echo "pulse: no installed Pulse found. Install it: claude plugin install pulse@pssah4-skills" \

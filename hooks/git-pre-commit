@@ -20,16 +20,17 @@ for p in $protected; do
 done
 # pulse from PATH first: the shim from `pulse setup --cli` survives plugin updates; else the
 # plugin that wrote this hook; else, when an update or an uninstall orphaned that one, the
-# copy the shim would run. A shim without an installed copy exits 127.
+# newest copy of both plugin caches, as the shim runs in a terminal. A shim without an
+# installed copy exits 127.
 newest() {
-  for b in "$1"/plugins/cache/*/pulse/*/bin/pulse; do
+  for c; do for b in "$c"/plugins/cache/*/pulse/*/bin/pulse; do
     d=${b%/bin/pulse}
     [ -x "$b" ] && [ ! -e "$d/.orphaned_at" ] && printf '%s %s\n' "${d##*/}" "$b"
-  done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f2-
+  done; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f2-
 }
 PULSE=""
 for b in "$(command -v pulse)" "{{pulse_bin}}" "${PULSE_HOME:+$PULSE_HOME/bin/pulse}" \
-    "$(newest "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}")" "$(newest "${CODEX_HOME:-${HOME:-}/.codex}")"; do
+    "$(newest "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" "${CODEX_HOME:-${HOME:-}/.codex}")"; do
   [ -n "$b" ] && [ ! -e "${b%/bin/pulse}/.orphaned_at" ] || continue
   "$b" --help >/dev/null 2>&1
   [ $? -lt 126 ] && { PULSE=$b; break; }

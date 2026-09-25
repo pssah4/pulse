@@ -5,6 +5,48 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-09-25
+
+### Changed
+
+- An item's plan is its PLAN file `_devprocess/plans/{n}-{slug}.md`. The
+  anchor block `pulse setup` writes into the agent files says so, and so
+  do the rules: a plan mode only shows the PLAN for approval, and a plan
+  outside the repository does not count. The PLAN template gains the
+  sections Not touched and Verification.
+- A new session names each agent file whose Pulse block is out of date,
+  and `/pulse-setup` writes it anew.
+- `/pulse-realign` gives every epic and feature spec a record and, after
+  one question, closes the records of code that exists in one `pulse
+  done` call: the board holds only open work, and each epic counts its
+  features as done. `pulse done` takes several numbers, and `pulse new
+  --spec` creates nothing for a spec that has its record, so a stopped
+  run goes on without duplicates.
+- `/pulse-realign` delivers a basis to rebuild the product from: A1
+  counts the entry points per kind, every observed behavior becomes a
+  requirement with its source and its test, a success criterion carries
+  the observed target, and the verification gate also checks code to
+  spec and runs a rebuild reading with fresh subagents. The handoff
+  reports in numbers and says "rebuildable" only when no inventory entry
+  and no place of the rebuild reading stays open.
+- On the map, `m` moves the picked ramp row and the map stays; its
+  footer names the key. With color, each `#n` links to its issue in a
+  terminal that knows links (VS Code, iTerm).
+
+### Fixed
+
+- The `pulse` command runs the Pulse of the agent that calls it: a Codex
+  session its Codex copy, a Claude Code session its Claude Code copy, and
+  a terminal of its own the newest of both. An older Pulse in Claude Code
+  no longer stands in for a newer one in Codex, so each works without the
+  other.
+
+### Upgrading
+
+- Run `pulse setup --cli` once more: it rewrites `~/.local/bin/pulse`.
+- Run `/pulse-setup` once in each project: the anchor block now says that
+  an item's plan is its PLAN file.
+
 ## [0.1.1] - 2026-09-25
 
 ### Added

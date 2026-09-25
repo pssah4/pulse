@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Claude Code plugins by Sebastian Hanke. Pulse and more.",
-    "version": "0.1.1"
+    "version": "0.1.2"
   },
   "plugins": [
     {
       "name": "pulse",
       "source": "./",
       "description": "Pulse: method, shared board, and parallel builds for teams with coding agents",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "strict": true
     }
   ],

@@ -27,16 +27,24 @@ Code tells you what exists, not whether it solves the right problem. The reverse
 
 The walk, scaled to Simple Test, PoC, or MVP:
 
-1. **Codebase map:** manifests, entry points, tests, CI, existing docs; the source pool for everything after.
+1. **Codebase map:** manifests, entry points, tests, CI, existing docs. Count the entry points: every registration the stack uses, the config keys and env vars, stored data, and external services, counted per kind. This inventory is the source pool for everything after and what the gate checks the specs against.
 2. **Navigation:** a system map with fast paths into the code, proposals for path-local AGENTS.md files.
 3. **Decisions:** only visible, consequential, non-obvious ones, each with a read-when; the arc42 reference at MVP scope.
-4. **Epics and features:** anticipated epics grouping observed capabilities, one feature spec per capability, one observable success criterion each. Every feature names its epic in `parent:`, every epic lists all its features under `## Items`, and `pulse number --apply` starts each file name with its ID (`EPIC-04`, `FEAT-04-02`), so a folder listing shows which features belong to which epic.
+4. **Epics and features:** anticipated epics grouping observed capabilities, one feature spec per capability. Each observed behavior is a requirement with its source and its test (or `none`): every operation, every error a caller sees, every limit, every data contract a rebuild must keep. Operations such as install, start, and logging are features too. A success criterion carries the observed target; only a business target waits for the BA. A rerun completes the specs of an earlier realign in place. Every feature names its epic in `parent:`, every epic lists all its features under `## Items`, and `pulse number --apply` starts each file name with its ID (`EPIC-04`, `FEAT-04-02`), so a folder listing shows which features belong to which epic.
 5. **BA draft:** from README, docs, and changelogs only; the header counts what came from sources and what still needs you.
-6. **Findings:** TODOs, skipped tests, features without tests, outdated dependencies; each checked against the code before it counts.
-7. **Items:** after the verification gate, epics with open work, partly built features, and verified findings get a record on the board, each pointing at its draft. Nothing is approved before `/pulse-ba` and [`/pulse-re`](./pulse-re) validated it.
+6. **Findings:** TODOs, skipped tests, requirements without a test (one improvement per feature), outdated dependencies; each checked against the code before it counts.
+7. **Records:** after the verification gate, every epic, every feature, and every verified finding gets a record, each pointing at its spec; a rerun skips a spec that has one. The epics and features describe code that exists: after one question, one `pulse done` call closes their records, so the board holds only open work and each epic counts its features as done. An epic with an open fix or improvement stays open. Nothing is approved before `/pulse-ba` and [`/pulse-re`](./pulse-re) validated it.
 8. **Cleanup:** method files from earlier tools go once their content moved (see [below](#nothing-of-the-old-structure-stays)).
 
-**Verification gate.** Before any record exists, every feature spec and decision is checked against the code: source paths exist, sampled criteria are evidenced, drift is named. Drift beyond a one-line doc edit becomes an item of its own.
+**Verification gate.** Before any record exists, three checks run:
+
+- **Spec to code:** every feature spec and decision is checked against the code: source paths exist, sampled criteria are evidenced, drift is named. Drift beyond a one-line doc edit becomes an item of its own.
+- **Code to spec:** every entry of the inventory points at a feature, or the report names it as internal, with the reason.
+- **Rebuild reading:** fresh subagents read each spec without the code first and note every place where a rebuild would have to guess; then they read the code. What the code decides becomes a requirement.
+
+### What you can rebuild from
+
+The specs, the decisions, and the system map are the blueprint; the board carries only open work. The handoff reports in numbers: inventory entries covered and internal, requirements with and without a test, places the rebuild reading found and closed, and the open BA points. It says the product is rebuildable only when no inventory entry and no place of the rebuild reading stays open, and otherwise names what is missing. A rebuild from the specs gives today's product without the open fixes.
 
 ## Mode B: moving a DIA project to Pulse
 

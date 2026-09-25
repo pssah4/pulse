@@ -88,8 +88,15 @@ module, 30 to 60 min), PoC (full stack, 3 to 8 decisions, 5 to 15
 features, BA draft, 1 to 3 h), MVP (full arc42 reference, 8+ decisions,
 15+ features, 3 to 8 h). Then report a codebase map: manifests, top-level
 directories, entry points, test setup, CI, lint config, existing docs.
-This inventory is the source pool for the rest of the walk. Mark the
-method and process files in it (old specs, backlogs, TODO lists, plans,
+Count the entry points by searching for every registration the stack
+uses (the activation path entry types in
+`skills/pulse-build/references/reachability.md`, for example routes,
+commands, handlers, tools, jobs, exports), plus the config keys and env vars the
+code reads, the data it stores, and the services it calls. This
+inventory, counted per kind, is the source pool for the rest of the
+walk and what the Code to spec check of the gate holds the specs
+against. Mark the method and process files in it (old specs other than
+those an earlier realign wrote, backlogs, TODO lists, plans,
 decision notes, another tool's config and folders): A2 to A7 take their
 content in, A8 removes them.
 
@@ -104,12 +111,21 @@ future agent will hit. `kind: post-hoc`, paths in `## Sources`, router
 row in `_devprocess/decisions/README.md`. The arc42 reference only at
 MVP scope or on request, sections without substance omitted.
 
-**A4 Epics, features, observable criteria.** Capabilities from routes,
-handlers, CLI commands, public API, pages, exports, test descriptions.
-Anticipated epics group them; one feature spec per observable
-capability, never lumped; one observable success criterion each, with
-`[AWAITING BA]` unless the code declares a deterministic target. Every
-feature names its epic in `parent:`, and every epic lists all its
+**A4 Epics, features, requirements.** Capabilities from the A1
+inventory, routes, handlers, CLI commands, public API, pages, exports,
+test descriptions. Anticipated epics group them; one feature spec per
+observable capability, never lumped. Each observed behavior is a
+requirement (FR) with its `Source:` and its `Test:` (a test that shows
+it, or `none`): every operation, every error a caller sees, every limit,
+every data contract a rebuild must keep (`references/artifact-formats.md`
+section 5). Operations (install, start, update, config, logging,
+background jobs) are features too; their limits are NFRs with the number
+and its source. Where the code departs from what its docs or callers
+expect, the FR says what is expected and a fix spec below it says where
+the code departs. Success criteria carry the observed target, it works
+or the number the code sets; `[AWAITING BA]` only for a business target.
+Specs an earlier realign wrote (`source: /pulse-realign`) are completed
+in place, never written anew. Every feature names its epic in `parent:`, and every epic lists all its
 features under `## Items`, without an issue number while they have no
 record. Once the gate passed, `pulse number --apply` starts each file
 name with its ID (`EPIC-04`, `FEAT-04-02`, `FIX-04-02-01`).
@@ -120,35 +136,56 @@ placeholder; the header counts `filled-from-sources` and
 `needs-user-input`.
 
 **A6 Findings.** TODO/FIXME/HACK, skipped tests, undocumented env vars,
-features without tests, outdated dependencies, missing CI steps. Read the
+FRs without a test (one improvement per feature, naming the FR ids),
+outdated dependencies, missing CI steps. Read the
 code AND the doc a finding points at; drop what is already satisfied.
 
-**A7 Issues.** After the verification gate, commit the specs on a docs
+**A7 Records.** After the verification gate, commit the specs on a docs
 branch and push it: `pulse new --spec` takes a spec only once its commit
-is on origin. Then every record gets its own spec:
-`pulse new epic "<title>" --spec <its epic draft>` for each
-anticipated epic that holds open work,
+is on origin. Then every spec gets its record, parents first:
+`pulse new epic "<title>" --spec <its epic draft>` for each epic,
 `pulse new feat "<title>" --parent <epic> --spec <its feature draft>`
-for partially implemented features, and for each verified finding a fix
-or improvement spec (`references/artifact-formats.md` section 8)
-registered with
+for each feature, and for each verified finding a fix or improvement
+spec (`references/artifact-formats.md` section 8) registered with
 `pulse new fix|imp "<title>" --parent <feature or epic> --spec <that spec>`.
-Commit what they wrote and push again. Shipped features need no record;
-their spec is enough. Nothing is approved: that happens after
-`/pulse-ba` and `/pulse-re` validated it.
+A spec whose `issue:` names a record already is skipped, so a run that
+stopped (at a rate limit of GitHub, say) goes on where it stopped.
+Commit what they wrote and push again. The epics and features describe
+code that exists, so their records are done: list them for the person,
+every feature and every epic without an open fix or improvement below
+it, and on one yes close them in one call, `pulse done <n> <n> ...`. An
+epic with an open fix or improvement below it stays open. The board
+then holds only open work, and each epic counts its features as done.
+What a partially built feature lacks is a finding with its own spec.
+Nothing is approved: that happens after `/pulse-ba` and `/pulse-re`
+validated it.
 
 **A8 Cleanup.** See Cleanup below.
 
 ### Codebase verification gate (binding)
 
-Before A7, every feature spec and every decision record is checked
-against the code. Append a footer: `Codebase verification {date}:
-shipped, no drift`, or the full block with checked source paths (n/m
-exist), sampled criteria or core decision (n/m evidenced), drift
-findings ("Doc: X / Code: Y / Assessment: ..."), and a proposed item.
-Every drift finding beyond a one-line doc edit becomes a finding for
-A7. Large projects: split the gate across parallel subagents with
-disjoint files.
+Before A7, three checks.
+
+- **Spec to code.** Every feature spec and every decision record is
+  checked against the code. Append a footer: `Codebase verification
+  {date}: shipped, no drift`, or the full block with checked source
+  paths (n/m exist), sampled criteria or core decision (n/m evidenced),
+  drift findings ("Doc: X / Code: Y / Assessment: ..."), and a proposed
+  item. Every drift finding beyond a one-line doc edit becomes a finding
+  for A7.
+- **Code to spec.** Every entry of the A1 inventory points at a feature
+  (its Activation Path or an FR), or the handoff names it as internal
+  (no user, caller, or outside system reaches it), with the reason. No
+  entry stays open.
+- **Rebuild reading.** Fresh subagents, each with its own specs, read a
+  spec first without the code and note every place where a rebuild
+  would have to guess; then they read the code at its sources. What the
+  code decides becomes an FR; a free choice of implementation stays out.
+  Each subagent writes those FRs into its specs and adds the places
+  found and closed to the gate footer of each spec.
+
+Large projects: split the gate across parallel subagents with disjoint
+files.
 
 ### Derivability: what is never written down
 
@@ -160,7 +197,7 @@ disjoint files.
 | Status, claim, blockers | GitHub issues | never in files |
 | Tree epic > feature > fix | `parent:`, `## Items`, the ID in the file name | always |
 | History, authorship | git log, PRs | never |
-| Behavior under test | test files | referenced as evidence |
+| Behavior under test | test files | `Test:` per FR |
 
 ## Mode B: migrate a DIA project
 
@@ -248,7 +285,14 @@ user agrees.
 Close the realign draft: `pulse done <n>`. Its work lives in the records
 A7 or `pulse migrate --issues` made, and in the specs. Report what was
 produced and verified, the cleanup list (old path, new home), and the
-sweep output. After Mode B, teammates delete the git
+sweep output. Report in numbers after Mode A: the inventory (entries a
+feature covers, entries internal), the FRs (with a test, without), the
+rebuild reading (places found, places closed), and, separately, the
+open BA points (stories, business targets). Say "rebuildable" only when no inventory
+entry and no place of the rebuild reading stays open; else name what is
+missing. The blueprint is the specs, the decisions, and the system map;
+the board carries only open work, and a rebuild from the specs gives
+today's product without the open fixes. After Mode B, teammates delete the git
 hooks DIA installed in their own clones (`.git/hooks/pre-commit` and
 `pre-merge-commit` with a DIA header, `.git/hooks-data/`). Recommend
 `/pulse-ba` in Validation Mode for the BA draft, then `/pulse-re` for

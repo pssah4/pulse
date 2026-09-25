@@ -104,6 +104,11 @@ one the PLAN does not cover, ask the user. A session without a person
 (an agent `pulse go` started) never asks: it leaves that step undone and
 writes it into DISCOVERED.md at the worktree root.
 
+An item's plan is its PLAN file `_devprocess/plans/{n}-{slug}.md`,
+committed on the item's branch. A plan mode, where the agent has one, only shows that
+PLAN for approval and keeps no plan of its own: a plan outside the
+repository does not count.
+
 One feature, one branch, one pull request. On its branch the build works
 through the PLAN's tasks; then three gates run in order: the project's
 tests (`verify` in `.pulse/config.toml`; `pulse go` does not start

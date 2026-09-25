@@ -134,7 +134,7 @@ P="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/pssah4-skills/pulse"
 
 Claude Code keeps older version folders after an update, so the line picks the newest. The cache lies under `CLAUDE_CONFIG_DIR` when you set it, else under `~/.claude`. `/pulse-setup` in a Claude Code session offers the same step.
 
-This writes `~/.local/bin/pulse`, a short script that runs the newest Pulse in the Claude Code plugin cache, or in the Codex cache when Claude Code has none, so an update needs no new setup. With Pulse installed in both, `pulse` runs the Claude Code copy, so update both. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile: `~/.zshrc` for zsh, the macOS default; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux. The change reaches only shells started after it, so open a new terminal (restart VS Code if you work there) and check with `pulse --help`. Until then, `~/.local/bin/pulse` runs it by its full path.
+This writes `~/.local/bin/pulse`, a short script that runs the newest Pulse of the agent that calls it: a Codex session its Codex copy, a Claude Code session its Claude Code copy, and your own terminal the newest of both. An update needs no new setup, and neither agent needs the other. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile: `~/.zshrc` for zsh, the macOS default; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux. The change reaches only shells started after it, so open a new terminal (restart VS Code if you work there) and check with `pulse --help`. Until then, `~/.local/bin/pulse` runs it by its full path.
 
 Update (Claude Code does not update this marketplace on its own), then restart Claude Code:
 

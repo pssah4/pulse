@@ -77,6 +77,10 @@ it without asking. It carries:
 - **Wave** per task: tasks with the same wave number touch disjoint files
   and do not need each other's output, so they can run at once. A task
   that needs another one's result goes into a later wave.
+- **Not touched:** the files and modules near the change that stay as
+  they are, so a reviewer sees the blast radius.
+- **Verification:** build first, then the checks that prove the goal,
+  then the regression checks; the `verify:` commands run them.
 - **Stop conditions:** what makes the builder stop and report instead of
   guessing.
 - **needs:** work that has to come first and is not yet an item, or a
@@ -130,6 +134,9 @@ decision changes). `pulse go` and the ramp check P1 to P5 mechanically:
    into effect.
 
 ## Where the PLAN lives, and who approves it
+
+The PLAN file is the item's only plan. A plan mode, where the agent has
+one, shows it for approval and keeps no plan of its own.
 
 Once the PLAN is saved, run `pulse claim <n>` again (this session holds
 the item already): the claim then carries the PLAN's `files:`, and every

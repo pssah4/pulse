@@ -12,7 +12,10 @@ description: >
 `pulse map` is the live map in a terminal of its own: it redraws every
 two seconds and takes keys, none with Shift, and its last line lists the
 keys of the level it is on. On the map `↑` `↓` (or `j` `k`) pick an item,
-`Enter` opens it, `?` shows the help, `q` quits. In the item view (goal,
+`Enter` opens it, `m` moves a ramp row (arrows, `Enter` places it, and
+the map stays), `?` shows the help, `q` quits. With color, each `#n` is
+a link to its issue in a terminal that knows links (VS Code, iTerm).
+In the item view (goal,
 stage, holder with phase and last sign of life, blockers, PR, PLAN) `a`
 approves it, `p` approves its PLAN (both show what they bind first,
 `Enter` confirms), `o` opens its spec in a window while the map runs on
@@ -118,7 +121,7 @@ off for the project, `PULSE_GO=off` for one shell.
   follows when a run of `pulse go`, or a session with `pulse release
   <n> --note`, gave the item back. `starts next`
   takes a free slot, the busy ones stand on my row above. The order
-  changes with `m` in the item view of `pulse map` or with
+  changes with `m` on `pulse map` or in its item view, or with
   `pulse rank <n> --before <m>`; only a person decides it, an agent moves
   nothing unless asked.
 

@@ -50,6 +50,15 @@ when nothing crosses a module boundary.}
 | 1 | spec tests, one per FR, named after its id | FR-01, FR-02 | `{tests/path/test_file.ext}` (create) | 1 | ~{n} lines | `{test command}` fails first |
 | 2 | {task} | SC-01 | `{src/path/file.ext}` (modify) | 2 | ~{n} lines | `{command}` |
 
+## Not touched
+
+{The files and modules near the change that stay as they are: the blast radius a reviewer checks.}
+
+## Verification
+
+{Build first, then the checks that prove the goal, then the regression checks; the commands
+under verify run them.}
+
 ## Stop conditions
 
 Stop instead of guessing when the work needs: a file outside `files`, a
