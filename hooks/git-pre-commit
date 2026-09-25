@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Pulse pre-commit, written by `pulse setup --git-hook`; `pulse setup --remove` takes it out.
+#   1. nothing with mode = "off" in .pulse/config.toml
+#   2. no commits on protected branches (git config pulse.protected-branches)
+#   3. pulse check stays clean; skipped without a Pulse CLI
+# Bypass a single commit with --no-verify.
+set -u
+# git runs a hook at the top of the work tree
+if grep -Eqs "^[[:space:]]*mode[[:space:]]*=[[:space:]]*[\"']off[\"']" .pulse/config.toml; then
+  echo "pulse: mode is off, git hook skipped."
+  exit 0
+fi
+branch=$(git symbolic-ref --short -q HEAD || echo "")   # also names an unborn branch
+protected=$(git config --get pulse.protected-branches || echo "main master develop dev")
+for p in $protected; do
+  if [ "$branch" = "$p" ]; then
+    echo "pulse: commits on $branch are blocked; work on a branch like feat/<n>-<slug>."
+    exit 1
+  fi
+done
+# pulse from PATH first: the shim from `pulse setup --cli` survives plugin updates; else the
+# plugin that wrote this hook; else, when an update or an uninstall orphaned that one, the
+# copy the shim would run. A shim without an installed copy exits 127.
+newest() {
+  for b in "$1"/plugins/cache/*/pulse/*/bin/pulse; do
+    d=${b%/bin/pulse}
+    [ -x "$b" ] && [ ! -e "$d/.orphaned_at" ] && printf '%s %s\n' "${d##*/}" "$b"
+  done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f2-
+}
+PULSE=""
+for b in "$(command -v pulse)" "{{pulse_bin}}" "${PULSE_HOME:+$PULSE_HOME/bin/pulse}" \
+    "$(newest "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}")" "$(newest "${CODEX_HOME:-${HOME:-}/.codex}")"; do
+  [ -n "$b" ] && [ ! -e "${b%/bin/pulse}/.orphaned_at" ] || continue
+  "$b" --help >/dev/null 2>&1
+  [ $? -lt 126 ] && { PULSE=$b; break; }
+done
+if [ -z "$PULSE" ]; then
+  echo "pulse: CLI not found, pulse check skipped (pulse setup --cli puts it on PATH)."
+  exit 0
+fi
+"$PULSE" check || { echo "pulse: fix the findings above, or bypass once with --no-verify."; exit 1; }

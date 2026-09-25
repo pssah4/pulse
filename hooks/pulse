@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Hook shim: run-hook.cmd finds bash on every platform, this finds python.
+# No python means no hook output, never a failed session.
+PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || exit 0
+exec "$PY" "$(dirname "$0")/pulse_hook.py" "$@"

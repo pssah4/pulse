@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Runs in the public mirror pssah4/pulse, where sync-public.yml of the dev
+# repository copies it. Every push to the mirror's main is a snapshot from the
+# dev repository's main. When the version in .claude-plugin/plugin.json has no
+# release v<version> yet, this job creates it, with the CHANGELOG.md section of
+# that version as its notes. A snapshot without a new version creates nothing.
+# A section still marked "Unreleased" stops the job: date it before the merge
+# to main. In the dev repository the job does nothing (the check below).
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'pssah4/pulse'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Release a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('.claude-plugin/plugin.json'))['version'])")
+          tag="v${version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag exists, nothing to do"
+            exit 0
+          fi
+          heading=$(grep -m1 -F "## [${version}]" CHANGELOG.md || true)
+          if [ -z "$heading" ]; then
+            echo "::error::CHANGELOG.md has no section ## [${version}]"
+            exit 1
+          fi
+          case "$heading" in
+            *Unreleased*) echo "::error::CHANGELOG.md still says '${heading}': date the section, then merge to main again"; exit 1;;
+          esac
+          awk -v h="## [${version}]" 'index($0, h) == 1 {f=1; next} f && /^## \[/ {exit} f' CHANGELOG.md > notes.md
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Pulse ${version}" --notes-file notes.md --latest

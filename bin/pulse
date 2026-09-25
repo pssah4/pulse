@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Pulse CLI: runs the pulse package from the plugin this file lives in,
+# also when called through a symlink (e.g. ~/.local/bin/pulse).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || { echo "pulse: python 3 not found" >&2; exit 127; }
+# -I keeps the working directory and PYTHON* variables out of sys.path, so a
+# json.py or pulse/ in the repo at hand never runs in place of ours.
+exec "$PY" -I -c "import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); \
+runpy.run_module('pulse', run_name='__main__', alter_sys=True)" "$ROOT" "$@"
