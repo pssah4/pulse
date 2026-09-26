@@ -38,6 +38,8 @@ The PLAN file is the item's only plan. A plan mode, such as the one in Claude Co
 
 **Who approves it.** With `plan_approval = "auto"` (the default) a PLAN that passes the gate is approved at once, unless a risk flag (`risk:`) or `effort: L` in the spec, or an entry under `needs:` in the PLAN, holds it for a person. With `manual`, every PLAN waits. A person approves with `pulse approve-plan <n>` or in the ramp. The approval binds to the PLAN as it is at that moment: `pulse approve-plan` prints its digest and its goal, and a PLAN rewritten afterwards waits again. The map sends back the digest of the PLAN the person read and refuses the approval when the PLAN changed since. [`pulse go`](./pulse-go) writes PLANs for approved items by itself, in ramp order.
 
+**Its place on the architecture map.** When the project has layers in `_devprocess/architecture-map.md`, the planner writes the item's place into its spec along with the PLAN (`layer: <layer>/<group>`), and each new decision record gets its `layer:` too. Without that file, a planner in a session with you proposes the layers once, from the code and the system map; a headless planner of `pulse go` never writes them. `pulse arch --open` shows the result ([Architecture map](../reference/artifacts#architecture-map)).
+
 ## Planning for parallel work
 
 - **Disjoint files.** Two items that change the same file cannot run at once; avoid shared files where a new module or a registry entry in its own file would do.
@@ -58,4 +60,4 @@ Records follow MADR and carry `applies-to` and `read-when`; the router `decision
 
 ## On request
 
-arc42 constraints before the code (quality goals, constraints, scenarios, risks), the full arc42 reference after it for auditors and customers, and a system map with fast paths into the code.
+arc42 constraints before the code (quality goals, constraints, scenarios, risks), the full arc42 reference after it for auditors and customers, a system map with fast paths into the code, and the layers of the [architecture map](../reference/artifacts#architecture-map), with `layer:` for every spec that has none yet and a drawn overview if you like.

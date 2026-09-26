@@ -19,7 +19,7 @@ import time
 from datetime import date
 from pathlib import Path
 
-from pulse import config, dispatch, ready, state
+from pulse import config, dispatch, presence, ready, state
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
 SKILL = SKILLS / "pulse-review" / "SKILL.md"
@@ -403,7 +403,8 @@ def run(root: Path, n: int = None, title: str = "", spec=None, base=None, agent=
         cp = subprocess.run(config.agent_argv(template(cfg, agent), b["prompt"]), cwd=root,
                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
                             timeout=cfg["agent_timeout"] * 60,
-                            env={**os.environ, "PULSE_HOLDER": json.dumps(state.holder())})
+                            env={**{k: v for k, v in os.environ.items() if k not in presence.SURFACE},   # #61
+                                 "PULSE_HOLDER": json.dumps(state.holder())})
         failed = f"ended with exit {cp.returncode}" if cp.returncode else ""
     except subprocess.TimeoutExpired:
         failed = "timed out"

@@ -68,11 +68,19 @@ claim belongs to the session that made it: another session, even under
 the same login, gets exit 1 and picks other work; the refusal names the
 command that frees the item. A stopped `pulse go` leaves its work on the
 item branch and a note on the item; whoever goes on builds on that
-branch. `pulse release <n> --take` hands another
+branch. `pulse release --take <n>` hands another
 person's claim over: their assignee and marks go, and a comment names
-who did it; then claim as usual. `pulse claim <n> --take` takes over
+who did it; then claim as usual. `pulse claim --take <n>` takes over
 from a session of your own that has ended. An agent runs either only
-after the user says yes. Ask, do not read: `pulse status`
+after the user says yes. When Codex refuses a `pulse` command with
+"approval required by policy", the session runs in Full access and
+cannot ask: give the person the command for their own terminal, or ask
+them to switch Codex to a mode that asks, and look for no other way. A
+claim made there belongs to that terminal: in place of `claim --take`,
+the person runs `pulse release --take <n>`, then you claim as usual. A
+refused plain `claim` or `release` means the Codex rules are older than
+this Pulse: the person runs `pulse setup --codex-rules` again.
+Ask, do not read: `pulse status`
 (all open work in the team order, what each item waits for, and what
 starts next; `--json` for the same as data), `pulse show <n>`. Specs
 carry `issue:`, `parent:`, and links to other documents, never state.

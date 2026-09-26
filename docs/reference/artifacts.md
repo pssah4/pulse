@@ -28,6 +28,8 @@ _devprocess/
 │  └─ ADR-{nn}-{slug}.md           a decision that constrains later changes       planning
 ├─ temp/testing/                   temporary, ignored, deleted after use          /pulse-build, review
 ├─ SYSTEM-MAP.md                   system shape and fast paths (on request)      planning, /pulse-realign
+├─ architecture-map.md             the layers of the architecture map            planning, /pulse-realign
+├─ architecture-map.svg            a drawn picture of those layers (on request)  planning
 └─ arc42.md                        constraints and quality goals (on request)    planning
 ```
 
@@ -47,6 +49,7 @@ subtype: user-facing                       # or library
 priority: P1                               # P0 to P2
 effort: M                                  # XS to L
 risk: []                                   # flags that make a person approve the PLAN
+layer: ui/nav                              # its place on the architecture map; planning writes it
 ---
 ```
 
@@ -98,6 +101,29 @@ Every artifact names the one it came from, so any line of code leads back to a b
 ```
 BA  ->  epic  ->  feature  ->  PLAN  ->  decision record  ->  commit (Refs: #n)  ->  pull request (Closes #n)
 ```
+
+## Architecture map
+
+`pulse arch` builds a page of your architecture: each layer with its features and decision records, and a page for every feature, decision, and epic with its spec, its fixes and improvements, and the decisions it names or shares a source file with. `pulse arch --open` opens it in the browser.
+
+The page shows what is merged. Pulse builds it from the base branch into `.git/pulse/architecture-map.html`, one per clone, and never commits it, so parallel pull requests never collide over it. A running live map (`pulse map`) and every round of `pulse go` rebuild it when the base branch moved: they fetch at most every 30 seconds, so after a merge the live map brings it within about that time, and `pulse go` at its next round. `pulse arch` builds it at once. The file keeps its path, so a bookmark keeps working.
+
+The layers come from `_devprocess/architecture-map.md`:
+
+```markdown
+## ui: User interface
+
+What people see and operate.
+
+- nav: Navigation
+- set: Settings
+```
+
+`## <id>: <name>` opens a layer, top to bottom as a request passes through the system; the paragraph says what the layer holds; `- <id>: <name>` names a group in it. A spec or decision record names its place in its front matter: `layer: ui/nav`, or `layer: ui` for the layer alone. Planning writes it when it plans a feature, and a fix or improvement stands with its parent. `pulse check` (C11) reports a layer or group the file lacks, and the map shows a feature or decision without a valid `layer:` under **Not placed**. Every epic is linked from the top of the map; a fix or improvement shows on the page of its feature or epic, and one with neither in a box of its own. Without the file the map groups the features by epic: planning proposes the layers in a session with you, and `/pulse-realign` writes them for an existing codebase.
+
+::: v-pre
+A drawn overview is optional. `_devprocess/architecture-map.svg` stands above the layers; `{{features:<layer>}}` in it becomes that layer's count in words, such as "3 features", and `<a href="#layer-<layer>">` around a box leads to the layer. The page keeps its shapes, text, markers, and links within the page, and leaves out everything else, a style element or attribute too, with a note naming what it left out; `currentColor` follows the page into dark mode.
+:::
 
 ## See also
 

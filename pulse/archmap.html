@@ -1,0 +1,134 @@
+<!doctype html>
+<!-- Built by pulse arch (pulse/archmap.py) from the base branch. Pulse rebuilds it after every merge; do not edit it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="pulse-map" content="<!--STAMP-->">
+<title><!--TITLE--></title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#EDF0F3; --surface:#FFFFFF; --surface-2:#F5F7F9; --ink:#17202B; --muted:#566575;
+  --line:#C6CFD9; --line-soft:#DCE2E9;
+  --accent:#0B6574; --accent-ink:#084C57; --on-accent:#FFFFFF; --layer-bg:#F4F8F9;
+  --adr:#7A4A00; --adr-bg:#FFF6E0; --adr-line:#E7C77A;
+  --f-sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --f-cond:"Avenir Next Condensed","Roboto Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme:dark;
+    --bg:#0E1318; --surface:#172029; --surface-2:#1B252F; --ink:#E2E8EE; --muted:#93A2B2;
+    --line:#314050; --line-soft:#263340;
+    --accent:#5BC0CE; --accent-ink:#98DCE6; --on-accent:#0E1318; --layer-bg:#111A20;
+    --adr:#F0C66E; --adr-bg:#2A2210; --adr-line:#5E4A1C;
+  }
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--f-sans)}
+.wrap{max-width:1320px;margin:0 auto;padding:24px 24px 64px}
+@media (max-width:640px){.wrap{padding-inline:16px}}
+h1,h2,h3{font-family:var(--f-cond);text-wrap:balance;margin:0}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Views switch with :target, no script needed */
+.view{display:flex;flex-direction:column;gap:20px;scroll-margin-top:24px}
+.view:not(:target){display:none}
+#map:not(:target){display:flex}
+body:has(.view:target:not(#map)) #map{display:none}
+
+/* The map */
+.head{display:flex;flex-direction:column;gap:8px;max-width:80ch}
+.eyebrow{font:600 12px/1 var(--f-cond);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.head h1{font-size:clamp(28px,4vw,42px);font-weight:700;line-height:1.05}
+.head p{margin:0;font-size:15px}
+.note{font-size:13px;color:var(--muted);margin:0}
+.fig{margin:0;overflow-x:auto;background:var(--surface);border:1px solid var(--line-soft);border-radius:8px;padding:12px}
+.fig svg{display:block;width:100%;height:auto;min-width:720px;color:var(--ink)}
+.layers{display:flex;flex-direction:column;gap:12px}
+.layer{background:var(--layer-bg);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0;scroll-margin-top:24px}
+.layer:target{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.layer.unplaced{background:transparent;border-style:dashed}
+.lh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.lh h2{font-size:18px;font-weight:700;color:var(--accent-ink)}
+.lsub{margin:0;font-size:12.5px;color:var(--muted)}
+.lcnt{font:500 12px var(--f-mono);color:var(--muted);white-space:nowrap}
+.groups{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))}
+.grp{display:flex;flex-direction:column;gap:6px;min-width:0;background:var(--surface);border:1px solid var(--line-soft);border-radius:6px;padding:9px}
+.grp h3{font:600 12px var(--f-cond);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.gcnt{font:400 11px var(--f-mono);letter-spacing:0}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{display:inline-flex;align-items:baseline;gap:6px;max-width:100%;background:var(--surface);border:1px solid var(--line-soft);border-radius:4px;padding:3px 7px;font-size:12.5px;line-height:1.35;color:var(--ink);text-decoration:none}
+.chip:hover{border-color:var(--accent)}
+.chip .cid{font:500 11px var(--f-mono);color:var(--muted);flex:none}
+.chip .ct{overflow-wrap:anywhere}
+.chip.adr{background:var(--adr-bg);border-color:var(--adr-line)}
+.chip.adr .cid{color:var(--adr);font-weight:600}
+
+/* Pages of single specs */
+.page{max-width:1080px}
+.crumbs{display:flex;flex-wrap:wrap;gap:4px 8px;font-size:13px;color:var(--muted)}
+.crumbs a{text-decoration:none}
+.crumbs .sep{color:var(--line)}
+.page-head{display:flex;flex-direction:column;gap:8px}
+.page-head h1{font-size:clamp(24px,3.2vw,34px);font-weight:700;line-height:1.1}
+.page-head .lead-text{margin:0;font-size:15px;max-width:75ch}
+.meta{display:flex;flex-wrap:wrap;gap:4px 14px;font:500 12px var(--f-mono);color:var(--muted)}
+.meta a{text-decoration:none}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.btn{display:inline-flex;align-items:center;padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);text-decoration:none;font-weight:500;font-size:13.5px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.path{font:400 12px var(--f-mono);color:var(--muted);overflow-wrap:anywhere}
+.facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 18px;margin:0;background:var(--surface);border:1px solid var(--line-soft);border-radius:8px;padding:14px 16px}
+@media (max-width:560px){.facts{grid-template-columns:1fr;gap:2px}.facts dd{margin-bottom:8px}}
+.facts dt{color:var(--muted);font-size:13px}
+.facts dd{margin:0;font-size:13.5px;display:flex;flex-direction:column;gap:4px}
+.via{font:400 11.5px var(--f-mono);color:var(--muted)}
+.block{display:flex;flex-direction:column;gap:10px}
+.block h2{font-size:19px}
+.cnt{font:500 12px var(--f-mono);color:var(--muted);margin-left:8px}
+.rows{display:flex;flex-direction:column;border:1px solid var(--line-soft);border-radius:8px;background:var(--surface);overflow:hidden}
+.row{display:grid;grid-template-columns:7.5em minmax(0,1fr);gap:2px 12px;padding:10px 14px;border-top:1px solid var(--line-soft);color:var(--ink);text-decoration:none}
+.row:first-child{border-top:0}
+.row:hover{background:var(--surface-2)}
+.row .rid{font:500 12px var(--f-mono);color:var(--muted);grid-row:span 2}
+.row .rt{font-weight:600}
+.row .rd{color:var(--muted);font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.row.adr .rid{color:var(--adr);font-weight:600}
+article.md{background:var(--surface);border:1px solid var(--line-soft);border-radius:8px;padding:6px 22px 22px;max-width:100%;overflow-wrap:anywhere}
+article.md h2{font-size:20px;margin-top:26px;margin-bottom:6px}
+article.md h3,article.md h4{font-size:16px;margin-top:20px}
+article.md p,article.md li{line-height:1.6;max-width:85ch}
+article.md table{display:block;overflow-x:auto;border-collapse:collapse;font-size:13px;margin-block:10px}
+article.md th,article.md td{border:1px solid var(--line-soft);padding:5px 8px;text-align:left;vertical-align:top}
+article.md th{background:var(--surface-2)}
+article.md code{font-family:var(--f-mono);font-size:.88em;background:var(--surface-2);padding:1px 4px;border-radius:3px}
+article.md pre{overflow-x:auto;background:var(--surface-2);padding:10px;border-radius:6px}
+article.md pre code{background:none;padding:0}
+article.md blockquote{margin:0;padding-left:12px;border-left:3px solid var(--line);color:var(--muted)}
+</style>
+</head>
+<body>
+<main class="wrap">
+<!--VIEWS-->
+</main>
+<script>
+// The page lies in <clone>/.git/pulse/: once it knows that folder, file links open in the editor.
+// Served another way, or without scripts, the relative file links stay.
+(() => {
+  if (location.protocol !== 'file:') return;
+  const root = decodeURIComponent(location.pathname).replace(/\/\.git\/pulse\/[^/]*$/, '');
+  for (const link of document.querySelectorAll('[data-editor]')) {
+    link.href = 'vscode://file' + encodeURI(`${root}/${link.dataset.editor}`);
+    link.hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

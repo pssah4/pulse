@@ -59,7 +59,7 @@ the same one.
    `issue:` (its draft or the issue it adopted): use that one. An
    Item-BA without `issue:` gets the number of the draft you register
    for its item: write it into the BA's frontmatter. A draft an earlier
-   session of yours still holds: `pulse claim <n> --take` on the user's
+   session of yours still holds: `pulse claim --take <n>` on the user's
    yes.
 3. Keep the heartbeat while you work: `pulse beat <n> spec` when you
    start an item's spec and after each section you write. After 30

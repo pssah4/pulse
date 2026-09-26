@@ -5,8 +5,8 @@ description: >
   Turns a ready spec into a PLAN (tasks, files, decisions with rejected
   alternatives, coverage of every success criterion) and keeps the few
   decisions worth a record. Use for "plan", "architecture", "ADR",
-  "decision record", "arc42", "system map", "solution design", or before
-  building a feature.
+  "decision record", "arc42", "system map", "architecture map", "solution
+  design", or before building a feature.
 ---
 
 # Planner and architect
@@ -89,6 +89,26 @@ it without asking. It carries:
   the PLAN for a person, and the approval covers the step. An entry that
   starts with `#M` holds only while #M is open and no blocker of this
   item: the board already waits for a blocker, and a closed item is done.
+
+## Place it on the architecture map
+
+`pulse arch` shows the project's architecture as a page: each layer with
+its features and decisions, rebuilt by Pulse after every merge. Its
+layers are `_devprocess/architecture-map.md`
+(`templates/ARCHITECTURE-MAP-TEMPLATE.md`). When the project has one,
+write the item's place into its spec before the PLAN:
+`layer: <layer>/<group>` (or `layer: <layer>`) in the frontmatter, the
+layer its main change lands in, committed alone as
+`docs(spec): #<n> its place on the architecture map`, so the PLAN's
+commit stays the PLAN alone. A fix or improvement stands with its parent
+and needs none. Every new decision record gets its `layer:` too.
+`pulse check` (C11) reports a layer or group the model lacks.
+
+No model yet: in a session with a person, propose one once, from the
+code and `_devprocess/SYSTEM-MAP.md`, and write it on the person's OK,
+committed with this PLAN. A headless session (an agent `pulse go`
+started) never writes one, since parallel planners would each write their
+own; the map groups by epic until a model exists.
 
 ## Plan for parallel work
 
@@ -192,6 +212,14 @@ project's AGENTS.md or a path-local AGENTS.md, not in `_devprocess/`.
   document for auditors or customers, after code, allowed to lag.
 - **System map** (`templates/SYSTEM-MAP-TEMPLATE.md`, cap 120): system
   shape, data ownership, security invariants, fast paths into the code.
+- **Architecture map** (`templates/ARCHITECTURE-MAP-TEMPLATE.md`): the
+  layer model, and `layer:` in every feature spec and decision record on
+  the base branch that has none. A drawn picture on request:
+  `_devprocess/architecture-map.svg`, with `{{features:<layer>}}` where a
+  count goes (it becomes "3 features") and `<a href="#layer-<layer>">` around a layer's box. The
+  page keeps shapes, text, markers, and links within the page, nothing
+  else: no style element or attribute, so colors go into attributes
+  (`currentColor` follows the page into dark mode).
 
 ## 5. Handoff
 

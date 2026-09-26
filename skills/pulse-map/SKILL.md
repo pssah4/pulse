@@ -12,7 +12,8 @@ description: >
 `pulse map` is the live map in a terminal of its own: it reads the board
 every two seconds beside its keys, so no key waits for GitHub, and its
 last line lists the keys of the level it is on, none with Shift. On the
-map `↑` `↓` (or `j` `k`) pick an item, `Enter` or `→` opens it, `m` moves
+map `↑` `↓` (or `j` `k`) pick an item, `Enter` or `→` opens it (on an
+`asks you` line: that chat in VS Code), `m` moves
 a ramp row (arrows, `Enter` places it, and the map stays), `?` shows the
 help, `q` quits. With color, each `#n` is a link to its issue in a
 terminal that knows links (VS Code, iTerm). The item view shows goal,
@@ -112,22 +113,28 @@ footer line with the update commands, and the next session names it.
   running`, `review running`, `audit running`, `fix round`) or
   its pull request (draft with a red gate, waits for merge), and `on #n`
   when it is stacked; below it what its agent does right now (the one
-  that needs me or failed first). An agent counts for the item its
+  that needs me or failed first; where several chats stand and some ask,
+  how many ask and what a working one does). An agent counts for the item its
   session holds; without a claim, for the item its branch builds (a Codex
   agent: the branch where its last command ran). An agent outside any
   feature gets a line with its branch. Each teammate gets one line per item they hold,
   lit from GitHub (needs your review, checks failing, otherwise grey);
   without a pull request the line says `<phase>, <age> ago` from their
-  last sign of life, `no sign of life for <age>` after 30 minutes, or
-  `merged, closes on the next pulse status` when the pull request merged
-  into a branch other than the default one. A held draft stands only
+  last sign of life, or `no sign of life for <age>` after 30 minutes. A
+  merged item leaves the map at once, even before `pulse status` closes
+  it, and its epic counts it done. A held draft stands only
   under its holder, me or a teammate, not on the ramp:
   `spec in progress by <login>, <age>`, the age of its last sign of life,
   else of the claim.
 - **Next:** one line per kind of thing that waits for a person, the most
   urgent first, with the step that moves it; items that wait for an open
   blocker are left out. For a draft it is `spec in progress` with
-  `<login> writes the spec of #n`.
+  `<login> writes the spec of #n`. Each chat that asks me gets its own
+  `asks you` line with agent, title, and how long it waits, the longest
+  first; `Enter` on it, or a click, opens it in VS Code, and `need you`
+  in the header links to the longest waiting one. A chat in a terminal,
+  the Codex app, Cursor, or VS Code Insiders gets no link and says where
+  it runs.
 - **Ramp:** every open item and draft nobody holds, in the team's
   order, each with what it waits for (not approved, spec or plan rule, plan waits for
   you, waits for #n with `+n` for more than fit, locked by a file,

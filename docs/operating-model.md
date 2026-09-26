@@ -227,7 +227,7 @@ Work moves with the item branch, which `pulse go` pushes after every
 agent phase that committed. A free item with a note is claimed like
 any other, and the next holder builds on that branch. An item another
 person holds stays theirs until they agree; then
-`pulse release <n> --take` hands it over, and the new holder continues
+`pulse release --take <n>` hands it over, and the new holder continues
 on the branch they pushed. What stays in each clone, and when the rest
 reaches the team, is in
 [Where things live](/concepts/where-things-live#what-the-team-sees-and-when);

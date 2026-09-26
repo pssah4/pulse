@@ -95,9 +95,11 @@ Check `.pulse/config.toml`: `mode = "off"` silences every hook. In Claude Code, 
 
 ### `pulse check` reports findings
 
-Each finding names the file, the line, and the rule (C1 to C10, or R1 to R6 for an approved item's spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
+Each finding names the file, the line, and the rule (C1 to C11, or R1 to R6 for an approved item's spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
 
 A C10 finding names a spec whose file name lacks the ID of its place in the tree: it has none yet, it moved to another parent, or another branch took the same ID. `pulse number --apply` renames it, rewrites the paths to it, and moves its record along; commit the result. An open record keeps its old path until the rename is on the base branch: after the merge, run `pulse number --apply` once more.
+
+A C11 finding names a feature spec or decision record whose `layer:` names a layer or group that `_devprocess/architecture-map.md` lacks. Fix the name, or add the layer or group to that file ([Architecture map](./artifacts#architecture-map)).
 
 An R finding is about the spec as the base branch on origin has it. A fix on your branch clears it only once it is merged, and until then the git hook refuses every commit, the fix commit included. The way out:
 
@@ -112,27 +114,27 @@ To keep the approval, or if the hook still refuses the fix commit (the spec of a
 Every claim leaves a mark on the issue that names the session holding it: a Claude Code session, a Codex thread, a `pulse go` run, or a terminal. Another session is refused, even under your login, so two agents never build the same item. The refusal names the holder, since when, and the command that frees the item:
 
 ```text
-#12 is held by alice since 2026-09-24 09:12 UTC; to hand it over: pulse release 12 --take
+#12 is held by alice since 2026-09-24 09:12 UTC; to hand it over: pulse release --take 12
 ```
 
-- **Another person holds it:** agree with them first. `pulse release <n> --take` then hands the item over: their assignee and claim marks go, and a comment on the issue names who did it. Claim it as usual afterwards. An agent runs this only after you said yes.
-- **Another session of yours holds it and has ended:** `pulse claim <n> --take` takes it over.
+- **Another person holds it:** agree with them first. `pulse release --take <n>` then hands the item over: their assignee and claim marks go, and a comment on the issue names who did it. Claim it as usual afterwards. An agent runs this only after you said yes.
+- **Another session of yours holds it and has ended:** `pulse claim --take <n>` takes it over.
 
-`release` and `done` refuse a claim that is not yours in the same way. `pulse done <n> --take` closes an item whoever holds it.
+`release` and `done` refuse a claim that is not yours in the same way. `pulse done --take <n>` closes an item whoever holds it.
 
 ### The map says `spec in progress by <login>`
 
-The item is a draft: a `/pulse-ba`, `/pulse-re`, or `/pulse-realign` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. A draft that a session of your own held before it ended: `pulse claim <n> --take` in the new session.
+The item is a draft: a `/pulse-ba`, `/pulse-re`, or `/pulse-realign` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. A draft that a session of your own held before it ended: `pulse claim --take <n>` in the new session.
 
 ### `pulse new --draft` says `is the draft ... already`
 
-An open draft of the same type carries the same title, for example a realign (`Realign: <owner/repo>`) or a Project-BA that another session started. The line names its number and who holds it, and nothing new is created. A draft another person holds stays theirs: talk to them. One nobody holds, or one of yours, goes on with the same command plus `--issue <n>`; a session of your own that has ended hands it over with `pulse claim <n> --take`.
+An open draft of the same type carries the same title, for example a realign (`Realign: <owner/repo>`) or a Project-BA that another session started. The line names its number and who holds it, and nothing new is created. A draft another person holds stays theirs: talk to them. One nobody holds, or one of yours, goes on with the same command plus `--issue <n>`; a session of your own that has ended hands it over with `pulse claim --take <n>`.
 
 ### The map says `no sign of life`
 
 A teammate holds the item, and the session that holds it has not reported for 30 minutes or more. `pulse go` reports each phase it starts and every 10 minutes while one runs, an interactive session reports `working` at most every 10 minutes while it holds an item, and the skills run `pulse beat <n> <phase>`. Silence means the session ended, lost its network, or waits for its person. `pulse show <n>` prints `claimed_phase` and `claimed_beat`, the time of the last report in UTC.
 
-Ask the holder. Once they agree, `pulse release <n> --take` hands the item over; claim it, then continue on the item branch they pushed (`pulse go` starts from it on its own, `/pulse-build <n>` continues on it). What they did not push stays on their machine.
+Ask the holder. Once they agree, `pulse release --take <n>` hands the item over; claim it, then continue on the item branch they pushed (`pulse go` starts from it on its own, `/pulse-build <n>` continues on it). What they did not push stays on their machine.
 
 ### The ramp says `last run: ...`
 
@@ -140,7 +142,7 @@ A `pulse go` run gave the item back and left a note on it, or a session did with
 
 ### A command says "only a person does this"
 
-`approve`, `approve-plan`, `rank`, `done`, and `release --take` refuse to run inside an agent that `pulse go` started (it carries `PULSE_HOLDER`). These decisions belong to a person: run the command in your own terminal or chat session.
+`approve`, `approve-plan`, `rank`, `done`, and `release --take` refuse to run inside an agent that `pulse go` started (it carries `PULSE_HOLDER`). These decisions belong to a person: run the command in your own terminal or chat session. Such an agent also claims, gives back, and blocks only the item it was started for (`PULSE_ITEM`); `pulse claim`, `pulse release`, or `pulse block` of another item ends with "claims, releases, and blocks only its own item".
 
 ### An item was approved by mistake
 

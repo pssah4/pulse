@@ -107,9 +107,15 @@ and leave it.
 
 In Codex, also offer rules that let Codex run `pulse` without asking;
 it still asks before `approve`, `approve-plan`, `rank`, and `done`,
-which a person decides, and before every `release` and `claim`, because
-a rule sees only how a command starts and cannot tell a handover with
-`--take` from the rest. Only on a
+which a person decides, before a handover with `release --take` or
+`claim --take`, and before `pulse -- <command>`; every other `claim`
+and `release` runs without asking. In Full access, where Codex never
+asks, it refuses these commands instead: give the person the command
+for their own terminal. The rules do not change with a Pulse update;
+when the changelog names a change to them, offer
+`pulse setup --codex-rules` again once Pulse in Codex is updated too;
+it writes no rules while Codex runs an older Pulse (status
+`not written`). Only on a
 yes, then restart Codex:
 
 ```bash

@@ -5,6 +5,58 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-09-26
+
+### Added
+
+- `pulse arch` builds an architecture map: every feature and decision
+  record in its layer, and a page per feature, decision, and epic.
+  `pulse arch --open` opens it. Pulse rebuilds it from the base branch
+  after every merge while a live map or `pulse go` runs; it lives in
+  `.git/pulse/` and is never committed. The layers come from
+  `_devprocess/architecture-map.md`, each spec names its place with
+  `layer:`, and `pulse check` (C11) reports a place the layers lack.
+  Without layers the map groups the features by epic.
+
+### Changed
+
+- `--take` goes right after the command: `pulse claim --take <n>`,
+  `pulse release --take <n>`, `pulse done --take <n>`. Anywhere else it
+  exits 2 and names this spelling.
+
+### Fixed
+
+- Codex in Full access claims and gives items back again. The Codex
+  rules ask only before `claim --take` and `release --take`, next to
+  `approve`, `approve-plan`, `rank`, `done`, and `pulse -- <command>`.
+  Update Pulse in Codex too, then run `pulse setup --codex-rules` again
+  to rewrite them; it writes no rules while Codex runs an older Pulse.
+  Where Codex refuses a command in Full access, the agent names it for
+  your own terminal.
+- An agent of `pulse go` claims, gives back, and blocks only the item it
+  was started for (`PULSE_ITEM`); before, it could give back any item its
+  run held.
+- A claim or note mark counts only at the start of a comment, where
+  Pulse writes it: a note or comment that carries one in its text no
+  longer holds an item or its files.
+- The header of the live map stays on top in a terminal lower than the
+  map, wherever the cursor is, and the help stands under it too.
+- An item whose pull request merged leaves the map at once, also when it
+  merged into a branch other than the default one, and its epic counts it
+  done; `pulse status` still closes it.
+- The live map names each chat that waits for you. Under an item where
+  several chats stand it counts the ones that ask and says what a working
+  agent does there, and NEXT gives each asking chat a line of its own with
+  agent, title, and how long it waits, the longest first. `Enter` on that
+  line, or a click on it or on `need you`, opens the chat in VS Code; a
+  chat in a terminal, the Codex app, Cursor, or VS Code Insiders says
+  where it runs.
+- A merged pull request that changes only files under `_devprocess/`,
+  such as a spec, no longer counts as the build of the item its branch is
+  named after: `pulse status` and `pulse go` leave that item open and the
+  map keeps it. An item whose whole work lies under `_devprocess/` closes
+  with `pulse done <n>`.
+
 ## [0.1.3] - 2026-09-25
 
 ### Changed

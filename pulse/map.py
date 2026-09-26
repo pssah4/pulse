@@ -25,7 +25,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import config, dispatch, go, mapstart, presence, ready, setup, spec, state
+from pulse import archmap, config, dispatch, go, mapstart, presence, ready, setup, spec, state
 
 WIDTH = 80                      # columns without a terminal, and of the demo page and the GIF (D-45)
 FEWEST, MOST = 60, 160          # the map follows its terminal's width within these
@@ -52,6 +52,7 @@ SIGNET = ('\033[0m \033[38;5;37m▀▀▀▀▀▀▜▄\033[0m',
           '\033[0m\033[38;5;30m▐█▗█▛▀▘\033[0m',
           '\033[0m\033[38;5;24m▐\033[38;5;30m▛▝▘\033[0m')
 INSET = 12                      # the header's first column: the signet, 10 wide, and a gap
+HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on every screen (#57)
 # what the map asks of a person, the most urgent first, in the color of its state
 NEXT = {"failing": "31", "asks you": "33", "your review": "33", "waits for merge": "33",
         "plan waits for you": "33", "not approved": "33", "spec rule": "90", "last run": "90", "needs a plan": "90",
@@ -69,6 +70,8 @@ KEYS = {"map": "↑ ↓ pick  enter open  m move  ? help  q quit",
         "confirm": "enter confirm  esc cancel",
         "help": "esc back"}
 HELP = """map      ↑ ↓ or j k pick an item, enter or → opens it
+         enter on an asks you line opens that chat in
+           VS Code
          m moves a ramp row, enter places it
          ? shows this help, q quits
 item     its goal, stage, holder, blockers, PR, and plan,
@@ -97,6 +100,10 @@ OFFER = {"approve": ("approve", "agents plan and build it when its turn comes"),
 # the line an action shows while it runs; the ones not named here only open a window
 DOING = {"rank": "moving #{}…", "approve": "approving #{}…", "unapprove": "taking back the approval of #{}…",
          "approve-plan": "approving the plan of #{}…"}
+# what opens a chat in VS Code, from its session id (FIX-02-04-03): only a UUID becomes a link (FR-06)
+LINKS = {"claude": "vscode://anthropic.claude-code/open?session={}", "codex": "vscode://openai.chatgpt/local/{}"}
+EDITORS = ("Cursor", "VS Code Insiders")     # where else a chat of the extensions runs, without a link
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 VERB = {"Edit": "editing", "MultiEdit": "editing", "Write": "writing", "NotebookEdit": "editing",
         "Read": "reading", "Bash": "running", "Grep": "searching", "Glob": "searching",
         "Agent": "delegating", "Task": "delegating", "WebFetch": "reading", "WebSearch": "searching",
@@ -190,16 +197,18 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def _secs(at: str):
-    """Seconds since an ISO time; None when it is none."""
+def _secs(at):
+    """Seconds since an ISO time or an epoch; None when it is none."""
+    if isinstance(at, (int, float)):
+        return time.time() - at
     try:
         return time.time() - datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+    except (ValueError, AttributeError):
         return None
 
 
-def _age(at: str) -> str:
-    """How long ago an ISO time was, in the coarsest unit that fits: 12 min, 3 h, 2 d."""
+def _age(at) -> str:
+    """How long ago an ISO time or an epoch was, in the coarsest unit that fits: 12 min, 3 h, 2 d."""
     s = _secs(at)
     if s is None:
         return "a while"
@@ -225,6 +234,54 @@ def _refs(numbers: list, room: int) -> str:
 def _goal(text) -> str:
     """The first line of a spec's first section: what the item is for."""
     return next(iter(spec.sections(text or "").values()), "").strip().split("\n")[0]
+
+
+def places(vm: dict) -> dict:
+    """{item number, else branch or "no branch": every agent on it}. An agent counts for the item
+    its claim holds, wherever its directory stands (FIX-02), else for the item of its branch."""
+    by_number = {i["number"]: i for i in vm["items"]}
+    holds = {}                            # session or Codex subagent id -> the items its claims hold
+    for x in vm["items"]:
+        holds.setdefault((x.get("claimed_holder") or "").partition(":")[2], []).append(x)
+    holds.pop("", None)                   # no claim mark
+    feats = {}
+    for s in vm["sessions"]:
+        for a in [s, *s["agents"]]:
+            b = vm["branches"].get(a.get("cwd", ""), "")
+            i = by_number.get(state.item_of(b)) or next(
+                (x for x in vm["items"] if b and (x.get("pr") or {}).get("branch") == b), None)
+            own = holds.get(a["id"]) or holds.get(s["id"]) or []
+            if own and i not in own:
+                i = own[0]
+            feats.setdefault(i["number"] if i else (b or "no branch"), []).append(a)
+    return feats
+
+
+def chats(vm: dict) -> list:
+    """Every chat that waits for the person, once, the longest waiting first (FIX-02-04-03): the
+    agent of the chat that asks first (a subagent's prompt reaches its session too, #61 gate round
+    1), its cursor stop, who it is, its title, where it stands, where it runs, since when it asks,
+    and the link that opens it in VS Code. The link comes from the session's id, and only for a UUID
+    of a chat in VS Code (FR-06); a chat elsewhere gets none (FR-05)."""
+    where = {id(a): f"#{k}" if isinstance(k, int) else k for k, agents in places(vm).items() for a in agents}
+    out = []
+    for s in vm["sessions"]:
+        ask = [a for a in [s, *s["agents"]] if a["state"] == "waiting"]
+        if not ask:
+            continue
+        a = min(ask, key=lambda a: a.get("asked") or a.get("last") or 0)
+        app = "codex" if a.get("app") == "codex" else "claude"
+        out.append({"pick": f"chat:{a['id']}", "who": app.title(), "title": presence.clean(a.get("title")),
+                    "where": where[id(a)], "asked": a.get("asked") or a.get("last"),
+                    "runs": "VS Code" if a.get("vs") else "the Codex app" if a.get("desk") else
+                    a["ide"] if a.get("ide") in EDITORS else "a terminal",
+                    "link": LINKS[app].format(s["id"]) if a.get("vs") and UUID.fullmatch(str(s["id"])) else ""})
+    return sorted(out, key=lambda c: c["asked"] or 0)
+
+
+def _named(c: dict) -> str:
+    """A chat in words: its agent and title, else where it stands."""
+    return f'{c["who"]} "{c["title"]}"' if c["title"] else f"{c['who']} on {c['where']}"
 
 
 def board(vm: dict) -> dict:
@@ -284,8 +341,6 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             if beat and not mine(i):          # the holder's last sign of life (D-43)
                 return "idle", _life(i.get("claimed_phase") or "working", beat), None
             return "idle", "no PR yet", None
-        if pr.get("merged"):                  # into a base GitHub closes nothing on; pulse status does
-            return "idle", "merged, closes on the next pulse status", None
         ref = f"PR #{pr['number']}"
         if pr.get("checks") == "fail":
             return "error", f"{ref}, checks failing", fix
@@ -340,20 +395,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         return stage, "31" if stage.startswith(("locked", "failed")) else \
             "33" if stage.startswith(("waits for", "plan waits", "spec:", "plan:", "not approved")) else "90"
 
-    holds = {}                            # session or Codex subagent id -> the items its claims hold
-    for x in vm["items"]:
-        holds.setdefault((x.get("claimed_holder") or "").partition(":")[2], []).append(x)
-    holds.pop("", None)                   # no claim mark
-    feats = {}                            # feature (or branch without one) -> every agent on it
-    for s in vm["sessions"]:
-        for a in [s, *s["agents"]]:
-            b = vm["branches"].get(a.get("cwd", ""), "")
-            i = by_number.get(state.item_of(b)) or next(
-                (x for x in vm["items"] if b and (x.get("pr") or {}).get("branch") == b), None)
-            own = holds.get(a["id"]) or holds.get(s["id"]) or []
-            if own and i not in own:      # its claim, wherever its directory stands (FIX-02)
-                i = own[0]
-            feats.setdefault(i["number"] if i else (b or "no branch"), []).append(a)
+    feats, asking = places(vm), chats(vm)        # feature (or branch without one) -> every agent on it
+    chat_of = {id(a): s["id"] for s in vm["sessions"] for a in [s, *s["agents"]]}
     lit = {i["number"]: light(i) for _, i in held if not i.get("draft")}     # a draft says what its row says
     jobs = [n for n, (st, *_) in lit.items() if st == "working"     # no hooks, or a long command: all idle
             and all(a["state"] == "idle" for a in feats.get(n, []))]
@@ -382,7 +425,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """The item view: what the item is for, where it stands, who holds it, what it waits for."""
         i = by_number.get(seen["number"])
         if not i:
-            return [p(f"#{seen['number']} is no longer open", "90")]
+            return [p(f"#{seen['number']} is merged or closed", "90")]
         n, pr, beat = i["number"], i.get("pr") or {}, i.get("claimed_beat")
         st, words = gate(i)
         who, phase = i.get("claimed_by") or next(iter(i["assignees"]), ""), phases.get(n) or i.get("claimed_phase")
@@ -390,8 +433,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         facts = [("goal", seen["goal"] or "-"), ("stage", p(words or "-", tone.get(st, "90"))),
                  ("holder", ", ".join(filter(None, [who, life])) if who else "nobody"),
                  ("blocked by", _refs(i["blocked_by"], w - 13) if i["blocked_by"] else "nothing"),
-                 ("PR", ", ".join(filter(None, [f"#{pr['number']}", pr.get("merged") and "merged",
-                                                 pr.get("draft") and "draft",
+                 ("PR", ", ".join(filter(None, [f"#{pr['number']}", pr.get("draft") and "draft",
                                                  pr.get("checks") and f"checks {pr['checks']}"])) if pr else "none"),
                  ("plan", seen["plan"] or "none yet")]
         menu = offers(vm, seen)
@@ -403,7 +445,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             [f" {k:<12}{v}" for k, v in facts] + [""] + choice
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
     if counts["waiting"]:
-        parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
+        parts.append(dot("waiting") + " " + p.link(f"{counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you",
+                                                  next((c["link"] for c in asking if c["link"]), "")))   # FR-04
     if counts["error"]:
         parts.append(dot("error") + f" {counts['error']} failing")
     head = ["", lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90"), p(vm["now"], "1"), w - INSET),
@@ -437,6 +480,20 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """The agent to show: one that needs you or failed first, then the latest activity."""
         return min(agents, key=lambda a: (RANK.index(a["state"]), -a.get("last", 0)))
 
+    def said(agents) -> tuple:
+        """What the agents on one line do: the one focus picks, or, where several chats stand and
+        some ask, how many ask and what a working one does (FIX-02-04-03)."""
+        ask = [a for a in agents if a["state"] == "waiting"]
+        if not ask or len({chat_of[id(a)] for a in agents}) < 2:
+            return _doing(focus(agents))
+        k = len({chat_of[id(a)] for a in ask})         # chats, not agents (#61 gate round 1)
+        words = f"{k} chat asks you" if k == 1 else f"{k} chats ask you"
+        rest = [a for a in agents if a["state"] not in ("waiting", "idle")]
+        if rest:
+            a = focus(rest)
+            words += f", {'Codex' if a.get('app') == 'codex' else 'Claude'}: {_doing(a)[0]}"
+        return words, "33"
+
     def tree(entries):
         """Features, each with what its agent does below it; agents outside any feature by branch."""
         rows = []
@@ -444,7 +501,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             stem, pad = ("└ ", "  ") if k == len(entries) - 1 else ("├ ", "│ ")
             states = [a["state"] for a in agents]
             if isinstance(e, str):            # an agent on a branch that is no open feature
-                doing, code = _doing(focus(agents))
+                doing, code = said(agents)
                 rows.append(lr(stem + dot(roll(states)) + " " + e, p(doing, code), w))
                 continue
             st, words = gate(e)
@@ -455,7 +512,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 stem, label = p("› ", "1"), p(label, "1")
             rows.append(lr(stem + dot(roll(states + [st])) + " " + label, p(words, tone.get(st, "90")), w))
             if agents:
-                doing, code = _doing(focus(agents))
+                doing, code = said(agents)
                 rows.append(lr(pad + "└ " + p(doing, code), "", w))
         return rows
 
@@ -486,17 +543,26 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
 
     # --- next ---------------------------------------------------------------
     todo = {}                             # state -> the step that moves its first item
-    where = {id(a): f"#{k}" if isinstance(k, int) else k for k, agents in feats.items() for a in agents}
     steps = [x[2] for x in lit.values()] + [wants(i)[1] for _, i in held if i.get("draft")] + \
-        [wants(x)[1] for x in rows] + \
-        [("asks you", f"answer the agent on {where[id(a)]}") for a in actors if a["state"] == "waiting"]
+        [wants(x)[1] for x in rows]
     for step in filter(None, steps):
         todo.setdefault(*step)
     if not rows and not held:
         todo["nothing open"] = "/pulse-ba explores, /pulse-re writes specs"
     out.append(section("NEXT"))
     for state_ in NEXT:
-        if state_ in todo:
+        if state_ == "asks you":          # a line and a cursor stop per chat (FIX-02-04-03)
+            for c in asking:
+                shown.append(c["pick"])
+                tail = ("" if c["runs"] == "VS Code" else " in its terminal" if c["runs"] == "a terminal"
+                        else f" in {c['runs']}") + f" ({_age(c['asked'])})"
+                over, cut = len(f"answer {_named(c)}{tail}") - beside(" asks you", w), "title" if c["title"] else "where"
+                if over > 0:                  # the wait stays in sight (FR-02): the title, else the place, gives way
+                    c = {**c, cut: c[cut][:max(0, len(c[cut]) - over - 1)] + "…"}
+                words = f"answer {_named(c)}{tail}"
+                out.append(lr((p("›", "1") if c["pick"] == selected else " ") + p(state_, NEXT[state_]),
+                              p.link(words, c["link"]), w))
+        elif state_ in todo:
             out.append(lr(" " + p(state_, NEXT[state_]), todo[state_], w))
     out.append("")
 
@@ -572,9 +638,9 @@ def key(ui: dict, picks: list, rows: list, ch: str, acts=()) -> tuple:
         if ch in UP + DOWN and picks:
             k = picks.index(n) if n in picks else -1
             return {**ui, "at": picks[max(0, k - 1) if ch in UP else min(len(picks) - 1, k + 1)]}, None
-        if ch in ENTER + RIGHT and n in picks:
-            return {"level": "item", "at": n}, None
-        if ch == "m" and n in picks:            # sort the ramp without opening the item
+        if ch in ENTER + RIGHT and n in picks:  # a chat opens where it runs (FIX-02-04-03)
+            return (ui, ("chat", n)) if str(n).startswith("chat:") else ({"level": "item", "at": n}, None)
+        if ch == "m" and isinstance(n, int) and n in picks:     # sort the ramp without opening the item
             if n not in rows:
                 return ui, ("say", f"#{n} is held: only items on the ramp move")
             return {"level": "move", "at": n, "to": rows.index(n), "from": "map"}, None
@@ -703,9 +769,10 @@ def opener(env=os.environ) -> list:
     return ["xdg-open"] if shutil.which("xdg-open") else []
 
 
-def _show(path: Path, name: str) -> str:
-    """Open path in a window and give the terminal back at once (D-44); the line for the status bar."""
-    cmd = opener()
+def _show(path, name: str, cmd: list = None) -> str:
+    """Open path (or a link) in a window and give the terminal back at once (D-44), with cmd, else
+    the opener(); the line for the status bar."""
+    cmd = opener() if cmd is None else cmd
     try:
         if cmd:                         # never waits for it: the map runs on (D-44)
             subprocess.Popen(cmd + [str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -720,6 +787,12 @@ def act(root: Path, vm: dict, action: tuple) -> str:
     """Carry out one action from the map; returns a line for the status bar. An approved plan
     is the one brief() showed: its digest comes with the action."""
     kind, n = action[0], action[1]
+    if kind == "chat":                  # through the system's opener: code -r takes a link for a file
+        c = next((c for c in chats(vm) if c["pick"] == n), None)
+        if not c:
+            return "that chat asks nothing any more"
+        return _show(c["link"], _named(c), opener({})) if c["link"] else \
+            f"{_named(c)} runs in {c['runs']}: answer it there"
     repo = state.repo(root)
     if kind == "rank":                  # the frame may be old: place on the board as it is now (F9.01)
         try:
@@ -788,25 +861,24 @@ def failures(root: Path, items=()) -> dict:
         return {}
 
 
-_merged: dict = {}                      # root -> (read at, {item: its merged PR})
+_merged: dict = {}                      # root -> (read at, the items of the merged PRs)
 
 
-def merged(root: Path, repo: str, items: list) -> dict:
-    """{item: its PR} for claimed items whose PR was merged into a base GitHub closes nothing on
-    (not the default branch). Read at most every state.TTL s; pulse status closes them (ADR-06)."""
+def merged(root: Path, repo: str, items: list) -> set:
+    """The claimed items whose PR was merged, also into a base GitHub closes nothing on (not the
+    default branch): done, though open until pulse status closes them (ADR-06). Read at most every
+    state.TTL s."""
     held = {i["number"] for i in items if i["assignees"] and not i.get("pr")}
-    at, prs = _merged.get(root, (0.0, {}))
+    at, done = _merged.get(root, (0.0, set()))
     if held and repo and time.time() - at >= state.TTL:
         try:
-            prs = {n: {"number": pr["number"], "branch": pr["headRefName"], "base": pr.get("baseRefName"),
-                       "draft": False, "checks": None, "reviewers": [], "merged": True}
-                   for pr in json.loads(state.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "50",
-                                                  "--json", "number,headRefName,baseRefName,closingIssuesReferences"]))
-                   for n in state.pr_items(pr)}
+            done = {n for pr in json.loads(state.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "50",
+                                                     "--json", "headRefName,closingIssuesReferences,files,changedFiles"]))
+                    for n in state.pr_items(pr)}
         except (state.StateError, ValueError):
             pass                        # offline: the last answer stands
-        _merged[root] = (time.time(), prs)
-    return {n: pr for n, pr in prs.items() if n in held}
+        _merged[root] = (time.time(), done)
+    return done & held
 
 
 _closed: dict = {}                      # root -> (read at, {epic: its closed children})
@@ -845,8 +917,9 @@ def gather(root: Path) -> dict:
     except state.StateError as e:
         items = state.cached(root)
         error = f"offline, showing the last known state ({e})" if items else str(e)
-    done = merged(root, repo, items)
-    items = [dict(i, pr=done[i["number"]]) if i["number"] in done else i for i in items]
+    done = merged(root, repo, items)          # off the map at once, done for its epic (#57)
+    finished = Counter(i["parent"] for i in items if i["number"] in done and i.get("parent"))
+    items = [i for i in items if i["number"] not in done]
     phases = go.phases(root)
     holders = {(i.get("claimed_holder") or "").partition(":")[2] for i in items}
     sessions = [s for s in presence.read(root) if _job(root, s.get("home") or s["cwd"]) in (None, *phases)
@@ -858,7 +931,7 @@ def gather(root: Path) -> dict:
     return {"repo": repo, "now": time.strftime("%H:%M:%S"),
             "person": _git(str(root), "config", "user.name") or me or "you", "me": me,
             "items": items, "sessions": sessions, "error": error, "phases": phases, "failed": failures(root, items),
-            "closed": closed(root, repo, items),
+            "closed": dict(Counter(closed(root, repo, items)) + finished),
             "unmerged": [i["number"] for i in items if not i["approved"] and i.get("spec") not in there],
             # ponytail: one git show per unapproved spec each refresh; git cat-file --batch if the ramp is long
             "unready": [i["number"] for i in items if not i["approved"] and i.get("spec") in there and spec.refusal(
@@ -952,6 +1025,8 @@ def demo(step: int = 0) -> dict:
             agents[aid] = {"id": aid, "type": "", "cwd": f"/repo-{n}" if n else "/repo", "started": t,
                            "last": t, "tool": tool, "target": target, "note": note, "state": st,
                            "model": model, "agents": [], "order": agents.get(aid, {}).get("order", len(agents))}
+            if st == "waiting":          # its chat asks in VS Code, for 4 minutes now (FIX-02-04-03)
+                agents[aid].update(title="Which clock decides when a token expires?", vs=True, asked=t - 4 * 60)
     sessions = sorted(agents.values(), key=lambda s: s["order"])
     order = [i for i in items.values()]
     phases = {n: phases.get(n, "build") for n in {int(s["cwd"].rsplit("-", 1)[1]) for s in sessions
@@ -1006,16 +1081,18 @@ def _keys():
 
 
 def fitted(lines: list, height: int, keep: int) -> list:
-    """At most height lines, so a frame taller than the terminal never scrolls it: the last keep
-    lines (status and keys) stay, the rest is cut around the picked row (›), and one line says how
-    much is hidden."""
+    """At most height lines, so a frame taller than the terminal never scrolls it: the header (the
+    first HEAD lines, #57) and the last keep lines (status and keys) stay, the rest is cut around
+    the picked row (›), and one line says how much is hidden. A terminal too low for all of it
+    gives header lines up first."""
     if len(lines) <= height:
         return lines
-    body, foot = lines[:len(lines) - keep], lines[len(lines) - keep:]
-    room = max(1, height - len(foot) - 1)
+    head = lines[:min(HEAD, max(0, height - keep - 2))]
+    body, foot = lines[len(head):len(lines) - keep], lines[len(lines) - keep:]
+    room = max(1, height - len(head) - len(foot) - 1)
     at = next((i for i, line in enumerate(body) if "›" in ANSI.sub("", line)), 0)
     top = max(0, min(at - room // 2, len(body) - room))
-    return body[top:top + room] + [f"  … {len(body) - room} more lines; a taller terminal shows them"] + foot
+    return head + body[top:top + room] + [f"  … {len(body) - room} more lines; a taller terminal shows them"] + foot
 
 
 def _beside(fn) -> threading.Thread:
@@ -1051,6 +1128,7 @@ def main(args) -> int:
         try:
             writes, board_, update, newer = box["writes"], gather(root), "", ""
             said = mapstart.runner(root, board_)       # approved work waits: pulse go starts (#44)
+            archmap.refresh(root)                      # the base moved: the architecture map follows (#67)
             if time.time() - box["asked"] >= DAY:      # a newer release: named once a day (IMP-14)
                 box["asked"], own = time.time(), own_version()
                 out = latest(root)
@@ -1105,8 +1183,8 @@ def main(args) -> int:
                                                            # which never writes without asking first (#55)
                 offered = {n: acts}
                 lines = render(vm, frame=frame, color=color, width=width, item=dict(seen, pick=ui.get("pick", 0)))
-            elif level == "help":
-                lines = HELP.split("\n")
+            elif level == "help":                      # under the header, as every screen (#57)
+                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + HELP.split("\n")
             else:
                 view = vm
                 if level == "move" and n in (r["number"] for r in rows):     # the ramp as it would be

@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from pulse import check, config, dispatch, go, mapstart, migrate, ready, review, setup, spec, state
+from pulse import archmap, check, config, dispatch, go, mapstart, migrate, ready, review, setup, spec, state
 from pulse import map as pmap
 
 
@@ -445,6 +445,8 @@ def _refs(numbers):
 
 
 def cmd_block(args):
+    if _other_item("block", args.n):
+        return 1
     root, repo, run = _ctx()
     state.block(root, repo, args.n, args.by, run=run)
     print(f"#{args.n} waits for {_refs(args.by)}")
@@ -456,6 +458,16 @@ def _go_agent(lever):
     if not os.environ.get("PULSE_HOLDER"):
         return False
     print(f"pulse {lever}: only a person does this, not an agent that pulse go started")
+    return True
+
+
+def _other_item(cmd, n):
+    """An agent of pulse go holds as its run, which holds the run's other items too: it claims, gives back, and
+    blocks only the item pulse go started it for (PULSE_ITEM, #65); a session without one, none. A blocker on
+    a planned sibling would make the run give that sibling's claim back."""
+    if not os.environ.get("PULSE_HOLDER") or os.environ.get("PULSE_ITEM") == str(n):
+        return False
+    print(f"pulse {cmd} #{n}: an agent of pulse go claims, releases, and blocks only its own item")
     return True
 
 
@@ -532,6 +544,8 @@ def cmd_claim(args):
     """The claim carries the files the work changes, so every ramp holds them without a fetch (WP-56):
     those of the PLAN this clone has, or --files for work without one (hotfix lane). A file another
     running item holds refuses it, as the ramp locks it (#46)."""
+    if _other_item("claim", args.n):
+        return 1
     root, repo, run = _ctx()
     plans = dispatch.plan_files(root)
     files = args.files or plans.get(args.n)
@@ -550,7 +564,7 @@ def cmd_claim(args):
 
 def cmd_release(args):
     """--take also hands over another person's claim (D-13)."""
-    if args.take and _go_agent("release --take"):
+    if args.take and _go_agent("release --take") or _other_item("release", args.n):
         return 1
     root, repo, run = _ctx()
     return _said(state.release(root, repo, args.n, run=run, take=args.take, take_person=args.take, note=args.note))
@@ -626,6 +640,8 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--demo", action="store_true", help="sample data, no repo needed")
     c.add_argument("--no-color", action="store_true")
     c.add_argument("--color", action="store_true", help="force color when piping")
+    c = add("arch", archmap.main, "architecture map: features and decisions on the layers, rebuilt after every merge")
+    c.add_argument("--open", action="store_true", help="open it in the browser")
 
     s = add("setup", cmd_setup, "activate Pulse here: config, anchor blocks, labels; "
                                 "--cli and --codex-rules set up this machine")
@@ -652,7 +668,7 @@ def parser() -> argparse.ArgumentParser:
                         "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
                    help="Codex runs pulse without asking, except approve, approve-plan, rank, done, "
-                        "release, claim, and pulse -- <command>")
+                        "release --take, claim --take, and pulse -- <command>")
     s.add_argument("--dry-run", action="store_true")
 
     for name, fn, text, take in (
@@ -664,7 +680,7 @@ def parser() -> argparse.ArgumentParser:
              "take over from a session of mine that has ended")):
         c = add(name, fn, text, plumb=name == "claim")
         c.add_argument("n", type=int, nargs="+" if name == "done" else None)
-        c.add_argument("--take", action="store_true", help=take)
+        c.add_argument("--take", action="store_true", help=f"right after {name}: {take}")
         if name == "release":
             c.add_argument("--note", default="", help="why, and where the work is, for whoever takes it next")
         if name == "claim":
@@ -727,7 +743,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    p = parser()
+    args = p.parse_args(argv)
+    if getattr(args, "take", False) and argv[:2] != [args.cmd, "--take"]:
+        # a Codex rule sees only how a command starts (setup.CODEX_RULES): elsewhere it would run unasked
+        p.error(f"--take goes right after the command: pulse {args.cmd} --take <n>")
     try:
         return args.func(args)
     except state.StateError as e:

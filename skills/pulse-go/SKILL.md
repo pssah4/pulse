@@ -216,7 +216,8 @@ crash) the next `pulse go` ends its agents and gives its claims back
 itself, except an item held for the user after a phase changed
 `.git/config` or `.git/hooks`. Further runs of the same login in other
 clones share the ramp through claims. The agents claim as the run, so an
-agent's own `pulse claim` of its item succeeds. Codex's sandbox keeps
+agent's own `pulse claim` of its item succeeds; `PULSE_ITEM` names that
+item, and a claim, release, or block of any other one exits 1. Codex's sandbox keeps
 `.git` read-only; `pulse go` commits what an agent leaves uncommitted.
 
 Headless agents keep the user's permission rules: edits inside their

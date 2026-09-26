@@ -6,6 +6,7 @@ kind: constraint | choice | post-hoc
 reversal-cost: low | medium | high
 applies-to: []
 read-when: "{one-line trigger a future agent will hit: changing X, adding Y}"
+layer:
 asr-refs: []
 issues: []
 related-adrs: []

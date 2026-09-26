@@ -167,17 +167,17 @@ prefix_rule(
     decision = "allow",
     justification = "Pulse reads and writes the board on GitHub",
 )
+# `pulse -- <command>` asks too: Python 3.12 reads it as the command itself.
 prefix_rule(
-    pattern = ["pulse", ["approve", "approve-plan", "rank", "done"]],
+    pattern = ["pulse", ["approve", "approve-plan", "rank", "done", "--"]],
     decision = "prompt",
-    justification = "A person decides what gets built, in which order, and when it is done",
+    justification = "A person decides what gets built, in which order, and when it is done; pulse -- hides the command",
 )
-# A rule matches a prefix only and cannot see --take after a note or a file list: every release and claim asks,
-# and so does `pulse -- <command>`, which Python 3.12 reads as the command itself.
+# A rule matches a prefix only: pulse takes --take right after the command and nowhere else.
 prefix_rule(
-    pattern = ["pulse", ["release", "claim", "--"]],
+    pattern = ["pulse", ["release", "claim"], "--take"],
     decision = "prompt",
-    justification = "A person decides who takes over a claim (--take)",
+    justification = "A person decides who takes over a claim",
 )
 """
 
@@ -209,11 +209,37 @@ def machine(cli: bool, codex_rules: bool, remove: bool, dry_run: bool) -> int:
         chosen.append((shim, SHIM))
     if codex_rules:
         chosen.append((rules, CODEX_RULES))
-    rep = {"changes": [{"path": str(p), "status": _machine_file(p, body, remove, dry_run)} for p, body in chosen]}
+    rep = {"changes": []}
+    for path, body in chosen:
+        late = "" if path != rules or remove else _late_take_in_codex()
+        if late:
+            status = f"not written: {late}, the pulse Codex runs, takes --take after the item number; update Pulse " \
+                     "in Codex, then run pulse setup --codex-rules again"
+        else:
+            status = _machine_file(path, body, remove, dry_run)
+        rep["changes"].append({"path": str(path), "status": status})
     if cli and not remove:
         rep["on_path"] = shutil.which("pulse") == str(shim)
     print(json.dumps(rep, indent=2))
-    return 1 if any(c["status"].startswith("kept") for c in rep["changes"]) else 0
+    return 1 if any(c["status"].startswith(("kept", "not written")) for c in rep["changes"]) else 0
+
+
+def _late_take_in_codex() -> str:
+    """The `pulse` a Codex session runs by name when it still takes --take after the item number, else "". The rules
+    let Codex run claim and release unasked, which holds only with a pulse that takes it right after the
+    command and nowhere else (#58); such a pulse says so in its help. No pulse on PATH, or none installed
+    (127), runs nothing the rules could let through."""
+    # ponytail: asks this PATH and environment, not Codex's; a PULSE_HOME only one of them has goes unseen
+    found = shutil.which("pulse")
+    if not found:
+        return ""
+    try:
+        run = subprocess.run([found, "claim", "--help"], env={**os.environ, "CODEX_THREAD_ID": "pulse-setup"},
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return found
+    late = run.returncode != 127 and "right after claim" not in " ".join(run.stdout.split())
+    return found if late else ""
 
 
 def shim_runs(root: Path, env: dict) -> bool:

@@ -44,7 +44,7 @@ A build fails when its agent exits with an error, runs longer than `agent_timeou
 
 You merge each feature's pull request; that merge is the last stop.
 
-**Stacking.** At every parallel level, a feature with exactly one open blocker whose pull request is open and not a draft does not wait for the merge: it starts on the blocker's branch, and its PR targets that branch. After the blocker is merged, the next run moves the stacked PR to the base branch (`gh pr edit --base`). At its start, a run also closes items whose PR was merged into a base branch other than the repository's default, because GitHub closes issues on its own only for the default branch ("closed #n: its pull request was merged"), and removes the clean worktree of every closed item it made; one with changes stays, and the run names it.
+**Stacking.** At every parallel level, a feature with exactly one open blocker whose pull request is open and not a draft does not wait for the merge: it starts on the blocker's branch, and its PR targets that branch. After the blocker is merged, the next run moves the stacked PR to the base branch (`gh pr edit --base`). At its start, a run also closes items whose PR was merged into a base branch other than the repository's default, because GitHub closes issues on its own only for the default branch ("closed #n: its pull request was merged"), and removes the clean worktree of every closed item it made; one with changes stays, and the run names it. A pull request that changes only files under `_devprocess/`, such as a spec, closes no item by its branch name; an item whose whole work lies there closes with `pulse done <n>`.
 
 ## What the team sees while it runs
 
@@ -64,7 +64,7 @@ Runs of your login in other clones share the ramp through claims. When another r
 
 ## The hold
 
-After every phase, `pulse go` compares the shared git directory's `config`, the files in its `hooks` folder, and the files that tie the worktree to it with their state before the phase. An agent that can write there (Codex with `--add-dir`) could leave a hook that later runs outside every sandbox and shows in no diff. When one of these files changed, the item stops: nothing is pushed, no further phase runs, and the claim stays, even across a hard stop of the run. The report, `pulse status`, and a note on the item name the changed paths. A draft that was taken up gets the same text at the top of its pull request, starting with "Held by `pulse go`". Look at the named paths first. Then `pulse release <n> --take` frees an item without a pull request; a draft keeps its claim, and you take the hold note out of its text.
+After every phase, `pulse go` compares the shared git directory's `config`, the files in its `hooks` folder, and the files that tie the worktree to it with their state before the phase. An agent that can write there (Codex with `--add-dir`) could leave a hook that later runs outside every sandbox and shows in no diff. When one of these files changed, the item stops: nothing is pushed, no further phase runs, and the claim stays, even across a hard stop of the run. The report, `pulse status`, and a note on the item name the changed paths. A draft that was taken up gets the same text at the top of its pull request, starting with "Held by `pulse go`". Look at the named paths first. Then `pulse release --take <n>` frees an item without a pull request; a draft keeps its claim, and you take the hold note out of its text.
 
 ## A draft taken up
 

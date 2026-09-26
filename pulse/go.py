@@ -61,7 +61,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pulse import config, dispatch, ready, review, spec, state
+from pulse import archmap, config, dispatch, presence, ready, review, spec, state
 
 TIMEOUT_UNIT = 60              # agent_timeout is in minutes
 REVIEW_ROUNDS = 2              # fix rounds per gate, the plan gate and RED too; then the PR says why
@@ -1070,7 +1070,7 @@ def _release(root: Path, repo: str, n: int, gh_run, who: dict, note: str = "") -
         ok, why = state.release(root, repo, n, run=gh_run, who=who, note=note)
     except state.StateError as e:
         ok, why = False, str(e)
-    return "" if ok else f" (the claim stays; pulse release {n} --take: {why})"
+    return "" if ok else f" (the claim stays; pulse release --take {n}: {why})"
 
 
 def _handover(job: Job, why: str) -> str:
@@ -1133,7 +1133,7 @@ def _take_over(root: Path, repo: str, login: str, left: dict, gh_run, rep: dict,
             continue                   # another session holds it, or a person assigned it by hand
         if n in (left.get("held") or []):
             _event(rep, "failed", job_for(root, i, base_branch).public(
-                why=f"a stopped run held it until a person has looked (D-42); pulse release {n} --take frees it",
+                why=f"a stopped run held it until a person has looked (D-42); pulse release --take {n} frees it",
                 log=""))
             continue
         stays = _release(root, repo, n, gh_run, {"id": left["holder"]})
@@ -1177,7 +1177,8 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
     from pulse import map as pmap      # the map imports this module
     life = pmap.SILENT / 3     # a phase keeps a sign of life this often, so no map calls it silent (D-43)
     who = state.run_holder()
-    env = {**os.environ, "PULSE_HOLDER": json.dumps(who)}
+    # a job is no chat of the VS Code window the run began in: the map links it nowhere (#61)
+    env = {**{k: v for k, v in os.environ.items() if k not in presence.SURFACE}, "PULSE_HOLDER": json.dumps(who)}
     handlers = {}
     last, read = None, True    # read reads the board in the next round: a slot came free
     lock, left = (None, {}) if dry_run else _lock(common)
@@ -1215,6 +1216,8 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
             last, read = items, False
             free = {a: n - sum(j.agent == a for j in jobs.values()) for a, n in slots.items() if a not in spent}
             ready.fetch(root)          # what the other clones planned and hold, at most every 30 s (D-10)
+            if not dry_run:
+                archmap.refresh(root)  # a merge moved the base: the architecture map follows (#67)
             found = ready.plans(root)
             # what this run holds is held on a board read before its claims too: a round without a read
             ramped = [dict(i, assignees=[]) if i["number"] in kept else
@@ -1241,7 +1244,7 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
                 if a is None or free[a] < 1:
                     break
                 job = job_for(root, item, base_branch)
-                job.agent, job.env, job.open_ = a, env, {i["number"] for i in items}
+                job.agent, job.env, job.open_ = a, {**env, "PULSE_ITEM": str(n)}, {i["number"] for i in items}
                 if dry_run:
                     if kind == "resume" and not _takes_up(root, repo, item, job, gh_run)[0]:
                         continue       # the run leaves it too: nothing new since its gates, held, or a session's
@@ -1304,7 +1307,7 @@ def run(root: Path, cap=None, agent=None, dry_run=False, gh_run=state.gh, poll=5
                         finished = _advance(root, repo, cfg, job, gh_run, rep, common / "go", who, spent)
                     except Exception as e:      # one item's failure must not stop the others; Ctrl-C and SIGTERM do
                         why = (f"{_trouble(job, e, common / 'go')} (the claim stays and holds a slot, so no run "
-                               f"retries it before you looked; pulse release {job.number} --take)")
+                               f"retries it before you looked; pulse release --take {job.number})")
                         _event(rep, "failed", job.public(why=why, log=_log_path(job, common / "go")))
                         finished = True
                     if finished:

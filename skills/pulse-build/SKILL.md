@@ -31,9 +31,9 @@ nothing is done until the evidence says so.
      comes first; pick the next item.
    - is held by another person or another session, one of your own
      included: pick the next item. The refusal names the command that
-     frees it; run that only on the user's yes. `pulse release <n> --take`
+     frees it; run that only on the user's yes. `pulse release --take <n>`
      hands another person's claim over (their assignee and marks go, a
-     comment names who did it), then claim again. `pulse claim <n> --take`
+     comment names who did it), then claim again. `pulse claim --take <n>`
      takes over from a session of your own that has ended. After either,
      start from the item branch on origin, where the last holder pushed
      the work (the refusal names it): step 3.

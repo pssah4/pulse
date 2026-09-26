@@ -110,7 +110,7 @@ def normalize(issue: dict) -> dict:
     assignees = [a["login"] for a in issue.get("assignees", [])]
     marks = _marks(issue)
     mark = next((m for m in marks if m["author"] in assignees), None)     # the oldest holds it
-    notes = [c for c in issue.get("comments") or [] if NOTE.search(c.get("body") or "") and
+    notes = [c for c in issue.get("comments") or [] if NOTE.match(c.get("body") or "") and
              (c.get("viewerDidAuthor") or (c.get("author") or {}).get("login") in assignees
               or c.get("authorAssociation") in WRITERS)]      # a note steers the next holder
     note = notes[-1] if notes and notes[-1].get("createdAt", "") > max((m["at"] for m in marks), default="") \
@@ -301,8 +301,13 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
 def pr_items(pr: dict) -> set:
     """The items a PR builds: its branch name, and what GitHub links. GitHub links "Closes #n"
     only in a PR against the default branch; against develop or a blocker's branch the branch
-    name is all there is."""
-    n = item_of(pr.get("headRefName"))
+    name is all there is. A PR whose files are all under _devprocess/ (a spec, a plan) builds
+    nothing by its name alone (FIX-02-06-04); files are known only where a call asks for them,
+    and only a complete list counts: gh lists 100 at most, sorted by path."""
+    files = pr.get("files") or []
+    docs = files and len(files) == pr.get("changedFiles", len(files)) \
+        and all(f.get("path", "").startswith("_devprocess/") for f in files)
+    n = None if docs else item_of(pr.get("headRefName"))
     return {ref["number"] for ref in pr.get("closingIssuesReferences") or [] if "number" in ref} | \
         ({n} if n else set())
 
@@ -312,7 +317,7 @@ def sync_merged(root: Path, repo_name: str, items: list, run=gh) -> list:
     (GitHub closes only on the default branch; a stacked PR merges into its blocker's branch),
     and retarget a stacked PR whose blocker's branch was merged. Returns the items it closed."""
     merged = json.loads(run(["pr", "list", "--repo", repo_name, "--state", "merged", "--limit", "50",
-                             "--json", "number,headRefName,baseRefName,closingIssuesReferences"]) or "[]")
+                             "--json", "number,headRefName,baseRefName,closingIssuesReferences,files,changedFiles"]) or "[]")
     open_ = {i["number"] for i in items}
     closed = []
     for pr in merged:
@@ -449,7 +454,7 @@ def _marks(v) -> list:
     assigned = {a["login"] for a in v.get("assignees", [])}
     out = []
     for c in v.get("comments") or []:
-        m, cid = MARK.search(c.get("body") or ""), COMMENT.search(c.get("url") or "")
+        m, cid = MARK.match(c.get("body") or ""), COMMENT.search(c.get("url") or "")    # a mark starts its comment
         author = (c.get("author") or {}).get("login", "")
         if not (m and cid and (c.get("viewerDidAuthor") or author in assigned)):
             continue
@@ -544,10 +549,10 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
         return False, f"#{n} is blocked by " + ", ".join(f"#{b}" for b in open_blockers)
     whom = _others(v, login)
     if whom:
-        return False, f"#{n} is held by {whom}; to hand it over: pulse release {n} --take" + _work(root, n)
+        return False, f"#{n} is held by {whom}; to hand it over: pulse release --take {n}" + _work(root, n)
     other = _other_session(v, who)
     if other and not take:
-        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse claim {n} --take" + \
+        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse claim --take {n}" + \
             _work(root, n)
     for m in marks:
         if m["mine"] and m["id"] != who["id"]:
@@ -645,16 +650,16 @@ def release(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, ta
     login = me(root, run=run)
     whom = _others(v, login)
     if whom and not take_person:
-        return False, f"#{n} is held by {whom}; to hand it over: pulse release {n} --take" + _work(root, n)
+        return False, f"#{n} is held by {whom}; to hand it over: pulse release --take {n}" + _work(root, n)
     gone = [a["login"] for a in v.get("assignees", []) if a["login"] != login] if take_person else []
     other = _other_session(v, who)
     if other and not (take or take_person):
-        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse release {n} --take" + \
+        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse release --take {n}" + \
             _work(root, n)
     run(["issue", "edit", str(n), "--repo", repo_name, "--remove-assignee", ",".join(gone + ["@me"])])
     if gone:
         run(["issue", "comment", str(n), "--repo", repo_name, "--body",
-             f"Released from {', '.join(gone)} by {login} with pulse release {n} --take."])
+             f"Released from {', '.join(gone)} by {login} with pulse release --take {n}."])
     for m in _marks(v):
         if m["mine"] or m["author"] in gone:
             _unmark(repo_name, m["cid"], run)
@@ -708,7 +713,7 @@ def done(root: Path, repo_name: str, n: int, run=gh, who=None, take=False) -> tu
         other = _other_session(v, who or holder())
         whom = _others(v, me(root, run=run)) or (_name(other) if other else "")
         if whom:
-            return False, f"#{n} is held by {whom}; to close it all the same: pulse done {n} --take"
+            return False, f"#{n} is held by {whom}; to close it all the same: pulse done --take {n}"
     run(["issue", "close", str(n), "--repo", repo_name, "--reason", "completed"])
     drop_cache(root)
     return True, f"closed #{n}"

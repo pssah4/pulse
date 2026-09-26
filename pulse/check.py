@@ -12,6 +12,8 @@
   C8  tasks in one wave of a PLAN touch disjoint files (they run in parallel)
   C9  every spec's parent: link and its epic's Items list agree
   C10 every spec's file name starts with the ID its place in the tree calls for
+  C11 a feature spec's or decision's layer: names a layer (and group) of the architecture map's
+      layer model (pulse/archmap.py); without a model nothing is checked
   R1 to R6  an approved item's spec is one an agent can plan from (pulse/spec.py),
       read from the base branch; without an issue cache the board is loaded,
       without a board a finding says they were skipped; --spec <path> applies them to spec
@@ -25,7 +27,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from pulse import config, ready, spec, state
+from pulse import archmap, config, ready, spec, state
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".vitepress"}
 GUIDES = {"AGENTS.md", "CLAUDE.md"}
@@ -300,6 +302,7 @@ def run(root: Path) -> list:
     found += [Finding(p, 1, "C9", msg) for p, msg in spec.link_problems(root)]
     found += [Finding(p, 1, "C10", f"{msg}: pulse number --apply fixes it" if new else msg)
               for p, msg, new in spec.numbering(root)]
+    found += [Finding(p, 1, "C11", msg) for p, msg in archmap.layer_problems(root)]
     return sorted(found, key=lambda f: (f.path, f.line, f.rule))
 
 
@@ -316,5 +319,5 @@ def main(args) -> int:
     if found:
         print(f"{len(found)} finding{'s' if len(found) != 1 else ''}")
         return 1
-    print("pulse check: C1-C10 clean, R1-R6 not checked" if skipped else "pulse check: clean")
+    print("pulse check: C1-C11 clean, R1-R6 not checked" if skipped else "pulse check: clean")
     return 0

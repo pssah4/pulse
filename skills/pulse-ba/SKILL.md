@@ -57,7 +57,7 @@ Pulse set up with its labels: when `pulse status --json` says
    Project-BA draft this BA continues goes on with its number:
    `pulse new epic "Project BA: <product>" --draft --phase analysis --issue <n>`
    for a free one (the command never carries a title copied from the
-   board), `pulse claim <n> --take` on the user's yes for one an
+   board), `pulse claim --take <n>` on the user's yes for one an
    ended session of theirs held.
 2. Item-BA: Adopt the issue the user names
    (an idea from the backlog, or the item from step 1): `pulse new <kind> "<title>" --draft --phase analysis --issue <n>`

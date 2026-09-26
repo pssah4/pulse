@@ -119,14 +119,14 @@ A working light breathes: its brightness rises and falls in a cycle of about thr
 
 ### Counts
 
-- **Header:** how many lights on the map are green (`working`), yellow (`need you`), and red (`failing`).
+- **Header:** how many lights on the map are green (`working`), yellow (`need you`), and red (`failing`). With color, `need you` is a link to the chat that has waited longest among those it can open.
 - **Board:** every open feature, improvement, and fix, and every draft, once: ready to start, in progress (held, no pull request yet, a draft whose spec someone writes included), in review (held, with a pull request), blocked by an open item, and not ready yet (a draft nobody holds, not approved, a spec or plan that is not ready, a file in use). An epic with its spec attached counts in no group; with children it gets a line of its own below.
-- **Epics:** one line per open epic with children, how far it is: its children closed as completed, of those and its open children (`1 of 14 done`). A child closed as not planned counts in neither. The map reads the closed children at most every 30 seconds, and only while an epic is open.
+- **Epics:** one line per open epic with children, how far it is: its children closed as completed or merged, of those and its open children (`1 of 14 done`). A child closed as not planned counts in neither. The map reads the closed children at most every 30 seconds, and only while an epic is open.
 - **Your row:** your slots (items you hold without a pull request, out of `cap` in `.pulse/config.toml`) and all working agents, subagents included and idle ones not. A teammate's work takes none of your slots.
 
 ### Who is doing what
 
-You come first, with the features you hold and the drafts whose spec you write. Each feature line says where it stands: while `pulse go` runs it, the step of its chain (`planning`, `building`, `RED check running`, `tests running`, `review running`, `audit running`, `fix round`); once its pull request exists, `draft PR #n, a gate is red` or `PR #n, waits for merge`; `on #n` when it is stacked on the branch of feature #n. Below a feature with a running agent stands what the agent does, in plain words: an agent that needs you or failed comes first, otherwise the latest activity. An agent counts for the item its session holds, wherever its directory stands; without a claim, for the item its branch builds, and a Codex agent stands on the branch where its last command ran. An agent outside any feature, such as the session that runs `pulse go` on `develop`, gets a line with its branch. A merged feature leaves the map.
+You come first, with the features you hold and the drafts whose spec you write. Each feature line says where it stands: while `pulse go` runs it, the step of its chain (`planning`, `building`, `RED check running`, `tests running`, `review running`, `audit running`, `fix round`); once its pull request exists, `draft PR #n, a gate is red` or `PR #n, waits for merge`; `on #n` when it is stacked on the branch of feature #n. Below a feature with a running agent stands what the agent does, in plain words: an agent that needs you or failed comes first, otherwise the latest activity. Where several chats stand on one feature and some of them ask you, the line counts them and names what a working agent there does: `2 chats ask you, Codex: running npm run test:e2e`. Which chats they are, [Next](#next) says. An agent counts for the item its session holds, wherever its directory stands; without a claim, for the item its branch builds, and a Codex agent stands on the branch where its last command ran. An agent outside any feature, such as the session that runs `pulse go` on `develop`, gets a line with its branch. A merged feature leaves the map at once, also when it merged into a branch other than the default one: GitHub closes nothing there, and `pulse status` closes the item later. Until it does, an item it blocks still waits for it; the next `pulse go` closes it before it starts anything. A merged pull request that changes only files under `_devprocess/`, such as the spec, counts for no feature by its branch name, so the feature stays.
 
 Teammates follow, each with the items they hold and where each pull request stands. Until the pull request exists, the line tells how their work goes, from the sign of life their session or `pulse go` writes into the claim:
 
@@ -136,18 +136,17 @@ Teammates follow, each with the items they hold and where each pull request stan
 | `no sign of life for 45 min` | no sign of life for 30 minutes or more: ask them, or take the item over |
 | `no PR yet, held 3 h` | a claim from before signs of life existed: only its age |
 | `spec in progress by bob, 20 min` | a draft: their `/pulse-ba` or `/pulse-re` session writes its spec, last seen 20 minutes ago (else the age of the claim); a held draft stands here only, not on the ramp |
-| `merged, closes on the next pulse status` | its pull request merged into a branch other than the default one; GitHub closes nothing there, `pulse status` closes the item |
 
 Their lights come from GitHub: yellow when a pull request asks for your review, red when its checks fail, grey otherwise. Whether an agent runs on their machine stays there, so their items never turn green.
 
 ### Next
 
-One line per kind of thing that waits, the most urgent first, each with the step that moves its first item. An item that waits for an open blocker is left out, and so is its light in the header: its blocker moves first.
+One line per kind of thing that waits, the most urgent first, each with the step that moves its first item; a chat that asks you gets a line of its own. An item that waits for an open blocker is left out, and so is its light in the header: its blocker moves first.
 
 | Line | Step it names |
 |---|---|
 | `failing` | `/pulse-build <n>` takes it on in a session |
-| `asks you` | answer the agent on the named feature |
+| `asks you` | answer that chat: one line per chat that waits for you, the longest waiting first, with its agent, title, and how long it waits (`answer Claude "Epic 17 layout" (35 min)`), or where it stands when it has no title (`answer Codex on #12`). A long title is cut inside its quotes, so the wait time always shows. A chat counts once, also when a subagent of it asks. `Enter` on the line opens the chat in VS Code, and so does a click with color; a chat that runs in a terminal gets no link and says `in its terminal`, a thread of the Codex app says `in the Codex app`, a chat in Cursor or VS Code Insiders names its editor |
 | `your review` | review the pull request on GitHub |
 | `waits for merge` | merge the pull request on GitHub |
 | `plan waits for you` | `pulse approve-plan <n>`, or approve plan in its view |
@@ -176,10 +175,12 @@ The map is a tree: the map itself, an item, and what acts on that item. No key n
 
 The map reads the board beside its keys, so a key never waits for GitHub. A write names itself in the footer while it runs (`moving #8…`, `approving #6…`), and the next frame shows the board as the write left it; keys typed while it runs are dropped, so none of them acts on the new board.
 
+In a terminal lower than the map, the header stays on top and the last line keeps the keys; between them the map shows the part around the picked row and says how many lines it hides. The help stands under the header too. A terminal too low for header, one row, and keys gives header lines up first, so the map never scrolls.
+
 | Level | Key | Does |
 |---|---|---|
-| map | `↑` `↓` (or `k` `j`) | pick an item: a feature in the tree or a ramp row; `›` marks it |
-| map | `Enter`, `→` | open the picked item |
+| map | `↑` `↓` (or `k` `j`) | pick an item: a feature in the tree, a chat that asks you in [Next](#next), or a ramp row; `›` marks it |
+| map | `Enter`, `→` | open the picked item, or the picked chat in VS Code |
 | map | `m` | move the picked ramp row; `Enter` places it and you stay on the map |
 | map | `?` | show the help |
 | map | `q` | quit; `q` quits only here, and `Esc`, `←`, `Backspace` only say so |
@@ -243,6 +244,10 @@ Read spec and read plan never take the terminal. They open the file with the fir
 
 Without any of them, the map shows the path to open yourself.
 
+### Opening a chat
+
+A chat that asks you opens through the link its extension understands: `vscode://anthropic.claude-code/open?session=<id>` for Claude Code, `vscode://openai.chatgpt/local/<id>` for Codex. The map hands the link to `open` on macOS or `xdg-open` on Linux and runs on; `PULSE_EDITOR` and `code -r` play no part, since `code -r` takes a link for a file. A subagent's line opens the chat of its session. Only a chat in VS Code whose session id is a UUID gets a link; Cursor and VS Code Insiders get none, since the link opens VS Code. For a chat in a terminal, in the Codex app, in Cursor, or in VS Code Insiders, `Enter` says in the status line where to answer it: a link would open that session a second time in VS Code. A job of `pulse go` or `pulse review --run` gets no link either, even when you started it from a VS Code chat.
+
 What someone else changes reaches your map within seconds: the map asks GitHub every two seconds whether anything moved, with a request that costs nothing while nothing changed, and reloads only then (and every 30 seconds, for pull request checks). Two people moving different items at the same time both keep their move.
 
 ## Two maps at once
@@ -259,6 +264,6 @@ The map keeps up with Pulse by itself. Once a minute it checks which Pulse the `
 
 ## Where the data comes from
 
-Live detail about agents comes from the sessions on your machine, recorded by the Pulse hooks: Claude Code with the plugin, and Codex with the plugin, in the CLI and in the IDE extension, once you trusted the plugin's hooks, all of them (with `/hooks` in the CLI or one by one on the Hooks page of the extension's settings). Sessions without the hooks, such as [Codex without the plugin](../tutorials/installation#codex-without-the-plugin), get no light; the items they hold still show up. A phase of `pulse go` counts as working with or without hooks. What teammates do reaches the map through the board on GitHub.
+Live detail about agents comes from the sessions on your machine, recorded by the Pulse hooks: Claude Code with the plugin, and Codex with the plugin, in the CLI and in the IDE extension, once you trusted the plugin's hooks, all of them (with `/hooks` in the CLI or one by one on the Hooks page of the extension's settings). When a chat waits for you, the hooks also note whether it runs in VS Code and what it is called: in Claude Code its own name, else its generated title, else its last prompt; in Codex its thread name. Only printable characters reach the map, 60 at most. The log that holds them is readable by you only. Sessions without the hooks, such as [Codex without the plugin](../tutorials/installation#codex-without-the-plugin), get no light; the items they hold still show up. A phase of `pulse go` counts as working with or without hooks. What teammates do reaches the map through the board on GitHub.
 
 The demo on the [start page](/) of these docs and the GIF in the README show the terminal's own frames at 80 columns in truecolor, converted to HTML, with no animation of their own.

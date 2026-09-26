@@ -56,11 +56,11 @@ One `pulse go` run can drive Claude Code and Codex together, each with its own s
 
 A claim belongs to one session: a Claude Code session, a Codex thread, a `pulse go` run, or your terminal. All of them act under your GitHub login, so each claim also leaves a mark on the issue that names its session. A second session is refused, and of two claims at the same moment the older mark wins. The refusal names the holder, since when, and the command that frees the item, and the [map](../guides/pulse-map) shows the phase of a teammate's claim and its last sign of life ([What others see](#what-others-see)).
 
-- **Hand over another person's claim:** `pulse release <n> --take`, after that person agreed. Their assignee and claim marks go, a comment on the issue names who did it, and the new session claims as usual. An agent runs it only on your yes.
-- **Take over from a session of your own that has ended:** `pulse claim <n> --take`.
+- **Hand over another person's claim:** `pulse release --take <n>`, after that person agreed. Their assignee and claim marks go, a comment on the issue names who did it, and the new session claims as usual. An agent runs it only on your yes.
+- **Take over from a session of your own that has ended:** `pulse claim --take <n>`.
 - **Take an approval back:** `pulse approve --undo <n>`; until someone approves the item again, nothing claims it.
 
-`release` and `done` refuse a claim that is not yours; `pulse done <n> --take` closes an item whoever holds it. The levers that belong to a person (`approve`, `approve-plan`, `rank`, `done`, and `release --take`) refuse to run inside an agent that `pulse go` started, which carries `PULSE_HOLDER`.
+`release` and `done` refuse a claim that is not yours; `pulse done --take <n>` closes an item whoever holds it. The levers that belong to a person (`approve`, `approve-plan`, `rank`, `done`, and `release --take`) refuse to run inside an agent that `pulse go` started, which carries `PULSE_HOLDER`. Such an agent holds as its run, so it claims, gives back, and blocks only its own item, which `PULSE_ITEM` names.
 
 ## What others see
 
@@ -77,6 +77,6 @@ The phase comes from the session that holds the item. `pulse go` reports each ph
 
 ### Taking over
 
-The work travels on the item branch: `pulse go` pushes it after every agent phase that committed, so whoever holds the item next starts from there. A free item with a `last run` note is claimed as usual; `pulse go` starts its worktree from the pushed branch on its own, and in a session `/pulse-build <n>` continues on that branch. An item someone still holds is freed first with the [handover commands](#claims-and-handover): `pulse release <n> --take` once the other person agreed, `pulse claim <n> --take` for a session of your own that ended. The new holder then continues on the branch the last one pushed.
+The work travels on the item branch: `pulse go` pushes it after every agent phase that committed, so whoever holds the item next starts from there. A free item with a `last run` note is claimed as usual; `pulse go` starts its worktree from the pushed branch on its own, and in a session `/pulse-build <n>` continues on that branch. An item someone still holds is freed first with the [handover commands](#claims-and-handover): `pulse release --take <n>` once the other person agreed, `pulse claim --take <n>` for a session of your own that ended. The new holder then continues on the branch the last one pushed.
 
 What the last holder did not push stays in their clone; a phase that `pulse go` stopped halfway leaves its changes in that run's worktree. `pulse go` runs once per clone. Runs in other clones, your own or a teammate's, split the work through the claims.
