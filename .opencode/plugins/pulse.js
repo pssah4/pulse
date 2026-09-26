@@ -95,6 +95,24 @@ export default {
       for (const skill of skills) editor.add(skill);
     });
 
+    await ctx.command.transform((editor) => {
+      for (const skill of skills) {
+        editor.add({
+          name: skill.id,
+          description: skill.description,
+          async execute({ sessionID, prompt, delivery }) {
+            const selected = (prompt.skills || []).filter(({ id }) => id !== skill.id);
+            await ctx.session.prompt({
+              ...prompt,
+              sessionID,
+              skills: [...selected, { id: skill.id }],
+              delivery,
+            });
+          },
+        });
+      }
+    });
+
     const content = bootstrap();
     if (content) {
       await ctx.session.hook('context', (event) => {
