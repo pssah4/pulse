@@ -7,7 +7,7 @@
 | Project | {Projektname} |
 | Date | {YYYY-MM-DD} |
 | Commit | {git_head from the scan JSON} |
-| Previous audit | {date and commit from `.git/pulse/audit-context.json`, or none} |
+| Previous audit | {date and commit from `~/.cache/pulse/<clone>/audit-context.json`, or none} |
 | Scan Scope | {Full / Partial, welche Phasen} |
 | Risk Rating | {Critical / High / Medium / Low} |
 

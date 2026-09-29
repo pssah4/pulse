@@ -47,7 +47,8 @@ Before the interview, make the analysis visible to the team, so nobody
 starts the same one twice. A Project-BA is no item, but it holds a
 draft while it is written: nobody starts a second one. The board needs
 Pulse set up with its labels: when `pulse status --json` says
-`"active": false`, run `/pulse-setup` first.
+`"active": false`, run `pulse setup` first, as Set Pulse up in
+`/pulse` says.
 
 1. Name the topic in one line, then look for open drafts and items on
    it: `pulse status --json`; for a Project-BA, a draft titled
@@ -57,8 +58,10 @@ Pulse set up with its labels: when `pulse status --json` says
    Project-BA draft this BA continues goes on with its number:
    `pulse new epic "Project BA: <product>" --draft --phase analysis --issue <n>`
    for a free one (the command never carries a title copied from the
-   board), `pulse claim --take <n>` on the user's yes for one an
-   ended session of theirs held.
+   board). For one an ended session of theirs held, tell the person to
+   free it in their own terminal with `pulse release --take <n>` (a
+   `pulse claim --take <n>` there would hold it for that terminal), then
+   claim it here.
 2. Item-BA: Adopt the issue the user names
    (an idea from the backlog, or the item from step 1): `pulse new <kind> "<title>" --draft --phase analysis --issue <n>`
    makes it a draft this session holds. Otherwise register a draft; it
@@ -77,8 +80,9 @@ Pulse set up with its labels: when `pulse status --json` says
    pulse new epic "Project BA: <product>" --draft --phase analysis
    ```
 
-3. Write on a docs branch from `origin/<base>` after `git fetch origin`: `docs/<n>-<slug>` for an
-   Item-BA, `docs/<slug>` for a Project-BA; `/pulse-re` continues on it.
+3. Write on a docs branch from `refs/remotes/origin/<base>` after `git fetch origin`: for an Item-BA the name
+   that `spec_branch` in `.pulse/config.toml` gives, filled in with the draft's `{n}`, `{slug}`, and
+   `{type}` (default `docs/{n}-{slug}`), `docs/<slug>` for a Project-BA; `/pulse-re` continues on it.
 
 ## What you create
 
@@ -385,10 +389,10 @@ legacy project), move the full document to
    questions go into the commit body as short bullets. Where origin is
    public (`gh repo view --json visibility`), ask the person once before
    the first push. Push the docs branch after every commit, from the
-   first one:
-   `git push -u origin docs/<n>-<slug>`, for a Project-BA
-   `git push -u origin docs/<slug>`. The team sees the BA while it is
-   written; the approval in step 3 decides whether it counts.
+   first one: `git push -u origin <branch>` (the branch from step 3 of
+   Start on the board), for a Project-BA `git push -u origin docs/<slug>`.
+   The team sees the BA while it is written; the approval in step 3
+   decides whether it counts.
 3. Ask for approval, the first stop of the Pulse flow: in at most eight
    lines the problem, who has it, the solution hypothesis and its
    strongest assumption, the scope, the success signal and the top risk,
@@ -396,9 +400,10 @@ legacy project), move the full document to
    into the BA and the question comes again. Once it is approved, set
    `validity: Validated` and `validated-by: /pulse-ba on {date}` in its
    frontmatter, commit that, and push again:
-   `git push -u origin docs/<n>-<slug>`, for a Project-BA
-   `git push -u origin docs/<slug>`, then close the Project-BA's draft
-   with `pulse done <n>`: the team knows the BA counts now. Then
+   `git push -u origin <branch>`, for a Project-BA
+   `git push -u origin docs/<slug>`, then tell the person to close the
+   Project-BA's draft #<n> on GitHub: the
+   team knows the BA counts then. Then
    invoke the pulse-re skill
    (`/pulse-re`) at once in this session, with the draft number as its
    argument: the approval covers it, so never ask whether to continue. It

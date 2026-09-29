@@ -36,7 +36,8 @@ tests shape the code.
    DIFFERENT reason than stated is a failed RED step: fix the test and
    repeat. Never proceed to GREEN on a failed RED.
 3. **GREEN:** Write the minimal code to pass the test (no more).
-4. **Verify GREEN:** Run the test. It MUST pass, no other tests broken.
+4. **Verify GREEN:** Run the test and the tests of the code you touched.
+   They MUST pass. The whole suite runs once, before the gates.
 5. **REFACTOR:** Clean up while keeping tests green (no new behavior).
 
 **Bug fixes are always test-first:** write the failing test that

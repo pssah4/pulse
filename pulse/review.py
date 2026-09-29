@@ -1,19 +1,21 @@
-"""pulse review: the fresh sessions that check a feature before its PR is ready.
+"""The review and the audit gate of pulse go: what the fresh sessions that check a feature before its PR
+is ready are told, and how their verdicts are read.
 
-Two of them, one after the other: the review (spec, PLAN, decisions, lean
-code; ADR-05) and the security audit of the branch. Whoever built the
-feature does neither. This module gathers their inputs, adds what a script
-can see, and keeps each verdict in the shared git dir, stamped with the
-commit it looked at; a session that changes the branch gets no verdict.
-Once the branch has an open PR, the verdict goes there too, as a hidden
-marker, so whoever holds the item next finds it.
+Two parts: the review (spec, PLAN, decisions, lean code; ADR-05) and the
+security audit of the branch, in one session, also for an item with
+risk: [security] (#126). Whoever built the feature does neither. This
+module gathers their inputs, adds what a script can see, and keeps each
+verdict in config.evidence_dir, outside the git dir a Codex phase writes,
+stamped with the commit it looked at; a session that changes the branch
+gets no verdict. Once the branch has an
+open PR, the verdict goes there too, as a hidden marker, so whoever holds
+the item next finds it.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import signal
 import stat
 import subprocess
 import sys
@@ -21,26 +23,28 @@ import time
 from datetime import date
 from pathlib import Path
 
-from pulse import config, dispatch, presence, ready, state
+from pulse import config, ready, state
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
-SKILL = SKILLS / "pulse-review" / "SKILL.md"
+SKILL = SKILLS / "pulse-build" / "references" / "review.md"
 AUDIT_SKILL = SKILLS / "pulse-audit" / "SKILL.md"
 AUDIT_SCAN = SKILLS / "pulse-audit" / "tools" / "audit_scan.py"
 REPORTS = {"review": "REVIEW.md", "audit": "AUDIT.md"}
+SYSTEM_MAP = "_devprocess/SYSTEM-MAP.md"
 KEPT = {"review": "reviews", "audit": "audits"}
 VERDICT = re.compile(r"^Verdict:\s*(pass|block)\s*$", re.M | re.I)
-SCOPES = ("full", "branch", "commit", "working", "staged", "range")    # the same as /pulse-audit's
 SCAN_JSON = "_devprocess/temp/audit-scan.json"    # the scan Pulse runs for the auditor, where it can read it
-CONTEXT = "audit-context.json"                    # the last audit that counted, under the shared git dir
+CONTEXT = "audit-context.json"                    # the last audit that counted, in config.evidence_dir
 MANIFEST = re.compile(r"(^|/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|requirements[^/]*\.txt|pyproject\.toml"
-                      r"|poetry\.lock|uv\.lock|Pipfile(\.lock)?|go\.(mod|sum)|Cargo\.(toml|lock))$")
+                      r"|poetry\.lock|uv\.lock|Pipfile(\.lock)?|go\.(mod|sum)|Cargo\.(toml|lock)|setup\.(py|cfg)"
+                      r"|Gemfile(\.lock)?|composer\.(json|lock)|bun\.lockb?|npm-shrinkwrap\.json|\.npmrc)$")
 COVERAGE = re.compile(r"^Coverage:(.*)$", re.M | re.I)
 MARKER = re.compile(r"<!-- pulse:verdict (\{[^{}\[\]]*\}) -->")   # a verdict on the PR, for the next holder; flat
 FENCE = re.compile(r" {0,3}(```|~~~)")                          # a line that opens or closes a code block
 INSTRUCTIONS = re.compile(r"(^|/)(CLAUDE\.md|AGENTS\.md|\.mcp\.json|\.(claude|codex|agents)/.*)$", re.I)   # read at start
 PROMPT = """You review {what} in a fresh session; you did not build it.
-Follow {skill}, {mode}. Inputs: {inputs}the changes {changes}, and the decision
+Follow {skill}. Inputs: {inputs}the changes {changes}, the system map as the base has it ({map};
+the branch's own change to it is part of the changes), and the decision
 records whose "Read When" matches ({decisions}).
 Found by script: {found}
 {tests}
@@ -59,6 +63,12 @@ Do not change code, do not commit, do not touch GitHub. Write {report}: first li
 verdict), with `SCA unavailable` in it when SCA was `offline`, `error` or `partial` (a pass
 without that does not count), then one line per finding,
 `- [H-1|M-1|L-1] <file>:<line> <CWE>: <what>`."""
+CHECK = """You check {what} in a fresh session; you did not build it. Two parts, the review and then the
+security audit, each with its own report and its own verdict: a finding of one never goes into the other.
+
+{review}
+
+{audit}"""
 
 
 def _git(root: Path, *args) -> str:
@@ -87,11 +97,11 @@ def files(root: Path, scope: str, base: str, rng: str = None) -> list:
 
 def outside_plan(root: Path, n: int, changed: list) -> list:
     """What a script can see: changed files #n's PLAN does not list. A listed directory holds
-    what is in it, as in dispatch.ramp."""
+    what is in it, as in ready.ramp."""
     plans = ready.plans(root)
     if n not in plans:
         return [f"no PLAN for #{n}: scope unknown"]
-    listed = dispatch.plan_files(root, plans)[n]
+    listed = ready.plan_files(root, plans)[n]
     return [f"outside the PLAN: {f}" for f in changed
             if not any(f == l or f.startswith(l + "/") for l in listed)
             and not f.startswith("_devprocess/")]     # spec and PLAN writeback is allowed
@@ -177,21 +187,54 @@ def brief(root: Path, n: int = None, title: str = "", spec=None, base=None, scop
         _note_before(root, n, "review", report)
     base = base or config.base_ref(root)
     changed = files(root, scope, base, rng) if scope != "full" else []
-    found = (outside_plan(root, n, changed) if n is not None and scope != "full" else []) + _instructions(changed)
+    found = (outside_plan(root, n, changed) if n is not None and scope != "full" else []) + _instructions(changed) + \
+        [f"system map changed: {f}" for f in changed if f == SYSTEM_MAP] + \
+        [f"runner or setup file changed since the spec tests were frozen: {f}"
+         for f in (_loosened(root, n, base) if n is not None and scope == "branch" else [])]
     at = _at(root, report)                     # the paths and the git a gate session reads from session/
     diff = changes(scope, base, rng)
     plan = (ready.plans(root).get(n) or {}).get("path") if n is not None else ""
-    inputs = f"the spec {f'{at}{spec}' if spec else f'(see `pulse show {n}`)'}, " \
+    inputs = f"the spec {f'{at}{spec}' if spec else f'(see `pulse status {n}`)'}, " \
              f"the PLAN {f'{at}{plan}' if plan else '(none)'}, " if n is not None else ""
     head = _git(root, "rev-parse", "--short=12", "HEAD").strip()
     ran = f"tests: {tests} for HEAD {head} (Pulse ran them there; do not run them again)" if tests else \
         f"tests: skipped for HEAD {head} (Pulse did not run them)"
-    prompt = PROMPT.format(what=_what(n, title, scope), skill=SKILL, inputs=inputs,
-                           mode="repo mode" if scope == "full" else "item mode", tests=ran,
+    prompt = PROMPT.format(what=_what(n, title, scope), skill=SKILL, inputs=inputs, tests=ran,
                            changes=diff.replace("`git ", f"`git -C {at[:-1]} ") if at else diff,
                            found="; ".join(found) or "nothing", decisions=f"{at}_devprocess/decisions/README.md",
+                           map=f"`git {f'-C {at[:-1]} ' if at else ''}show {base}:{SYSTEM_MAP}`",
                            report=_where(root, "review", report))
     return {"number": n, "base": base, "found": found, "prompt": prompt}
+
+
+# What decides how spec tests run: conftest.py, runner configs, and test setup files (M-1 of #117)
+RUNNING = re.compile(r"(^|/)(conftest\.py|pytest\.ini|tox\.ini|(playwright|vitest|jest)\.config\.[^/]+|"
+                     r"(setupTests|setup|[^/]*[._-]setup)\.([cm]?[jt]sx?|py|cfg))$")
+
+
+def _runs(root: Path, ref: str, path: str):
+    """The part of pyproject.toml or package.json at ref that decides how tests run: the sections named for
+    pytest, or the scripts."""
+    text = _git(root, "show", f"{ref}:{path}")
+    if path.endswith("package.json"):
+        try:
+            return json.loads(text).get("scripts")
+        except (ValueError, AttributeError):
+            return text
+    return [s for s in re.split(r"(?m)^(?=\[)", text) if "pytest" in s.partition("\n")[0]]
+
+
+def _loosened(root: Path, n: int, base: str) -> list:
+    """Files that decide how the spec tests of #n run, changed after the first commit that froze them by a commit
+    that froze none: RUNNING, the pytest sections of pyproject.toml, and the scripts of package.json."""
+    grep = f"--grep=^test: spec tests for #{n}$"
+    frozen = _git(root, "log", "--format=%H", grep, f"{base}..HEAD").split()
+    if not frozen:
+        return []
+    changed = dict.fromkeys(filter(None, _git(root, "log", "--format=", "--name-only", "--invert-grep", grep,
+                                              f"{frozen[-1]}..HEAD").splitlines()))
+    return [f for f in changed if RUNNING.search(f) or f.rpartition("/")[2] in ("pyproject.toml", "package.json")
+            and _runs(root, frozen[-1], f) != _runs(root, "HEAD", f)]
 
 
 def _sca(scan: dict) -> dict:
@@ -201,9 +244,8 @@ def _sca(scan: dict) -> dict:
 
 
 def _scan(root: Path, args: list) -> tuple:
-    """Run the scanner for the auditor in the calling process and its sandbox: outside any agent
-    sandbox and with the network only when pulse go or a person calls it, not when an agent runs
-    `pulse audit`. Its JSON goes where the session can read it; returns what the brief tells the
+    """Run the scanner for the auditor in the calling process: pulse go, outside any agent sandbox and
+    with the network. Its JSON goes where the session can read it; returns what the brief tells the
     session about it, and why the scan gave nothing ("" when it ran)."""
     out, timeout = root / SCAN_JSON, config.load(root)["agent_timeout"] * 60
     out.unlink(missing_ok=True)
@@ -231,7 +273,7 @@ def _since(root: Path) -> str:
     """The files and manifests changed since the last audit that counted in this clone: on this
     line of history, so an audit of another branch adds nothing."""
     try:
-        last = json.loads((config.pulse_dir(root) / CONTEXT).read_text(encoding="utf-8"))
+        last = json.loads((config.evidence_dir(root) / CONTEXT).read_text(encoding="utf-8"))
         commit, when = last["commit"], last["date"]
     except (OSError, ValueError, KeyError):
         return "no earlier audit in this clone"
@@ -262,8 +304,24 @@ def audit_brief(root: Path, n: int = None, title: str = "", base=None, scope: st
     return {"number": n, "base": base, "found": found, "prompt": prompt, "unscanned": unscanned}
 
 
+def check_brief(root: Path, n: int, title: str, spec, base, kinds: tuple, tests: str, where: Path) -> dict:
+    """The fresh session of pulse go for the gates in kinds, review and audit: each part with its own brief
+    and its report in where, two parts in one prompt (#120). An audit whose scan failed leaves the session
+    (unscanned: why), so its gate gets no verdict; kinds in the result: the parts the session answers."""
+    parts, unscanned = {}, ""
+    if "review" in kinds:
+        parts["review"] = brief(root, n, title, spec, base, tests=tests, report=where / REPORTS["review"])["prompt"]
+    if "audit" in kinds:
+        b = audit_brief(root, n, title, base, report=where / REPORTS["audit"])
+        unscanned = b["unscanned"]
+        if not unscanned:
+            parts["audit"] = b["prompt"]
+    prompt = CHECK.format(what=_what(n, title, "branch"), **parts) if len(parts) == 2 else "".join(parts.values())
+    return {"kinds": tuple(parts), "prompt": prompt, "unscanned": unscanned}
+
+
 def _kept(root: Path, n: int, kind: str = "review") -> Path:
-    return config.pulse_dir(root) / KEPT[kind] / f"{n}.md"
+    return config.evidence_dir(root) / KEPT[kind] / f"{n}.md"
 
 
 def _take_scan(root: Path) -> dict:
@@ -281,7 +339,7 @@ def _unscanned(scan: dict, text: str, verdict, head: str) -> str:
     """Why an AUDIT.md is no verdict: it stands on the scan audit_brief ran at this commit, a pass
     names an SCA lookup that failed, and a Coverage line says what was checked. "" when it counts."""
     if scan.get("git_head") != head:
-        return f"no scan of {head[:12]}: run the audit again with `pulse audit`, which runs the scan"
+        return f"no scan of {head[:12]}: only an audit whose brief ran the scan at this commit counts"
     sca, coverage = _sca(scan), COVERAGE.search(text)
     if verdict == "pass" and sca["status"] not in ("ran", "not-applicable") \
             and "sca unavailable" not in (coverage.group(1).lower() if coverage else ""):
@@ -293,15 +351,33 @@ def _unscanned(scan: dict, text: str, verdict, head: str) -> str:
 
 def _remember(root: Path, head: str) -> None:
     """The audit that counted, for the next one's "since": its date, commit, and manifests."""
-    path = config.pulse_dir(root) / CONTEXT
+    path = config.evidence_dir(root) / CONTEXT
     path.parent.mkdir(parents=True, exist_ok=True)
     manifests = [f for f in _git(root, "ls-files").splitlines() if MANIFEST.search(f)]
     path.write_text(json.dumps({"date": date.today().isoformat(), "commit": head, "manifests": manifests}),
                     encoding="utf-8")
 
 
+BLOCKING = re.compile(r"^\s*[-*]\s*\[block\]", re.M | re.I)       # a finding line that blocks
+
+
+def verdict(text: str) -> bool:
+    """Whether a review or audit report is green: its first line reads exactly `Verdict: pass`, whatever the case
+    (IMP-03-13 FR-06), and no finding below it blocks (B-1). A reservation on that line, such as "pass (stays
+    draft)", or a pass further down is none."""
+    return text.strip().partition("\n")[0].strip().lower() == "verdict: pass" and not BLOCKING.search(text)
+
+
+def _judged(text: str):
+    """pass, block, or None: what the first line of a report says."""
+    if verdict(text):
+        return "pass"
+    m = VERDICT.match(text.strip().partition("\n")[0])
+    return "block" if m and (m.group(1).lower() == "block" or BLOCKING.search(text)) else None
+
+
 def record(root: Path, n: int = None, kind: str = "review", failed: str = "", report=None) -> dict:
-    """Keep the session's REVIEW.md or AUDIT.md in the shared git dir, stamped with HEAD; report:
+    """Keep the session's REVIEW.md or AUDIT.md in config.evidence_dir, stamped with HEAD; report:
     where the brief sent it, outside root. Without an item number the verdict is read and nothing
     is kept; with one it counts only after the brief of this run noted the tree (FR-05). failed:
     how the session ended when it did not end cleanly; its report and its note go, and nothing
@@ -322,9 +398,9 @@ def record(root: Path, n: int = None, kind: str = "review", failed: str = "", re
         return {"number": n, "verdict": None, "why": f"no {name} in {src.parent}"}
     text = src.read_text(encoding="utf-8").strip()
     src.unlink()
-    m = VERDICT.search(text)
     head = _git(root, "rev-parse", "HEAD").strip()
-    verdict, why = (m.group(1).lower(), "") if m else (None, "the report has no Verdict line")
+    verdict = _judged(text)
+    why = "" if verdict else "the report's first line is neither `Verdict: pass` nor `Verdict: block`"
     unscanned = _unscanned(scan, text, verdict, head) if kind == "audit" else ""
     if unscanned:
         verdict, why = None, unscanned
@@ -338,7 +414,7 @@ def record(root: Path, n: int = None, kind: str = "review", failed: str = "", re
         before.unlink()
     except (OSError, ValueError):
         return {"number": n, "verdict": None, "commit": head, "report": text,
-                "why": f"no brief of this run noted the tree for #{n}: run `pulse {kind} {n}` first, then the session"}
+                "why": f"no brief of this run noted the tree for #{n}: the {kind} counts only after its brief"}
     now = _snapshot(root)
     if was is None or now is None:
         return {"number": n, "verdict": None, "commit": head, "report": text,
@@ -362,8 +438,8 @@ def _local(root: Path, n: int, kind: str):
         text = _kept(root, n, kind).read_text(encoding="utf-8")
     except OSError:
         return None
-    commit, verdict = re.search(r"^Commit:\s*(\S*)", text, re.M), VERDICT.search(text)
-    return {"commit": commit.group(1) if commit else "", "verdict": verdict.group(1).lower() if verdict else None}
+    commit = re.search(r"^Commit:\s*(\S*)", text, re.M)       # the line record() puts above the report
+    return {"commit": commit.group(1) if commit else "", "verdict": _judged(text.partition("\n")[2])}
 
 
 def last(root: Path, n: int, kind: str = "review", known: dict = None):
@@ -428,17 +504,18 @@ def _published(pr: dict, repo_name: str, run, known: dict = None) -> list:
     return out
 
 
-def publish(root: Path, n: int, run=state.gh, pr: int = None) -> list:
+def publish(root: Path, n: int, run=state.gh, pr: int = None, repo_name: str = None) -> list:
     """Put the verdicts of #n kept here for HEAD on the open PR of this branch, one marker per gate
     and commit, all in one comment (D-49), so the next holder of the item finds them through
     last(). `pr` is the PR pulse go just opened or rewrote after its gates ran at HEAD: not looked
-    up again, its verdicts go on as new. Returns the gates it published; an error of gh passes
+    up again, its verdicts go on as new; pulse go names its repository too, which it asked gh once
+    for (D-49). Returns the gates it published; an error of gh passes
     through as StateError and changes nothing kept here."""
     head = _git(root, "rev-parse", "HEAD").strip()
     kept = {k: v["verdict"] for k in KEPT for v in [_local(root, n, k)] if v and v["verdict"] and v["commit"] == head}
     if not kept:
         return []
-    repo_name = state.repo(root, run)
+    repo_name = repo_name or state.repo(root, run)
     pr = {"number": pr} if pr else _pr(root, n, repo_name, run)
     on = {(v["gate"], v["commit"]) for v in _published(pr, repo_name, run) if "unchecked" not in v} | \
         {(v["gate"], v["commit"]) for c in pr.get("comments") or [] if c.get("viewerDidAuthor")
@@ -456,7 +533,7 @@ def publish(root: Path, n: int, run=state.gh, pr: int = None) -> list:
 
 def template(cfg: dict, agent=None) -> str:
     try:
-        name = agent or cfg["review_agent"] or next(iter(config.agent_slots(cfg["agent"], 1)), "")
+        name = agent or next(iter(config.agent_slots(cfg["agent"], 1)), "")
     except ValueError as e:
         raise state.StateError(str(e)) from None
     found = cfg["agents"].get(name)
@@ -472,32 +549,3 @@ def gate_template(cfg: dict, agent=None) -> str:
     tree = " ".join(f"'Bash(git -C tree {g}:*)'" for g in ("diff", "log", "show", "status"))
     return template(cfg, agent).replace(allow, f"{allow} {tree}")
 
-
-def run(root: Path, n: int = None, title: str = "", spec=None, base=None, agent=None, kind: str = "review",
-        scope: str = "branch", rng: str = None) -> dict:
-    """Start the review or the audit headless in root, wait for it, read its verdict. The session
-    carries PULSE_HOLDER like the gate sessions of pulse go, so the Stop hook leaves it alone, and
-    has its own process group, which ends with it (FR-04). An audit whose scan failed gives no
-    verdict, so it starts no session."""
-    cfg = config.load(root)
-    b = brief(root, n, title, spec, base, scope, rng) if kind == "review" else \
-        audit_brief(root, n, title, base, scope, rng)
-    found = b.get("found", [])
-    if b.get("unscanned"):
-        return {**record(root, n, kind, failed=f"did not start: {b['unscanned']}"), "found": found}
-    proc = subprocess.Popen(config.agent_argv(template(cfg, agent), b["prompt"]), cwd=root, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                            env={**{k: v for k, v in os.environ.items() if k not in presence.SURFACE},   # #61
-                                 "PULSE_HOLDER": json.dumps(state.holder())})
-    try:
-        rc = proc.wait(timeout=cfg["agent_timeout"] * 60)
-        failed = f"ended with exit {rc}" if rc else ""
-    except subprocess.TimeoutExpired:
-        failed = "timed out"
-    finally:                   # what the session left running could still write its report
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        proc.wait()
-    return {**record(root, n, kind, failed=failed), "found": found}

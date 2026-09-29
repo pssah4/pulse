@@ -1,24 +1,34 @@
 """Readiness: which items may be planned, which may be built, and why the others wait.
 
-An item is ready when a person approved it, its spec passes R1 to R6
-(pulse/spec.py), it has a PLAN that passes P1 to P5, the PLAN is approved,
-and no blocker is open. The PLAN approval is computed: `plan_approval =
-"auto"` approves every PLAN that nothing holds (a risk flag in the spec,
-`needs:` in the PLAN); `manual`, or a hold, waits for `pulse approve-plan`.
+An item is ready when a person approved it (gate 1), its spec is on the
+base branch and passes R1 to R6 (pulse/spec.py), it has a PLAN that passes
+P1 to P5, a person approved that PLAN (gate 2: a Plan-ok that names the
+blobs of PLAN and spec as origin has them, #115), and no blocker is open.
+pulse go asks GitHub whether the people who approved may push.
 
 PLANs live in the working tree (interactive /pulse-plan) or on the pushed
 item branch (planning runs of pulse go); fetch() brings the item branches
 of every clone. The rules read text only; plans() and gates() read git.
+
+The ramp (ramp(), view()) says what goes out next, without two agents
+stepping on each other: every blocker is closed (a dependent waits for
+its blocker's merge), and items that run at the same time touch disjoint
+files (their PLANs list them under `files:`). The order is order(): no item
+before its blocker, then effective priority and number. Files of anyone's running item are held;
+only my own running items take my slots (`cap` in .pulse/config.toml).
 """
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
+import posixpath
 import re
 import signal
 import subprocess
 import time
+import unicodedata
 from pathlib import Path
 
 from pulse import config, spec, state
@@ -30,12 +40,12 @@ PLANS = "_devprocess/plans"
 IDS = re.compile(r"\b(?:FR|SC)-\d+\b")
 TICK = re.compile(r"`([^`\s]+)`")
 CODE = re.compile(r"`[^`\n]*`")         # inline code: braces there are code, not a placeholder
-REF = re.compile(r"#(\d+)(?=[\s,:;]|$)")  # a needs: entry that names an item first
-NO_MERGE = "no merge"                # what approve spec binds when its confirmation showed no merge (#88)
-SEVERAL = "branches {} of origin changed its spec since {} took it: keep the correction on one of them, push, and " \
-          "approve again"            # a spec on the base with more than one newer version (#99 FR-07)
+REF = re.compile(r"#(\d+)(?=[\s,:;]|$)")  # a needs: entry that names an item first (pulse go makes it a blocker)
+WAITS = ("plan waits", "plan changed", "spec changed")      # a gate at which a PLAN waits for a person (#115)
+MOVED = "docs PR changed since approval"      # gate 1 waits again: no approval names its head and spec path (M-1)
 SAID = re.compile(r"^(?=(?:error|fatal|warning|hint):)", re.M)     # where each message of git starts
 HEADS = re.compile(r"^([0-9a-f]{40}(?:[0-9a-f]{24})?)\trefs/heads/(.+)$", re.M)   # a line git ls-remote writes
+NO_ANSWER = "origin did not answer"
 _memo: dict = {}                     # (branch sha, base ref) -> its PLAN; git history never changes
 _specs: dict = {}                    # (base sha, path) -> the spec text there, or None
 
@@ -112,10 +122,10 @@ def fetch_said(root) -> str:
 def behind(root) -> dict | None:
     """{branch: the commit origin names} for each branch whose refs/remotes/origin/<branch> git lists here
     on another commit, and {branch: ""} for a listed ref whose branch origin no longer has: what a fetch
-    git could not finish leaves, or one that wrote a ref on the commit of a name that differs only in case.
-    It reads the list, so it misses a name that resolves elsewhere while the list matches origin (a twin
-    loose beside a packed origin/main): a follow-up item's. None when git ls-remote fails, as offline.
-    Only lines of a commit and a branch count: a name with a newline forges no revision (#85)."""
+    git could not finish leaves. Where one ref file holds names that differ only in case (_folds), every
+    such name too, on origin or a local branch (""), whatever its ref shows now: a twin loose beside a
+    packed origin/main resolves elsewhere while the list matches origin (#97). None when git ls-remote
+    fails, as offline. Only lines of a commit and a branch count: a name with a newline forges no revision (#85)."""
     heads = net_git(root, "ls-remote", "--heads", "origin")
     if heads.returncode:
         return None
@@ -123,7 +133,48 @@ def behind(root) -> dict | None:
     here = {b: c for b, c, link in (line.split(" ") for line in _git(      # "\n" only: a ref name may hold U+2028
         root, "for-each-ref", "--format=%(refname:lstrip=3) %(objectname) %(symref)", "refs/remotes/origin"
     ).split("\n") if line) if not link}                            # origin/HEAD names a branch, it is none
-    return {b: c for b, c in there.items() if here.get(b) != c} | {b: "" for b in here if b not in there}
+    local = _git(root, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads").split("\n")
+    same = twins({*there, *local} - {""})
+    return {b: c for b, c in there.items() if here.get(b) != c} | {b: "" for b in here if b not in there} | \
+        ({b: there.get(b, "") for b in same} if same and _folds(root) else {})
+
+
+def twins(names) -> list:
+    """The names among names that another one equals but for case or Unicode normalization, sorted (#97)."""
+    groups: dict = {}
+    for b in names:
+        groups.setdefault(unicodedata.normalize("NFC", b).casefold(), set()).add(b)
+    return sorted(b for g in groups.values() if len(g) > 1 for b in g)
+
+
+def conflict(names) -> str:
+    """One line on the branches among names that share a ref file here, "" without any (#97)."""
+    same = twins(names)
+    return ("branch names that differ only in case share one ref file here: " + ", ".join(map(printable, same)) +
+            "; delete or rename one of them on origin") if same else ""
+
+
+def _folds(root) -> bool:
+    """Whether one ref file here holds names that differ only in case: core.ignorecase, which git sets on macOS and
+    Windows, and refs as files (#97)."""
+    # ponytail: trusts core.ignorecase; a clone copied from Linux onto macOS says false and goes unchecked
+    return _git(root, "config", "--type=bool", "core.ignorecase").strip() == "true" and \
+        _git(root, "config", "extensions.refstorage").strip().lower() != "reftable"
+
+
+def folded(root, *names, item=None) -> str:
+    """conflict() when a branch among names, or a branch of item, shares its ref file here with another name: its
+    ref may show the other's commit, or none of item's work; "origin did not answer" when that cannot be told; ""
+    where every name has its own ref, without asking origin (#97)."""
+    if not _folds(root):
+        return ""
+    got = behind(root)
+    if got is None:
+        return NO_ANSWER
+    local = _git(root, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads").split("\n")
+    same = twins({*got, *local, *names} - {""})
+    hit = [b for b in same if b in names or item is not None and state.item_of(b) == item]
+    return conflict(same) if hit else ""
 
 
 def listed(text: str, key: str) -> list:
@@ -138,7 +189,7 @@ def listed(text: str, key: str) -> list:
             continue
         on = False
     inline = spec.front(text).get(key)
-    return [x for x in out + (inline if isinstance(inline, list) else []) if x]
+    return [x for x in out + [v.strip("'\"") for v in (inline if isinstance(inline, list) else [])] if x]
 
 
 def _issue(text: str):
@@ -155,16 +206,20 @@ def _branch_plan(root: Path, base: str, ref: str, n: int):
             continue
         text = _git(root, "show", f"{ref}:{path}")
         if _issue(text) == n:
-            return {"path": path, "ref": ref, "text": text}
+            return {"path": path, "ref": ref, "text": text, "blob": _git(root, "rev-parse", f"{ref}:{path}").strip()}
     return None
 
 
 def plans(root: Path, base: str = None) -> dict:
-    """{issue: {"path", "ref", "text"}}: pushed item branches, then the working tree, which wins
+    """{issue: {"path", "ref", "text", "blob"}}: pushed item branches, then the working tree, which wins
     unless the item's branch on origin moved past it: the copy here is committed as it is, and
-    that branch holds this commit and a different PLAN."""
+    that branch holds this commit and a different PLAN. blob is the PLAN at that path as origin has it, on the
+    item's branch, else on the base: what a Plan-ok binds, the same for every clone (#115); "" where origin has
+    none."""
     base = base or config.base_ref(root)
     out = {}
+    tree = {e.partition("\t")[2]: e.split()[2] for e in _git(root, "ls-tree", "-z", base, "--", f"{PLANS}/")
+            .split("\0") if "\t" in e}
     for line in _git(root, "for-each-ref", "--format=%(objectname) %(refname:short)",
                      "refs/remotes/origin").splitlines():
         sha, _, ref = line.partition(" ")
@@ -175,14 +230,14 @@ def plans(root: Path, base: str = None) -> dict:
                 _memo[key] = _branch_plan(root, base, ref, n)
             if _memo[key]:
                 out[n] = _memo[key]
-    for path in sorted((root / PLANS).glob("*.md")):
-        text = path.read_text(encoding="utf-8", errors="replace")
+    for path, text in spec.readable(sorted((root / PLANS).glob("*.md"))).items():
         n, rel = _issue(text), path.relative_to(root).as_posix()
         p = out.get(n)
         behind = p and p["ref"] and p["text"] != text and not _git(root, "status", "--porcelain", "--", rel) \
             and _git(root, "rev-list", "--count", f"{p['ref']}..HEAD").strip() == "0"
         if n and not behind:   # behind: a teammate pushed a newer PLAN on the item's branch
-            out[n] = {"path": rel, "ref": None, "text": text}
+            out[n] = {"path": rel, "ref": None, "text": text,
+                      "blob": p["blob"] if p and p["path"] == rel else tree.get(rel, "")}
     return out
 
 
@@ -231,8 +286,20 @@ def _ids(spec_text: str) -> list:
     return frs + scs
 
 
-def plan_findings(text: str, spec_text) -> list:
-    """['P2 not covered: SC-01', ...]; [] means an agent can build from this PLAN."""
+# A test file by its name: tests/, __tests__/, test_*, *.test.*, *.spec.*, *_test.* (Go), *_spec.* (RSpec).
+TESTISH = re.compile(r"(^|/)(tests?|__tests__)/|(^|/)test_[^/]*$|[._](test|spec)\.[^/]*$")
+
+
+def spec_test_files(text: str) -> list:
+    """The test files wave 1 of a PLAN names (TESTISH), each spelled one way: its spec tests. Code in wave 1 is
+    none of them."""
+    return list(dict.fromkeys(posixpath.normpath(f) for r in tasks(text) if r.get("wave") == "1"
+                              for f in TICK.findall(r.get("files", "")) if TESTISH.search(f)))
+
+
+def plan_findings(text: str, spec_text, spec_tests=None) -> list:
+    """['P2 not covered: SC-01', ...]; [] means an agent can build from this PLAN. spec_tests: [spec_tests] of the
+    config on the base, for P6; None leaves P6 out."""
     fm, rows, out = spec.front(text), tasks(text), []
     missing = [k for k in ("issue", "spec") if not fm.get(k)] + \
               [k for k in ("files", "verify") if not listed(text, k)]
@@ -274,22 +341,20 @@ def plan_findings(text: str, spec_text) -> list:
              for h in spec.HOLE.findall(CODE.sub("", spec.FENCE.sub("", content)))] + spec.HOLE.findall(head)
     if holes:
         out.append(f"P5 open: {', '.join(dict.fromkeys(holes))}")
+    if spec_tests is not None:         # every spec test of wave 1 has a runner (IMP-03-13 FR-02); its code has none
+        bare = [f for f in spec_test_files(text) if not config.spec_runner({"spec_tests": spec_tests}, f)]
+        if bare:
+            out.append(f"P6 no pattern in [spec_tests] for: {', '.join(bare)}")
     return out
 
 
-def hold(spec_text: str, plan_text: str, blockers=(), open_=None) -> str:
-    """Why a person has to approve this PLAN even at plan_approval = auto; "" when nothing holds it.
-    A needs: entry that names an item (#n) holds only while that item is open (open_: the open
-    issues, None when unknown) and no blocker of this one: the board waits for a blocker already,
-    and a closed item is done."""
-    fm = spec.front(spec_text or "")
-    risk = fm.get("risk") or []
-    risk = risk if isinstance(risk, list) else [risk]
-    refs = [(x, int(m.group(1)) if m else None) for x in listed(plan_text, "needs") for m in [REF.match(x)]]
-    needs = [x for x, n in refs if n is None or n not in blockers and (open_ is None or n in open_)]
-    return "; ".join(filter(None, [f"risk: {', '.join(risk)}" if risk else "",
-                                   f"needs {', '.join(needs)}" if needs else "",
-                                   "effort L" if fm.get("effort") == "L" else ""]))
+def hold(spec_text: str, plan_text: str) -> str:
+    """What the person who approves this PLAN looks at twice: `risk:` in the spec or the PLAN (a new dependency,
+    a schema, a public interface, a destructive change); "" when nothing holds it. Neither effort L nor needs:
+    holds a PLAN: pulse go makes needs: blocker edges (FR-06 of #114)."""
+    risk = spec.front(spec_text or "").get("risk") or []
+    risk = (risk if isinstance(risk, list) else [risk]) + listed(plan_text, "risk")
+    return f"risk: {', '.join(dict.fromkeys(risk))}" if risk else ""
 
 
 def gates(root: Path, items: list, cfg: dict, found: dict = None) -> dict:
@@ -297,19 +362,32 @@ def gates(root: Path, items: list, cfg: dict, found: dict = None) -> dict:
     base = config.base_ref(root)
     found = plans(root, base) if found is None else found
     sha = _git(root, "rev-parse", "--verify", "-q", base).strip()
-    open_ = {i["number"] for i in items}
     out = {}
     for i in items:
         if i.get("type") not in state.WORK or i.get("assignees"):
             continue
         n = i["number"]
+        if i.get("hold"):                      # a person set pulse:hold: go plans and builds nothing of it (#111)
+            out[n] = "on hold (pulse:hold)"
+            continue
+        if i.get("failed"):                    # pulse go gave up on it: no run takes it again (#114)
+            out[n] = f"failed (pulse:failed): pulse approve {n} lets it try again"
+            continue
         if not i.get("approved"):
             out[n] = "not approved"
             continue
         key = (sha, i.get("spec"))
-        if key not in _specs:
-            _specs[key] = spec.on_base(root, i["spec"], sha or base) if i.get("spec") else None
-        spec_text = _specs[key]
+        if key not in _specs:          # the text, and the blob a Plan-ok binds (#115)
+            _specs[key] = (spec.on_base(root, i["spec"], sha or base),
+                           _git(root, "rev-parse", f"{sha or base}:{i['spec']}").strip()) if i.get("spec") else (None, "")
+        spec_text, spec_blob = _specs[key]
+        if i.get("spec") and spec_text is None:     # pulse go merges its docs PR first, else it plans nothing (#115)
+            branch = base.removeprefix("origin/")
+            pr, why = spec_pr(i, branch) if any(p["base"] == branch for p in i.get("spec_prs") or ()) else (None, "")
+            out[n] = (f"spec in PR #{pr['number']}: pulse go merges it" if approved_at(i, pr["head"]) else
+                      f"{MOVED}: pulse approve {n} again") if pr else \
+                f"spec not on {branch}" + (f": {why}" if why else "")
+            continue
         wrong = spec.findings(spec_text, i["type"], n)
         if wrong:
             out[n] = f"spec: {wrong[0]}"
@@ -318,56 +396,110 @@ def gates(root: Path, items: list, cfg: dict, found: dict = None) -> dict:
         if not p:
             out[n] = "needs a plan"
             continue
-        gate = plan_gate(p["text"], spec_text, cfg, i.get("plan_ok"), i.get("blocked_by") or (), open_)
+        old = (i.get("plan_ok") or [None, ""])[1] is None and p.get("blob")     # a line from before #115
+        gate = plan_gate(p["text"], spec_text, cfg, plan_ok(i, p.get("blob", ""), spec_blob,
+                                                           _git(root, "cat-file", "blob", p["blob"]) if old else ""))
         if gate:
             out[n] = gate
     return out
 
 
 def digest(text: str) -> str:
-    """What a PLAN approval binds to: this text, and no later rewrite of it."""
+    """What a PLAN approval bound to before #115: this text, and no later rewrite of it."""
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
-def plan_gate(plan_text: str, spec_text, cfg: dict, plan_ok: str = None, blockers=(), open_=None):
-    """Why a PLAN keeps its item from being built, or None when it may be built.
-    plan_ok: the digest of the PLAN a person approved; it counts only for that PLAN."""
-    wrong = plan_findings(plan_text, spec_text)
+def plan_ok(item: dict, plan_blob: str, spec_blob: str, pushed: str = "") -> str:
+    """"" when a person approved this PLAN at gate 2 (#115): the Plan-ok line of item names the blobs of the PLAN and
+    of the spec as origin has them, and a comment `plan ok at` with the same blobs comes from an owner, member, or
+    collaborator (pulse go asks GitHub whether that one may push). An old line of 12 characters counts, with its
+    label, for the PLAN whose text (pushed, as origin has it) it digests. Else why the PLAN waits for a person."""
+    ok = item.get("plan_ok")
+    if not ok:
+        return "plan waits for you"
+    if ok[1] is None:
+        return "" if pushed and ok[0] == digest(pushed) else "plan changed since plan ok"
+    if ok[0] != plan_blob:
+        return "plan changed since plan ok"
+    if ok[1] != spec_blob:
+        return "spec changed since plan ok"
+    said = any(c["blobs"] == ok and c.get("authorAssociation") in state.WRITERS for c in item.get("plan_oks") or ())
+    return "" if said else "plan waits for you"
+
+
+def plan_gate(plan_text: str, spec_text, cfg: dict, waits: str = "plan waits for you"):
+    """Why a PLAN keeps its item from being built, or None when it may be built: a P finding (P6 against the
+    [spec_tests] of cfg), else plan_ok()'s answer (waits, "" when a person approved this PLAN) with what holds it for
+    a closer look."""
+    wrong = plan_findings(plan_text, spec_text, cfg.get("spec_tests"))
     if wrong:
         return f"plan: {wrong[0]}"
-    if plan_ok and plan_ok == digest(plan_text):
-        return None
-    why = hold(spec_text, plan_text, blockers, open_)
-    if cfg.get("plan_approval") == "manual" or why:
-        return "plan waits for you" + (f" ({why})" if why else "")
-    return None
+    why = hold(spec_text, plan_text)
+    return waits + (f" ({why})" if why else "") if waits else None
+
+
+def waiting(root: Path, item: dict) -> tuple:
+    """(gate, blobs, "") of the approval item waits for, which pulse approve and the map's a write (#115): 0 when
+    pulse go gave up on it (pulse:failed goes), 1 before its approval (blobs: the head of the docs PR that carries its
+    spec and the spec path, while it lies in one; again once that PR moved, M-1), 2 when its PLAN, pushed, passes P1 to
+    P5 on the spec of the base and no Plan-ok names both: blobs are then theirs, as origin has them; 3 when its PR is
+    open and ready and no merge ok names its head: blobs is then (the head,) (#118). (None, (), why) when
+    nothing waits for a person, why in a person's words. A spec on the base is held to R1 to R6 there; one in an
+    open PR, pulse go checks before it merges it."""
+    n, path = item["number"], item.get("spec")
+    no = f"#{n} not approved: "
+    if item.get("draft") or not path:
+        return None, (), no + ("its spec is still being written" if item.get("draft") else "it has no spec")
+    if item.get("hold"):
+        return None, (), no + "on hold (pulse:hold)"
+    if item.get("failed"):
+        return 0, (), ""
+    base = config.base_ref(root)
+    text, branch = spec.on_base(root, path, base), base.removeprefix("origin/")
+    pr, gone = spec_pr(item, branch) if text is None and any(p["base"] == branch for p in item.get("spec_prs") or ()) \
+        else (None, "")
+    if pr and not (item.get("approved") and approved_at(item, pr["head"])):
+        return 1, (pr["head"], path), ""        # at the head pulse go merges; again once the PR moved (M-1)
+    if not item.get("approved"):
+        why = spec.refusal(text, item.get("type"), n, base) if text is not None else gone or \
+            f"R1 spec not on {base} and in no open pull request; /pulse-re pushes it"
+        return (None, (), no + why) if why else (1, (), "")
+    pr = item.get("pr") or {}
+    if pr.get("head") and not pr.get("draft") and not pr.get("fork"):       # gate 3: the head of its ready PR (#118)
+        return (None, (), f"#{n} is approved already, its merge too: pulse go merges it") \
+            if pr["head"] in [m["sha"] for m in item.get("merge_oks") or ()     # a writer's, as at gates 1 and 2 (L-1)
+                              if m.get("authorAssociation") in state.WRITERS] else (3, (pr["head"],), "")
+    p = plans(root, base).get(n)
+    if not p:
+        return None, (), f"#{n} is approved already; pulse go writes its PLAN"
+    if not p["blob"]:
+        return None, (), no + f"its PLAN {p['path']} is not on origin: push it"
+    wrong = plan_findings(_git(root, "cat-file", "blob", p["blob"]), text, config.load(root).get("spec_tests"))
+    if wrong:
+        return None, (), no + f"plan: {wrong[0]}"
+    blobs = (p["blob"], _git(root, "rev-parse", f"{base}:{path}").strip())
+    return (None, (), f"#{n} is approved already, its PLAN too") if item.get("plan_ok") == list(blobs) else \
+        (2, blobs, "")
+
+
+def approved_at(item: dict, head: str) -> bool:
+    """Whether an owner, member, or collaborator approved gate 1 of item at this head of its docs PR, for the spec
+    path its Spec: line names (M-1); pulse go asks GitHub whether that one may push."""
+    return any(c["head"] == head and c["path"] == item.get("spec") and c.get("authorAssociation") in state.WRITERS
+               for c in item.get("gate1_oks") or ())
 
 
 def spec_pr(item: dict, branch: str) -> tuple:
     """(the one open PR into branch that carries the item's spec and changes only _devprocess/, "")
-    or (None, why not): what approving the item merges when its spec is not on branch yet and an open
-    PR into branch carries it (#69); ask only then, else spec_branch() says what it merges (#88)."""
+    or (None, why not): the docs PR pulse go merges at gate 1 while the spec is not on branch yet (#69, #115);
+    ask only when one carries it."""
     prs = [p for p in item.get("spec_prs") or () if p["base"] == branch]
     if len(prs) > 1:
         return None, f"open pull requests {', '.join('#%d' % p['number'] for p in prs)} carry it: close all but one"
     if not prs[0]["docs"]:
         return None, (f"PR #{prs[0]['number']} that carries it changes more than _devprocess/, or more files than "
-                      "gh lists: approve merges only a spec pull request")
+                      "gh lists: pulse go merges only a docs pull request")
     return prs[0], ""
-
-
-def spec_branch(branches: list) -> tuple:
-    """(the one branch of origin, the base aside, that carries an item's spec, "") or (None, why not): what
-    approving the item merges when no open PR into the base carries its spec (#88). Several refuse: each
-    brings other files along, and a stacked docs branch may carry another item's only spec (gate round 1)."""
-    if not branches:
-        return None, "no branch of origin carries it; /pulse-re pushes it"
-    if len(branches) > 1:
-        return None, (f"branches {', '.join(branches)} of origin carry it: if one of these branches carries the "
-                      "other's work too (a stacked docs branch), approve that branch's item first; it brings this "
-                      "spec along. Otherwise keep the spec on one branch: remove it from the others, push, and "
-                      "approve again")
-    return branches[0], ""
 
 
 printable = config.printable                # one definition, in config, which cannot import this module
@@ -388,10 +520,10 @@ def unpushed(root: Path, n: int, base: str) -> list:
     """(branch, commits) for each branch of item n in this clone, its docs branch too, with commits
     origin lacks: against origin/<branch>, else against the base branch on origin. Only this clone
     has them; the team sees no work there, and whoever takes n over starts without it (#79)."""
-    out = []
+    out, cfg = [], config.load(root)
     for ref in _git(root, "for-each-ref", "--format=%(refname)", "refs/heads").split():
         b = ref.removeprefix("refs/heads/")
-        if state.item_of(b) != n and not b.startswith(f"docs/{n}-"):
+        if state.item_of(b) != n and not config.is_spec_branch(cfg, b, n):
             continue
         since = _tip(root, f"refs/remotes/origin/{b}") or _tip(root, f"refs/remotes/origin/{base}")
         count = _git(root, "rev-list", "--count", f"{since}..{ref}").strip() if since else ""
@@ -406,118 +538,14 @@ def _tip(root: Path, ref: str) -> str:
     return _git(root, "show-ref", "--verify", "-s", ref).strip()
 
 
-def approve(root: Path, repo_name: str, item: dict, run=None, head: str = None) -> tuple:
-    """(approved, what happened or why not) for pulse approve and the map's approve spec. A spec on
-    the base branch is held to R1 to R6 there. A spec in one open spec PR into it (#69) is read afresh:
-    no fork, into the base, the head the map showed when it showed one, _merge_check(), the spec at that
-    head to R1 to R6. Then a draft becomes ready, the PR is merged bound to that head, and once the spec
-    is on the base branch the item approved. A spec in no such PR, on exactly one branch of origin (#88),
-    passes the same checks at that branch's head; approve merges it itself and approves (_merge_branch).
-    head: the head the map's confirmation showed, or NO_MERGE when it showed none; None merges what checks."""
-    ok, said = _approve(root, repo_name, item, run or state.gh, head)
-    return ok, printable(said)
-
-
-_newer: dict = {}                    # (root, path, branch, real, every tip of origin) -> newer(); history never changes
-
-
-def newer(root: Path, path: str, branch: str, real: str, tips: str = None) -> list:
-    """The branches of origin, item branches aside, that changed the spec at path since they forked from branch at
-    real, where it lies already: a correction pushed after an earlier approval merged their other specs (#99
-    FR-07). A branch that brings the spec first is none. As the last fetch left them (tips: spec.origin_tips(),
-    read once by a caller that asks for several specs), once per state of origin: the map asks every 2 s. []
-    without the spec at real."""
-    tips = spec.origin_tips(root) if tips is None else tips
-    key = (str(root), path, branch, real, tips)
-    if key not in _newer:
-        at = lambda c: _git(root, "rev-parse", "-q", "--verify", f"{c}:{path}").strip()     # noqa: E731
-        heads = {r: c for c, _, r in (line.partition(" ") for line in tips.split("\n"))}
-        here, out = at(real) if real else "", []
-        for b in spec.carriers(root, path, tips) if here else ():
-            head = heads.get(f"refs/remotes/origin/{b}")
-            if b == branch or state.item_of(b) or not head or at(head) == here:
-                continue
-            was = at(_git(root, "merge-base", real, head).strip() or head)
-            if was and was != at(head):
-                out.append(b)
-        if len(_newer) > 1024:
-            _newer.clear()
-        _newer[key] = sorted(out)                 # one order for people and tests (last check of #99)
-    return _newer[key]
-
-
-def _approve(root: Path, repo_name: str, item: dict, run, shown: str) -> tuple:
-    n, path = item.get("number"), item.get("spec")
-    branch = config.load(root)["base_branch"] or config.default_branch(root)
-    _fetch_base(root, branch)
-    base = config.base_ref(root, branch)
-    real = _tip(root, f"refs/remotes/origin/{branch}") or _tip(root, f"refs/heads/{branch}")
-    text = spec.on_base(root, path, real) if path and real else None
-    fixes = []                              # a correction pushed since an approval merged it (#99 FR-07); an epic
-    if text is not None and shown != NO_MERGE and item.get("type") != "epic":     # takes its copy on the base
-        net_git(root, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*")
-        fixes = newer(root, path, branch, real)
-        if len(fixes) > 1:
-            return False, SEVERAL.format(", ".join(fixes), branch)
-    if text is not None and not fixes:
-        why = spec.refusal(text, item.get("type"), n, base)
-        if not why:
-            state.approve(root, repo_name, [n], run=run)
-        return not why, why
-    if shown == NO_MERGE:                     # the map showed a plain approval: it merges nothing (#88 final check)
-        return False, (f"R1 spec missing on {branch} as origin has it, though the map showed it there (does this "
-                       f"clone have a tag or a branch named origin/{branch}?); nothing merged")
-    if not any(p["base"] == branch for p in item.get("spec_prs") or ()):     # no spec PR: its branch (#88)
-        return _merge_branch(root, repo_name, item, run, shown, branch, base, bool(fixes))
-    pr, why = spec_pr(item, branch)
-    if not pr:
-        return False, f"R1 spec missing on the base branch ({base}); {why}"
-    p = pr["number"]
-    try:
-        v = json.loads(run(["pr", "view", str(p), "--repo", repo_name, "--json",
-                            "state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid"]))
-    except (state.StateError, ValueError) as e:
-        return False, f"PR #{p} could not be read: {e}"
-    if v.get("isCrossRepository"):
-        return False, f"PR #{p} comes from a fork: approve merges only a spec pull request of this repository"
-    head = v.get("headRefOid") or ""
-    if v.get("state") != "OPEN" or v.get("baseRefName") != branch or not re.fullmatch(r"[0-9a-f]{40,64}", head):
-        return False, f"PR #{p} is not an open pull request into {branch}"
-    if shown and head != shown:               # the map's confirmation showed another head (audit M-1)
-        return False, f"PR #{p} moved since approve spec showed it; nothing merged"
-    net_git(root, "fetch", "-q", "origin", f"refs/heads/{v.get('headRefName')}")     # never read as an option
-    if not _git(root, "rev-parse", "--verify", "-q", f"{head}^{{commit}}").strip():
-        return False, f"PR #{p} moved while Pulse read it; approve the item again"
-    real = _tip(root, f"refs/remotes/origin/{branch}") if _fetch_base(root, branch) else ""
-    if not real:                              # a stale base hides what merges (audit round 2, M-2)
-        return False, f"Pulse could not fetch {branch} from origin; nothing merged"
-    _, changed, why, _ = _merge_check(root, real, head, path, branch, pr=p)
-    why = why or spec.refusal(spec.on_base(root, path, head), item.get("type"), n, f"PR #{p}",
-                              fix="fix its spec with /pulse-re on its branch; nothing merged")
-    if why:
-        return False, why
-    try:
-        if v.get("isDraft"):
-            run(["pr", "ready", str(p), "--repo", repo_name])
-        state.merge(root, repo_name, p, head, run=run)
-    except state.StateError as e:
-        return False, f"GitHub did not merge PR #{p}: {e}"
-    _fetch_base(root, branch)                # a merge queue takes the PR, and gh exits 0 all the same
-    if spec.on_base(root, path, _tip(root, f"refs/remotes/origin/{branch}") or real) is None:
-        return False, (f"GitHub took PR #{p}, but the spec is not on {branch} yet (a merge queue?); approve "
-                       "the item again once it merged")
-    state.approve(root, repo_name, [n], run=run)
-    return True, f"merged its spec PR #{p} into {branch}" + _with(changed, path)
-
-
 _merges: dict = {}                   # (root, base commit, head commit) -> what their merge writes
 
 
 def merge_of(root: Path, real: str, head: str) -> tuple:
     """(tree, [(path, ":old new sha sha status")]) of the merge of head into real as git's merge-ort makes it,
     each path as `git diff --raw` names it from real, renames split, submodules shown whatever the config;
-    (None, []) when it does not merge cleanly (or git is older than 2.38). Once per pair of commits: the map
-    asks every 2 s, and their history never changes (#88 gate round 1)."""
+    (None, []) when it does not merge cleanly (or git is older than 2.38). Once per pair of commits: their
+    history never changes (#88 gate round 1)."""
     key = (str(root), real, head)
     if key not in _merges:
         merged = subprocess.run(["git", "-C", str(root), "merge-tree", "--write-tree", real, head],
@@ -535,98 +563,127 @@ def merge_of(root: Path, real: str, head: str) -> tuple:
     return _merges[key]
 
 
-def _merge_check(root: Path, real: str, head: str, path: str, branch: str, pr: int = None, b: str = None) -> tuple:
-    """(tree, [(status, path)], "", "") when the merge of head, spec PR #pr or branch b of origin, into real,
-    the base branch freshly fetched, changes only plain files under _devprocess/, path among them; status A,
-    M, D, or T as git names it from real. Else (None, [], why, kind): why as approve says it, kind (conflict,
-    outside, link, spec) for the map's words. It judges what the merge writes, as GitHub's merge-ort makes
-    it: a criss-cross history, a file the base moved out of _devprocess/ (audit H-1 of #69, round 2 M-1),
-    renames split, submodules shown whatever the config (M-2)."""
+def _merge_check(root: Path, real: str, head: str, path: str, branch: str, pr: int) -> tuple:
+    """([(status, path)], "") when the merge of head, docs PR #pr, into real, the base branch freshly fetched,
+    changes only plain files under _devprocess/, path among them; status A, M, D, or T as git names it from real.
+    Else ([], why). It judges what the merge writes, as GitHub's merge-ort makes it: a criss-cross history, a
+    file the base moved out of _devprocess/ (audit H-1 of #69, round 2 M-1), renames split, submodules shown
+    whatever the config (M-2)."""
     tree, changed = merge_of(root, real, head)
-    who, only = (f"PR #{pr}", "a spec pull request") if pr else (f"branch {b}", "a branch of specs")
     outside = [c for c, _ in changed if not c.startswith("_devprocess/")]
     odd = [c for c, m in changed if {m[1:7], m[8:14]} & {"120000", "160000"}]     # a link, a submodule (M-2)
-    kind = "conflict" if not tree else "outside" if outside else "link" if odd else \
-        "spec" if path not in dict(changed) else ""
-    if not kind:
-        return tree, [(m.split()[-1], c) for c, m in changed], "", ""
-    on = "" if pr else f": merge origin/{branch} into {b}, keep both sides where they conflict, push it, and " \
-                       "approve again"
-    return None, [], {"conflict": f"{who} does not merge cleanly into {branch} here (or git is older than 2.38); "
-                                  f"nothing merged{on}",
-                      "outside": f"{who} changes {_shown(outside)} outside _devprocess/: approve merges only {only}",
-                      "link": f"{who} adds a link or a submodule under _devprocess/: {_shown(odd)}; approve merges "
-                              "only files",
-                      "spec": f"{who} does not carry the spec"}[kind], kind
+    if not tree:
+        return [], f"PR #{pr} does not merge cleanly into {branch} here (or git is older than 2.38); nothing merged"
+    if outside:
+        return [], f"PR #{pr} changes {_shown(outside)} outside _devprocess/: pulse go merges only a docs pull request"
+    if odd:
+        return [], f"PR #{pr} adds a link or a submodule under _devprocess/: {_shown(odd)}; pulse go merges only files"
+    if path not in dict(changed):
+        return [], f"PR #{pr} does not carry the spec"
+    return [(m.split()[-1], c) for c, m in changed], ""
 
 
-def along(changed: list, path: str) -> tuple:
-    """(the specs a merge adds beside the item's own, every other path it changes as "M path"), from
-    _merge_check(): what the map's confirmation and approve name, all of it (#88 audit M-1)."""
-    specs = [c for s, c in changed if s == "A" and c != path and spec.LIKE_ID.match(Path(c).name)]
-    return specs, [f"{s} {c}" for s, c in changed if (c != path or s != "A") and c not in specs]   # M: FR-07
+# --- the ramp ---------------------------------------------------------------------------------------
+
+def plan_files(root: Path, found: dict = None) -> dict:
+    """{issue number: [files]} from the frontmatter of every PLAN, each spelled one way (`./a.py`
+    is `a.py`, `docs/` is `docs`)."""
+    return {n: [posixpath.normpath(f) for f in listed(p["text"], "files")]
+            for n, p in (plans(root) if found is None else found).items()}
 
 
-def _with(changed: list, path: str) -> str:
-    specs, rest = along(changed, path)
-    return (f", with {', '.join(specs)}" if specs else "") + (f"; also changes: {', '.join(rest)}" if rest else "")
+def order(items: list) -> list:
+    """The one order of pulse go and the ramp (#119): no item before an open blocker (Kahn over blocked_by), else by
+    effective priority, the best of the item and all it unblocks, then by number. Items in a cycle come last."""
+    by = {i["number"]: i for i in items}
+    after = {n: [] for n in by}                # n -> the items that wait for n
+    for i in items:
+        for b in i.get("blocked_by") or ():
+            if b in by:
+                after[b].append(i["number"])
+    best: dict = {}
+
+    def eff(n, seen=()):
+        if n not in best:
+            best[n] = min([by[n].get("priority", 3)] + [eff(m, seen + (n,)) for m in after[n] if m not in seen])
+        return best[n]
+    waits = {n: sum(b in by for b in by[n].get("blocked_by") or ()) for n in by}
+    heap = [(eff(n), n) for n in by if not waits[n]]
+    heapq.heapify(heap)
+    out = []
+    while heap:
+        _, n = heapq.heappop(heap)
+        out.append(by[n])
+        for m in after[n]:
+            waits[m] -= 1
+            if not waits[m]:
+                heapq.heappush(heap, (eff(m), m))
+    return out + sorted((i for i in items if waits[i["number"]]), key=lambda i: (eff(i["number"]), i["number"]))
 
 
-def _merge_branch(root: Path, repo_name: str, item: dict, run, shown: str, branch: str, base: str,
-                  fix: bool = False) -> tuple:
-    """#88: the one branch of origin that carries the spec, merged into branch without a pull request and
-    without a checkout: every branch fetched afresh by an explicit refspec, the head the map showed, the
-    checks of a spec PR at that head, then a merge commit of the tree git checked on the fetched base, under
-    the person's git identity, pushed without force: a fast-forward, or nothing. Approved once the spec is
-    on the base branch after a new fetch. The branch stays on origin. fix: the spec is on the base branch
-    already, and the one branch that changed it since is merged (#99 FR-07)."""
-    n, path = item.get("number"), item.get("spec")
-    if not path:                              # nothing to look for
-        return False, f"R1 spec missing on the base branch ({base}); {spec_branch([])[1]}"
-    got = net_git(root, "fetch", "-q", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*")
-    if got.returncode:                        # what git said, as for every fetch (#85)
-        said = git_error(got.stderr)
-        return False, "Pulse could not fetch the branches of origin" + (f" (git fetch said: {said})" if said else "") \
-            + "; nothing merged"
-    real = _tip(root, f"refs/remotes/origin/{branch}")
-    b, why = spec_branch(newer(root, path, branch, real) if fix else [c for c in spec.carriers(root, path) if c != branch])
-    if not b:
-        return False, f"R1 spec missing on the base branch ({base}); {why}"
-    who, head = f"branch {b}", _tip(root, f"refs/remotes/origin/{b}")
-    if shown and head != shown:               # the map's confirmation showed another head (as audit M-1 of #69)
-        return False, f"{who} moved since approve spec showed it; nothing merged"
-    if not real:
-        return False, f"Pulse could not fetch {branch} from origin; nothing merged"
-    tree, changed, why, _ = _merge_check(root, real, head, path, branch, b=b)
-    why = why or spec.refusal(spec.on_base(root, path, head), item.get("type"), n, who,
-                              fix="fix its spec with /pulse-re on its branch; nothing merged")
-    if why:
-        return False, why
-    made = subprocess.run(["git", "-C", str(root), "commit-tree", tree, "-p", real, "-p", head,
-                           "-m", f"Merge spec of #{n}", "-m", f"From branch {printable(b)}, merged by pulse approve.",
-                           "-m", f"Refs: #{n}"], capture_output=True, text=True)
-    commit = made.stdout.strip()
-    if made.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", commit):     # no git identity, say: its last line
-        return False, f"git wrote no merge of {who}: {(made.stderr.strip().splitlines() or ['?'])[-1]}; nothing merged"
-    pushed = net_git(root, "push", "-q", "origin", f"{commit}:refs/heads/{branch}")
-    if pushed.returncode:                     # git's reason on one line, its hints left out
-        said = "; ".join(" ".join(l.split()) for l in pushed.stderr.splitlines()
-                         if l.strip() and not l.startswith(("hint:", "To "))) or f"exit {pushed.returncode}"
-        return False, (f"origin did not take the merge into {branch} ({said}); nothing approved: approve again if "
-                       f"{branch} moved; where {branch} is protected, open a pull request of {b} into {branch}, "
-                       "and approve merges it")
-    _fetch_base(root, branch)
-    if spec.on_base(root, path, _tip(root, f"refs/remotes/origin/{branch}") or commit) is None:
-        return False, f"origin took the merge, but the spec is not on {branch} after a new fetch; approve again"
-    state.approve(root, repo_name, [n], run=run)
-    return True, f"merged {who} into {branch}" + _with(changed, path)
+def _row(i: dict) -> bool:
+    """A ramp row: a work item or a draft of any kind, epics too, that nobody holds (D-43). A held
+    draft is in progress and stands under its holder only (#55)."""
+    return not i["assignees"] and (bool(i.get("draft")) or i["type"] in state.WORK)
 
 
-def approvable(root: Path, items: list, cfg: dict, n: int) -> tuple:
-    """(digest, "") when #n's PLAN waits for a person; (None, why) for anything else."""
+def view(root: Path, items: list, cfg: dict, me: str, cap: int = None) -> dict:
+    """The ramp as a person sees it: gates and PLANs on item branches. A claim changes no PLAN,
+    so claimed items get their gate too (plan_waits)."""
     found = plans(root)
-    free = [dict(i, assignees=[]) if i["number"] == n else i for i in items]     # a claim changes no PLAN
-    gate = gates(root, free, cfg, found).get(n, "")
-    if not gate.startswith("plan waits for you"):
-        return None, f"#{n}: no PLAN waiting for approval" + (f" ({gate})" if gate else "")
-    return digest(found[n]["text"]), ""
+    return ramp(items, plan_files(root, found), cap or cfg["cap"], me,
+                gates=gates(root, [dict(i, assignees=[]) for i in items], cfg, found))
+
+
+def held(items: list, files: dict) -> dict:
+    """{file: item} of the running items: the files of their PLANs here and the files their claims
+    name, which hold even where a PLAN is unpushed or there is none."""
+    return {f: i["number"] for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")
+            for f in files.get(i["number"], []) + (i.get("claimed_files") or [])}
+
+
+def clash(mine: list, held: dict):
+    """(file, holder) for the first of mine another item holds, else None. A held directory holds
+    what is in it."""
+    return next(((f, n) for f in mine for h, n in held.items()
+                 if f == h or f.startswith(h + "/") or h.startswith(f + "/")), None)
+
+
+def ramp(items: list, files: dict, cap: int, me: str, gates=None) -> dict:
+    """gates: {issue: why it waits} from gates(); a gated item never goes out. A draft nobody
+    holds (its spec is to be written, D-43) is a row, never goes out, and takes no bay."""
+    running = [i for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")]
+    taken = held(items, files)
+    busy = [i for i in running if me in i["assignees"] and not i.get("pr")]   # in review: no slot
+    free = max(0, cap - len(busy))
+    pos = {i["number"]: k for k, i in enumerate(order(items))}
+    gates = gates or {}
+    pool = sorted((i for i in items if i["type"] in state.WORK and i["approved"] and not i["assignees"] and
+                   not i["blocked_by"] and i["number"] not in gates and not i.get("draft")), key=lambda i: pos[i["number"]])
+    nxt, wait, locked = [], [], []
+    for i in pool:
+        mine = files.get(i["number"], [])
+        hit = clash(mine, taken)
+        if hit:
+            locked.append({**i, "file": hit[0], "holder": hit[1]})
+        elif len(nxt) < free:
+            nxt.append(i)
+            taken.update({f: i["number"] for f in mine})
+        else:
+            wait.append(i)
+    pooled = {i["number"] for i in pool}
+    stage = {i["number"]: "starts next" for i in nxt}
+    stage.update({i["number"]: "queued" for i in wait})
+    stage.update({i["number"]: f"locked: {Path(i['file']).name} in use by #{i['holder']}" for i in locked})
+    rows = []
+    for i in order(items):
+        if not _row(i):
+            continue
+        n = i["number"]
+        s = ("spec in progress" if i.get("draft") else None) or \
+            stage.get(n) or gates.get(n) or ("not approved" if not i["approved"] else None) or \
+            ("waits for " + ", ".join(f"#{b}" for b in i["blocked_by"]) if i["blocked_by"] else "ready")
+        rows.append({**i, "stage": s})
+    return {"cap": cap, "free": free, "busy": busy, "next": nxt, "wait": wait, "locked": locked, "rows": rows,
+            "plan_waits": [i["number"] for i in running if gates.get(i["number"], "").startswith(WAITS)],
+            "after": [i for i in state.blocked(items) if i["type"] in state.WORK and i["number"] not in pooled]}

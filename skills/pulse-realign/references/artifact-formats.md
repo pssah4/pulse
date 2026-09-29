@@ -8,7 +8,7 @@ block below.
 ## 1. Navigation (A2)
 
 Template: `skills/pulse-plan/templates/SYSTEM-MAP-TEMPLATE.md`, project
-file `_devprocess/SYSTEM-MAP.md`, cap 120 lines. Name the stack and point
+file `_devprocess/SYSTEM-MAP.md`, cap 150 lines. Name the stack and point
 at the manifests; versions and dependency lists stay there. One
 `Sources:` line per block is enough:
 
@@ -56,25 +56,25 @@ Write only decisions that are consequential AND non-obvious from
 framework defaults. Location: `_devprocess/decisions/ADR-{nn}-{slug}.md`,
 numbered in discovery order, one router row each.
 
-## 3. arc42 reference (A3, MVP scope or on request)
+## 3. arc42 (A3, MVP scope or on request)
 
-Template: `skills/pulse-plan/templates/arc42-REFERENCE-TEMPLATE.md`,
-project file `_devprocess/arc42-REFERENCE.md`. Post-code, cap-exempt,
-sections without substance omitted.
+Template: `skills/pulse-plan/templates/arc42-TEMPLATE.md`, project file
+`_devprocess/arc42.md`. Cap-exempt; a section without substance keeps
+its heading and one line.
 
 | Section | Fill from |
 |---|---|
 | 3 Context and scope | entry points, external integrations visible in config |
 | 4 Solution strategy | the inferred decisions (one row each) |
 | 5 Building block view | observable module boundaries; NEVER the raw directory tree |
-| 6 Runtime view | explicit docs only; otherwise omit |
+| 6 Runtime view | explicit docs only; otherwise one line |
 | 7 Deployment view | CI config, Dockerfile, k8s manifests |
 | 9 Architecture decisions | the decision router |
 
 Header: `validity: Inferred from codebase`, `source: /pulse-realign on {date}`.
-Do NOT write the arc42 constraints document: quality goals, constraints,
-and risks are pre-code content that the pulse-plan skill creates when
-new work starts.
+Sections 1, 2, 10, and 11 (quality goals, constraints, quality
+requirements, risks) only from explicit docs; otherwise one line
+"Nothing to say yet.".
 
 ## 4. Anticipated epics (A4)
 

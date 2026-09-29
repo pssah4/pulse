@@ -5,7 +5,7 @@ description: Install, update, and remove Pulse with your coding agent's own plug
 
 # Installation
 
-Pulse installs from its GitHub repository, [pssah4/pulse](https://github.com/pssah4/pulse), with the plugin commands of your coding agent; the same commands update and remove it. Pulse supports Claude Code and Codex, each in the terminal and in the VS Code extension. Support for GitHub Copilot, Cursor, Gemini CLI, and OpenCode will follow.
+Pulse installs from its GitHub repository, [pssah4/pulse](https://github.com/pssah4/pulse), with the plugin commands of your coding agent; the same commands update and remove it. Pulse supports Claude Code and Codex, each in the terminal and in the VS Code extension. Support for GitHub Copilot will follow.
 
 **You need** Python 3.9 or newer, the GitHub CLI [`gh`](https://cli.github.com) 2.94 or newer (logged in with `gh auth login`), and a GitHub repository for your project. Pulse keeps its board there, one small record per item; everything else stays in your repository.
 
@@ -63,11 +63,11 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
 Open a new terminal. Check: `pulse --help` lists the commands.
 
-**6. Codex: trust the Pulse hooks.** Start `codex` in your project and pick **Trust all and continue**; later, `/hooks` in the CLI shows the list. In the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings. Optional: `pulse setup --codex-rules` lets Codex run `pulse` without asking ([details](#codex-cli-and-ide-extension)).
+**6. Codex: trust the Pulse hooks.** Start `codex` in your project and pick **Trust all and continue**; later, `/hooks` in the CLI shows the list. In the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings. Until you do, `pulse status`, the map, and `pulse go` say `Codex hooks not trusted: run /hooks in Codex` in a project whose agents include Codex. Optional: `pulse setup --codex-rules` lets Codex run `pulse` without asking ([details](#codex-cli-and-ide-extension)).
 
 **7. Restart.** Type `/reload-plugins` in a running Claude Code session or start a new one, and restart Codex or start a new chat in its IDE extension. A session that was running before the install does not see Pulse. After a change to your PATH, quit VS Code and open it again.
 
-**8. In each project.** Type `/pulse-setup` in Claude Code, `$pulse:pulse-setup` in Codex. It asks a few questions and writes `.pulse/config.toml`; commit it on a branch as [Switch it on in your project](#switch-it-on-in-your-project) shows. From then on, `/pulse` (in Codex `$pulse:pulse`) says where the work stands and what comes next.
+**8. In each project.** Type `/pulse` in Claude Code, `$pulse:pulse` in Codex. Where Pulse is not set up yet, it asks a few questions and runs `pulse setup`, which writes `.pulse/config.toml`; commit it on a branch as [Switch it on in your project](#switch-it-on-in-your-project) shows. From then on, `/pulse` says where the work stands and what comes next.
 
 ### Or let a script do steps 3 to 5
 
@@ -79,7 +79,7 @@ The script finds `claude` and `codex`, also the binaries the VS Code extensions 
 
 ## Update
 
-Pulse does not update itself. What each tool needs, in this order:
+Pulse does not update itself. What each tool needs, in this order (coming from 0.1.6, read [Upgrading from 0.1.6](../guides/upgrading) too):
 
 ### Claude Code
 
@@ -88,7 +88,7 @@ Pulse does not update itself. What each tool needs, in this order:
 
 ### Codex
 
-Codex has no auto-update; the live map and the next session tell you when a new Pulse is out.
+Codex has no auto-update; the live map tells you when a new Pulse is out.
 
 1. **Get the new version.** In a terminal, also if you work only in the IDE extension:
 
@@ -99,7 +99,7 @@ Codex has no auto-update; the live map and the next session tell you when a new 
 
    Codex without the plugin: `git -C ~/.codex/pulse pull`.
 2. **Load it.** Start a new chat in the IDE extension, or restart `codex`. The update deletes the old version folder, and a running chat still points its skills and hooks there.
-3. **When Codex asks, trust the Pulse hooks again.** Codex asks after an update that changes them: in the CLI it lists them at the start (`/hooks`, then `t`); in the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings, then start a new chat. Without trusted hooks, a session gets no rules and no light on the map.
+3. **When Codex asks, trust the Pulse hooks again.** Codex asks after an update that changes them: in the CLI it lists them at the start (`/hooks`, then `t`); in the IDE extension, click **Trust** on each Pulse hook on the Hooks page of its settings, then start a new chat. Without trusted hooks, a session gets no rules.
 
 ### Both at once
 
@@ -113,7 +113,7 @@ curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
 
 - The `pulse` command in your terminal runs the newest Pulse you have; a Claude Code or Codex session runs its own copy.
 - A live map that is running restarts itself with the new Pulse within a minute, in its own terminal.
-- In each project, the next session refreshes the Pulse block in `CLAUDE.md` and `AGENTS.md`: its agent runs `pulse setup --anchors`, which changes nothing else, and the change goes into the next commit.
+- Nothing refreshes the Pulse block in `AGENTS.md` by itself: `pulse setup --anchors` in a project rewrites that block and changes nothing else, except that it moves a block an older Pulse wrote into `CLAUDE.md` to `AGENTS.md` and leaves `CLAUDE.md` the line that imports it; commit the change.
 
 ## Claude Code
 
@@ -149,7 +149,7 @@ P="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/pssah4-skills/pulse"
 "$P/$(ls "$P" | sort -V | tail -1)/bin/pulse" setup --cli
 ```
 
-Claude Code keeps older version folders after an update, so the line picks the newest. The cache lies under `CLAUDE_CONFIG_DIR` when you set it, else under `~/.claude`. `/pulse-setup` in a Claude Code session offers the same step.
+Claude Code keeps older version folders after an update, so the line picks the newest. The cache lies under `CLAUDE_CONFIG_DIR` when you set it, else under `~/.claude`. `/pulse` in a Claude Code session offers the same step where Pulse is not set up yet.
 
 This writes `~/.local/bin/pulse`, a short script that runs the newest Pulse of the agent that calls it: a Codex session its Codex copy, a Claude Code session its Claude Code copy, and your own terminal the newest of both. An update needs no new setup, and neither agent needs the other. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile: `~/.zshrc` for zsh, the macOS default; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux. The change reaches only shells started after it, so open a new terminal (restart VS Code if you work there) and check with `pulse --help`. Until then, `~/.local/bin/pulse` runs it by its full path.
 
@@ -181,7 +181,7 @@ The install reaches the sessions open in that window at once: type `/pulse` in t
 
 To update, refresh `pssah4-skills` in the **Marketplaces** tab, then click the update icon on the Pulse row in the **Plugins** tab, and reload the window (**Developer: Reload Window**): a running session keeps the version it started with.
 
-For the `pulse` command, run the `setup --cli` line from the terminal steps above in VS Code's integrated terminal, or let [`/pulse-setup`](#switch-it-on-in-your-project) do it.
+For the `pulse` command, run the `setup --cli` line from the terminal steps above in VS Code's integrated terminal, or let [`/pulse`](#switch-it-on-in-your-project) do it.
 
 To uninstall, first [take Pulse out of each project](#take-it-out-of-a-project), then run `pulse setup --remove --cli` in VS Code's integrated terminal (skip it if Pulse stays installed in Codex): the `pulse` command runs through the installed plugin. Then click the uninstall icon on the Pulse row in the **Plugins** tab, and remove the marketplace with its trash icon.
 
@@ -218,7 +218,7 @@ codex plugin add pulse@pssah4-skills
 
 Trust the hooks: start `codex` in your project. If you are not signed in yet, Codex asks you to sign in first; the CLI and the IDE extension share one sign-in. Then, in a folder it has not seen, it asks **Trust this folder?**; then it shows **Hooks need review**: pick **Trust all and continue**, or **Review hooks** to read each one (their source is `Plugin - pulse@pssah4-skills`). Later, `/hooks` in the CLI shows the same list, and `t` trusts all. The IDE extension has no `/hooks`: open its settings, go to the Hooks page, and under **From Plugins** click **Trust** on each hook of `pulse@pssah4-skills`; the page trusts one hook per click, and Pulse needs them all. Codex runs a plugin's hooks only after this review and asks again when an update changes them.
 
-Then put the `pulse` command on your PATH (see the [Claude Code terminal steps](#terminal) for what it writes and for the shell profile when its report says `"on_path": false`); like there, the first two lines pick the newest version folder in the cache. The last line is optional and runs the new command by its full path, so it works before your PATH has it. Codex runs commands in a sandbox without network access, so every `pulse` command that reads or writes the board on GitHub asks you first; the line writes `~/.codex/rules/pulse.rules` (under `$CODEX_HOME` when you set it), which lets Codex run `pulse` outside its sandbox without asking. A rule matches a plain `pulse ...` command: a pipeline or a redirection, such as `pulse status --json | head`, runs inside the sandbox, where `.git` is read-only and GitHub is out of reach. Codex still asks before `approve`, `approve-plan`, `rank`, and `done`, which a person decides, before a handover with `release --take` or `claim --take`, before `release --drop-unpushed`, which gives up commits only this clone has, and before `pulse -- <command>`. `pulse` takes `--take` and `--drop-unpushed` only right after the command, where a rule sees them, so every other `claim` and `release` runs without asking. In Full access, where Codex never asks, it refuses these commands instead: run them in your own terminal, or switch Codex to a mode that asks. The rules do not change with a Pulse update; when the changelog names a change to them, update Pulse in Codex too, then run `pulse setup --codex-rules` again. It writes no rules while Codex runs an older Pulse than the copy that writes them.
+Then put the `pulse` command on your PATH (see the [Claude Code terminal steps](#terminal) for what it writes and for the shell profile when its report says `"on_path": false`); like there, the first two lines pick the newest version folder in the cache. The last line is optional and runs the new command by its full path, so it works before your PATH has it. Codex runs commands in a sandbox without network access, so every `pulse` command that reads or writes the board on GitHub asks you first; the line writes `~/.codex/rules/pulse.rules` (under `$CODEX_HOME` when you set it), which lets Codex run `pulse` outside its sandbox without asking. A rule matches a plain `pulse ...` command: a pipeline or a redirection, such as `pulse status --json | head`, runs inside the sandbox, where `.git` is read-only and GitHub is out of reach. In every mode, Full access included, Codex refuses the levers of a person ("blocked by policy"): `approve`, `go`, and `auto` with a gate, a handover with `release --take` or `claim --take`, `pulse -- <command>`, `gh pr merge` and `gh pr ready`, and `gh issue edit`, `close`, and `reopen`: run them in your own terminal. A prefix rule sees only how a command starts, so `gh -R o/r pr merge 5`, `env gh pr merge 5`, or a full path pass it; the [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) catches those once you trust the Pulse hooks. `pulse` takes `--take` only right after the command, where a rule sees it, so every other `claim` and `release` runs without asking. The rules do not change with a Pulse update; when the changelog names a change to them, update Pulse in Codex too, then run `pulse setup --codex-rules` again. It writes no rules while Codex runs an older Pulse than the copy that writes them.
 
 ```bash
 P="${CODEX_HOME:-$HOME/.codex}/plugins/cache/pssah4-skills/pulse"
@@ -230,7 +230,7 @@ Restart Codex, or start a new chat in the IDE extension. If you just added `~/.l
 
 The skills are called `pulse:pulse`, `pulse:pulse-ba`, and so on: type `$pulse:pulse-ba` in the prompt box, in the CLI and the IDE extension alike. The Codex CLI also lists them under `/skills` > **List skills**, or as soon as you type `$`, by the names `pulse-ba (pulse)` and so on; in the IDE extension, type `/` in the prompt box and pick one from the **Skills** group.
 
-The rules cover `pulse` only. The skills also create branches, commit, and push; the sandbox keeps `.git` read-only and has no network, so Codex asks before each of these git commands. Approve them when it asks.
+Besides the levers above, the rules cover `pulse` only. The skills also create branches, commit, and push; the sandbox keeps `.git` read-only and has no network, so Codex asks before each of these git commands. Approve them when it asks.
 
 Update, then restart Codex, or start a new chat in the IDE extension: the update deletes the old version folder, and a running session still points its skills and hooks there.
 
@@ -261,7 +261,7 @@ ln -s ~/.codex/pulse/bin/pulse ~/.local/bin/pulse
 ln -s ~/.codex/pulse/hooks/rules.md "${CODEX_HOME:-$HOME/.codex}/AGENTS.md"
 ```
 
-The last line puts the link where Codex reads its global `AGENTS.md`: in `$CODEX_HOME` when you set it, else in `~/.codex`. If you already have a global `AGENTS.md` there, leave out the last line and add this line to it instead: `Follow the Pulse rules in ~/.codex/pulse/hooks/rules.md.` Then restart Codex. Without hooks, these sessions have no light on the live map.
+The last line puts the link where Codex reads its global `AGENTS.md`: in `$CODEX_HOME` when you set it, else in `~/.codex`. If you already have a global `AGENTS.md` there, leave out the last line and add this line to it instead: `Follow the Pulse rules in ~/.codex/pulse/hooks/rules.md.` Then restart Codex. Without hooks, these sessions get the rules through `AGENTS.md` and no stop check.
 
 Check the command with `pulse --help`. The skills run `pulse` from your PATH, and without hooks nothing else tells Codex where it is: on `command not found`, put `~/.local/bin` on your PATH as in the [Claude Code terminal steps](#terminal). The Codex rules from the plugin steps work here too, with the same effect: `pulse setup --codex-rules`.
 
@@ -285,28 +285,30 @@ Afterwards no `pulse` command is left in `~/.local/bin`: if Pulse stays installe
 
 ## Switch it on in your project
 
-In a session in your project, run `/pulse-setup` (in Codex, `$pulse:pulse-setup`). It writes `.pulse/config.toml`, creates the `pulse:` labels on GitHub once you agree, adds a short Pulse block to the agent files you have (CLAUDE.md, AGENTS.md, and others), and offers the `pulse` command if it is not on your PATH yet. It also offers a git hook: it refuses commits on `main`, `master`, `develop`, and `dev` (or the branches in `git config pulse.protected-branches`), always also on your base branch, and runs `pulse check` before each commit; `git commit --no-verify` bypasses it once. Details: [/pulse-setup](../guides/pulse-setup) and [Configuration](../reference/configuration).
+In a session in your project, run `/pulse` (in Codex, `$pulse:pulse`). Where Pulse is not set up yet, it asks a few questions and runs `pulse setup`, which writes `.pulse/config.toml`, creates the `pulse:` labels on GitHub once you agree, adds a short Pulse block to AGENTS.md (a CLAUDE.md gets the line `@AGENTS.md` that imports it), and offers the `pulse` command if it is not on your PATH yet. Details: [pulse setup](../guides/pulse-setup) and [Configuration](../reference/configuration).
 
 Check the command with `pulse --help`.
 
-Commit `.pulse/config.toml` and the agent files setup changed or created, so every clone of your team runs with the same settings; a clone without the file has Pulse switched off. With the git hook, commit them on a branch and merge it like any other change:
+Before the first `pulse go`, add `[spec_tests]` to `.pulse/config.toml`, the runner of each spec test file, and `setup` if a fresh checkout needs one (`npm ci`, say); setup writes neither ([Configuration](../reference/configuration)). `pulse go` reads them from the base branch as origin has it, so they count once merged.
+
+Commit `.pulse/config.toml` and the agent files setup changed or created, so every clone of your team runs with the same settings; a clone without the file has Pulse switched off. Commit them on a branch and merge it like any other change:
 
 ```bash
-git switch -c chore/pulse-setup
+git switch -c chore/setup-pulse
 git add .pulse/config.toml $(git ls-files --modified --others --exclude-standard -- CLAUDE.md AGENTS.md)
 git commit -m "chore: switch on Pulse"
-git push -u origin chore/pulse-setup
+git push -u origin chore/setup-pulse
 ```
 
-The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Then open a pull request for `chore/pulse-setup` and merge it.
+The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Then open a pull request for `chore/setup-pulse` and merge it.
 
 After the merge, switch back to the base branch and pull, so the next branch starts with the settings: `git switch main && git pull` (your base branch in place of `main`).
 
-In VS Code, `/pulse-setup` may also have written the task "Pulse map" to `.vscode/tasks.json`. It runs `pulse` from each person's PATH, so commit it only when the whole team has the `pulse` command and wants the map to start with the folder; otherwise leave it untracked, and it works for you alone. Claude Code protects `.vscode/`: it asks before it writes there, even in a mode that accepts edits (in auto mode its classifier decides): allow it, or add the task by hand as [/pulse-setup](../guides/pulse-setup#by-hand) shows.
+Outside Herdr, `pulse setup` also writes the task "Pulse map" to `.vscode/tasks.json`. It runs `pulse` from each person's PATH, so commit it only when the whole team has the `pulse` command and wants the map to start with the folder; otherwise leave it untracked, and it works for you alone. A `tasks.json` with comments stays as it is: add the task by hand as [pulse setup](../guides/pulse-setup#by-hand) shows. Claude Code protects `.vscode/`: it asks before its agent writes there, even in a mode that accepts edits.
 
 ### Fewer prompts in Claude Code
 
-In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for the whole project, an epic, a feature, an improvement, or a fix), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, `pulse new`, and `gh pr create`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. It still asks before `approve`, `approve-plan`, `rank`, and `done`, which a person decides, before a handover with `--take`, before `release --drop-unpushed`, and before `pulse -- <command>`:
+In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for the whole project, an epic, a feature, an improvement, or a fix), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, `pulse new`, and `gh pr create`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. The `deny` rules keep the levers of a person from the agent, as the [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) does in every session: `approve` and `go`, `pulse auto` with a gate, a handover with `--take`, `pulse -- <command>`, `gh pr merge` and `gh pr ready`, and edits of the records with `gh issue`. You run these in your own terminal:
 
 ```json
 {
@@ -321,27 +323,34 @@ In its default mode, Claude Code asks before each file it writes, until you allo
       "Bash(gh pr create *)",
       "Bash(mkdir -p _devprocess/*)"
     ],
-    "ask": [
+    "deny": [
       "Bash(pulse approve *)",
       "Bash(pulse approve-plan *)",
-      "Bash(pulse rank *)",
+      "Bash(pulse go *)",
       "Bash(pulse done *)",
+      "Bash(pulse auto *plan*)",
+      "Bash(pulse auto *build*)",
+      "Bash(pulse auto *merge*)",
       "Bash(pulse claim *--take*)",
       "Bash(pulse release *--take*)",
-      "Bash(pulse release *--drop-unpushed*)",
-      "Bash(pulse -- *)"
+      "Bash(pulse -- *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr ready *)",
+      "Bash(gh issue edit *)",
+      "Bash(gh issue close *)",
+      "Bash(gh issue reopen *)"
     ]
   }
 }
 ```
 
-If the file exists, add the rules to its `permissions`. They hold for you alone; in `.claude/settings.json` they hold for everyone who clones the project, once each person trusts the folder. Claude Code keeps `.claude/settings.local.json` out of git only when it creates the file itself. If you create it by hand, `git status` lists it as untracked and a `git add -A` would commit it: add the line `.claude/settings.local.json` to your `.gitignore`. `/permissions` lists the rules in effect.
+The rules for `approve-plan` and `done`, commands an older Pulse had, match the Codex rules. If the file exists, add the rules to its `permissions`. They hold for you alone; in `.claude/settings.json` they hold for everyone who clones the project, once each person trusts the folder. Claude Code keeps `.claude/settings.local.json` out of git only when it creates the file itself. If you create it by hand, `git status` lists it as untracked and a `git add -A` would commit it: add the line `.claude/settings.local.json` to your `.gitignore`. `/permissions` lists the rules in effect.
 
 A rule matches the command as the agent writes it: with `pulse` off your PATH, the Pulse hooks point the agent at the full path of the plugin copy, and `Bash(pulse *)` does not match it. Claude Code also asks before a command its own checks flag, even when a rule allows it, such as a `gh pr create` whose body has a Markdown heading inside quotes, or a `mkdir` with braces (`{epics,features}`). Allow it when asked.
 
 ### Take it out of a project
 
-`pulse setup --mode off` silences the Pulse hooks, the git hook included, and keeps the files. `pulse setup --remove` takes the Pulse blocks out of the agent files and the git hook out of `.git/hooks`, and puts back a hook of yours that setup had kept as `pre-commit.bak`. It deletes an agent file that held nothing but the Pulse block, such as an AGENTS.md that setup created. Run it in each project before you uninstall Pulse: afterwards there is no `pulse` to run it with, and the git hook stays until you delete `.git/hooks/pre-commit` by hand.
+`pulse setup --mode off` silences the Pulse hooks and keeps the files. `pulse setup --remove` takes the Pulse blocks out of the agent files and the `@AGENTS.md` line setup set out of CLAUDE.md, and a git hook an older Pulse installed out of `.git/hooks`, putting back a hook of yours that setup had kept as `pre-commit.bak`. It deletes an agent file that held nothing but the Pulse block, such as an AGENTS.md that setup created. Run it in each project before you uninstall Pulse: afterwards there is no `pulse` to run it with.
 
 Both leave the rest in place:
 

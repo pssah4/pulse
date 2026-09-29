@@ -10,9 +10,9 @@ Most drift between documents and code comes from one fact living in two places. 
 | Fact | Home | How agents reach it |
 |---|---|---|
 | What an item is and why: business analysis, epics, features | Markdown in `_devprocess/`, in your repository | the spec path in the item's record; for the active item the hooks hand it over |
-| How an item gets built: tasks, files, decisions | the PLAN in `_devprocess/plans/` | `pulse show <n>`; the ramp reads the files list |
-| The state of each item: draft, approved, taken, blocked, in review, done | the board on GitHub, one small record per item | `pulse status`, `pulse show <n>`, from a local cache |
-| Who works on an item, in which phase | the record's assignee and the claim mark of the session that holds it | `pulse claim <n>`, `pulse beat <n> <phase>` |
+| How an item gets built: tasks, files, decisions | the PLAN in `_devprocess/plans/` | `pulse status <n>`; the ramp reads the files list |
+| The state of each item: draft, approved, taken, blocked, in review, done | the board on GitHub, one small record per item | `pulse status`, for one item `pulse status <n>`, from a local cache |
+| Who works on an item, in which phase | the record's assignee and the claim mark of the session that holds it | `pulse claim <n>`, `pulse status <n>` |
 | Order and dependencies | parent and "blocked by" links between records | the same queries |
 | Decisions that constrain later changes | `_devprocess/decisions/`, behind a router | the "Read When" column of `decisions/README.md` |
 | Rules for every session | the Pulse hooks | injected at session start and into every subagent |
@@ -38,17 +38,23 @@ A record holds only what everyone needs to see at a glance:
 |---|---|
 | title, type | `epic`, `feat` (feature), `imp` (improvement), `fix` |
 | draft | a BA or spec is being written for it; a draft cannot be approved, and no agent builds it |
-| approved | the team wants it built (`pulse approve`); whether an agent can start also depends on its spec and PLAN |
-| plan approved | a person approved its PLAN (`pulse approve-plan`); with `plan_approval = "auto"` Pulse approves a PLAN nothing holds without writing this |
+| approved | the team wants it built (`pulse approve`), the label `pulse:approved` with a comment `gate 1 approved by <name> (@<login>)`; `pulse go` counts it only when whoever added the label may push. Whether an agent can start also depends on its spec and PLAN |
+| plan approved | a person approved its PLAN (`pulse approve <n>` once the PLAN waits): the line `Plan-ok: <plan blob> <spec blob>` in the issue, the ids git gives the PLAN on origin and the spec on the base branch, and the comment `plan ok at <plan blob> <spec blob>: gate 2 approved by <name> (@<login>)`. It counts only with that comment from someone who may push, and only for that PLAN and spec: a change of either waits for a new approval. The line alone counts for nothing |
+| hold | a person set the label `pulse:hold` in GitHub: `pulse go` neither plans nor builds the item until the label is gone |
+| failed | `pulse go` gave up on the item: the label `pulse:failed` and a comment `pulse go: failed at <base>: <reason>`; no run plans or builds it until `pulse approve <n>` takes the label off |
 | assignee | who works on it; one person per item |
 | claim mark | a comment that names the session holding the item, its phase, and the time of its last sign of life |
-| note | a comment left when the item goes back, by a `pulse go` run or by `pulse release <n> --note`: why, and the branch with its work |
+| note | a comment a `pulse go` run leaves when it gives the item back: why, and the branch with its work |
 | parent | the epic or feature it belongs to; the spec names it too (`parent:`), so the tree survives in the repository |
 | blocked by | items that have to be done first |
-| open or closed | closed means done; GitHub closes it when a pull request with `Closes #<n>` merges into the default branch. Merged into another base branch, a pull request from the item's branch closes it at the next `pulse status` or `pulse go`; a fork's pull request there closes nothing, and `pulse done <n>` closes the item |
+| open or closed | closed means done; GitHub closes it when a pull request with `Closes #<n>` merges into the default branch. Into another base branch, `pulse go` closes the item after it merged its pull request, and at its next start after someone else merged one on GitHub; `pulse status` only reads. An item you drop, you close on GitHub |
 | spec | the path of the Markdown file in the repository, on origin |
 
 The `pulse` commands write these records; nobody edits them by hand, and the content of an item never goes there. Technically each record is a GitHub issue with a `pulse:` label, which brings sub-issues, dependencies, assignees, and the link to pull requests without an extra server. You can look at them on GitHub. You do not need to.
+
+## Which account acts
+
+Pulse writes to GitHub as the account `gh` uses in your terminal. The map's header and your own row under WHO IS DOING WHAT, `pulse status`, the first line of `pulse go`, the context each agent session starts with, every confirmation on the map, and the output of `pulse approve` name it as `<name> (@<login>)`: the name from `git config user.name`, the login from GitHub. Pulse asks GitHub for the login at most once a minute and keeps it per gh config and token: another token in `GH_TOKEN` shows its account at once, and so does `gh auth switch`, which rewrites gh's hosts file; any other change shows within a minute. The hooks never ask GitHub; they name the login the last `pulse` command with the same token saw, else the name alone. The account is shown, and nothing is locked by it.
 
 ## What the team sees, and when
 
@@ -57,17 +63,17 @@ Your work reaches the team in three places. The board shows state the moment a `
 | What | Where it lives | Others see it from |
 |---|---|---|
 | A BA in progress | board: a draft, held by your session in the phase `analysis`; the BA itself in your clone, on `docs/<n>-<slug>` | the draft: when `/pulse-ba` starts (`pulse new <type> "<title>" --draft --phase analysis`). The BA text: from its first commit, which the skill pushes; your approval then marks it `Validated` |
-| A spec in progress | board: a draft in the phase `spec`, with a heartbeat each time the session runs `pulse beat <n> spec`; the spec in your clone, on the docs branch | the draft: when `/pulse-re` names the item (`pulse new <type> "<title>" --draft`). The spec text: from its first commit, which the skill pushes |
-| A registered spec | origin: the spec on the pushed docs branch; board: the record links its path | `pulse new ... --spec <path>`, with `--issue <n>` for a draft, which ends the draft. It refuses until the commit with the spec is on origin |
-| Approval | board: the `pulse:approved` label | `pulse approve <n>`, or `a` on the map. A spec still on its branch of origin is merged into the base branch on origin first, without a pull request (R1); both refuse while no branch of origin carries it, or several do, and for a feature, improvement, or fix while that spec breaks R2 to R6 |
-| A claim | board: the assignee and a claim mark with the session, its phase, and the time of its last heartbeat | at once. `pulse go` reports each phase it starts, and every 10 minutes while one runs; an interactive session reports `working` at most every 10 minutes while it holds an item; a skill runs `pulse beat <n> <phase>` |
-| The files an item holds | board: the claim carries the `files:` of the item's PLAN, pushed or not, or the files a hotfix names | at once: every ramp keeps other items off those files without a fetch |
+| A spec in progress | board: a draft in the phase `spec`; the spec in your clone, on the docs branch | the draft: when `/pulse-re` names the item (`pulse new <type> "<title>" --draft`). The spec text: from its first commit, which the skill pushes |
+| A registered spec | origin: the spec on the pushed docs branch and in its docs PR; board: the record links its path and the docs PR, with the label `P0` to `P2` | `pulse new ... --spec <path>`, with `--issue <n>` for a draft, which ends the draft. It refuses a spec that breaks R2 to R6, pushes the docs branch, and opens its docs PR or uses the open one |
+| Approval | board: the `pulse:approved` label | `pulse approve <n>`, or `a` on the map, which write the approval and nothing else; `pulse go` merges a spec not yet on the base branch through its docs PR first. Both refuse a spec neither on the base branch nor in an open pull request (R1), and for a feature, improvement, or fix one that breaks R2 to R6 |
+| A claim | board: the assignee and a claim mark with the session, its phase, and the time of its last heartbeat | at once. `pulse go` reports each phase it starts, and every 10 minutes while one runs |
+| The files an item holds | board: the claim carries the `files:` of the item's PLAN, pushed or not | at once: every ramp keeps other items off those files without a fetch |
 | The work: PLAN and commits | your clone until pushed, then origin, on the item branch `<type>/<n>-<slug>` | the push. `pulse go` pushes after every agent phase that committed; in a session, planning pushes the PLAN and `/pulse-build` pushes after every commit |
-| A note on hand-back | board: a comment on the item that says why the work stopped and which branch holds it | when `pulse go` gives the item back after a failure, a usage limit, or a stop, or a session gives it back with `pulse release <n> --note "<why>"` (`/pulse-build` does so when it stops before the item is done) |
-| Pull request and verdicts | origin: the pull request, with the gate results and the review and audit reports in its text, and the verdicts as comments with one hidden marker per gate and commit; the verdicts `pulse go` or `--publish` put on at once share one comment (`pulse review <n> --publish`) | the pull request |
-| Lights, logs, kept verdicts | your clone, under `.git/pulse/`: the board cache, the agents' lights, the logs and report of `pulse go`, the kept review and audit verdicts | never; verdicts and reports reach the team on the pull request. The worktrees of one clone share all of it |
+| A note on hand-back | board: a comment on the item that says why the work stopped and which branch holds it | when `pulse go` gives the item back after a failure, a usage limit, or a stop |
+| Pull request and verdicts | origin: the pull request, with the gate results and the review and audit reports in its text, and the verdicts as comments with one hidden marker per gate and commit; the verdicts `pulse go` puts on at once share one comment | the pull request |
+| Logs, kept verdicts | your clone, under `.git/pulse/`: the board cache, the logs and report of `pulse go`, the kept review and audit verdicts | never; verdicts and reports reach the team on the pull request. The worktrees of one clone share all of it |
 
-The [map](../guides/pulse-map) turns this into one line per item. A teammate's item without a pull request shows the phase and the age of the last heartbeat (`building, 4 min ago`), and after 30 minutes without one, `no sign of life for 45 min`. A draft shows `spec in progress by <login>`, and a free item given back with a note shows `last run:` and the first line of that note. [Parallel work](./parallel-work#what-others-see) says what to do about each.
+The [map](../guides/pulse-map) turns this into one line per item. A teammate's item without a pull request that a `pulse go` run holds shows the phase and the age of the run's last heartbeat (`building, 4 min ago`), and after 30 minutes without one, `no sign of life for 45 min`; one a session holds shows how long it is held (`no PR yet, held 2 h`). A draft shows `spec in progress by <login>`, and a free item given back with a note shows `last run:` and the first line of that note. [Parallel work](./parallel-work#what-others-see) says what to do about each.
 
 ## What that rules out
 
@@ -78,6 +84,6 @@ The [map](../guides/pulse-map) turns this into one line per item. A teammate's i
 
 ## What reading costs
 
-The board saves reading where an agent needs to find its way, not where it does the work. Without it, the questions "what can I start, what waits for what, who has what" mean reading a backlog file that grows with every item, or opening several specs. With it, `pulse status` answers in a few lines from a local cache: a free check every two seconds asks GitHub whether anything moved, and only a change (or 30 seconds) reloads the cache in the shared git directory; `status` and `show` answer from it in milliseconds, and offline with the last known state. Every write goes straight to GitHub and drops the cache.
+The board saves reading where an agent needs to find its way, not where it does the work. Without it, the questions "what can I start, what waits for what, who has what" mean reading a backlog file that grows with every item, or opening several specs. With it, `pulse status` answers in a few lines from a local cache: a free check every two seconds asks GitHub whether anything moved, and only a change (or 30 seconds) reloads the cache in the shared git directory; `status` answers from it in milliseconds, for the board and for one item, and offline with the last known state. Every write goes straight to GitHub and drops the cache.
 
 The work itself costs the same. An agent reads the spec and the PLAN of the item it builds, in full, because that is what it builds from. What it no longer reads is everyone else's. With ten items the difference is small; with a hundred items and five agents it adds up.

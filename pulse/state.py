@@ -21,38 +21,35 @@ import posixpath
 import random
 import re
 import shlex
-import stat
 import subprocess
-import tempfile
 import time
-import uuid
 from pathlib import Path
 
 from pulse import config
 
 TTL = 30                 # a full reload at least this often: PR checks move without a new tag
 POLL = 2                 # seconds between the free conditional checks for a change
-FORMAT = 7               # of the issue cache, raised when an item gains a field or load attaches differently
+FORMAT = 16              # of the issue cache, raised when an item gains a field or load attaches differently
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
-FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments"
+FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments,author"
 TYPES = ("epic", "feat", "imp", "fix")
 WORK = ("feat", "imp", "fix")          # epics are containers, never picked up
 APPROVED = "pulse:approved"            # a person wants it built
 LEGACY_READY = "pulse:ready"           # the same label before 2026-09
-PLAN_OK = "pulse:plan-ok"              # a person approved the PLAN
+PLAN_OK = "pulse:plan-ok"              # before #115: an old Plan-ok line of 12 characters counts with it
 DRAFT = "pulse:draft"                  # a record without a spec yet: BA or RE works on it
+HOLD = "pulse:hold"                    # a person holds it: pulse go neither plans nor builds it (#111)
+FAIL = "pulse:failed"                  # pulse go gave up on it: no run takes it again until pulse approve (#114)
+BASE = "pulse:base"                    # it fixes a red base: pulse go plans and builds it on one too (#113)
 WRITERS = {"OWNER", "MEMBER", "COLLABORATOR"}     # may push; anyone may comment on a public issue or PR
 CLAIMING = 10 * 60         # seconds a mark of someone not assigned may be a claim in flight (#77)
 WAIT = 3                   # seconds a claim waits for such a claim's assignee to show
-SKEW = 60                  # seconds this clock may run ahead of GitHub's: a session's note is dated that early (#84)
-NOTE_BYTES = 16384         # the most of a note beside a session's stamp that is read
-HELD_MAX = 32              # items a session's note may list; a session holds a few (#84 audit L-3)
-UTC = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")          # a time as _utc writes it
-LOST = "Pulse: this session no longer holds #{}; "            # the start of the heartbeat's news of a lost item
-SPEC = re.compile(r"^Spec: `([^`]+)`", re.M)
-RANK = re.compile(r"^Rank:[ \t]*(-?\d+(?:\.\d+)?)[ \t]*$", re.M)     # the team order, lowest first
-PLAN_OK_LINE = re.compile(r"^Plan-ok:[ \t]*([0-9a-f]+)[ \t]*$", re.M)   # the PLAN a person approved
+SPEC = re.compile(r"^Spec: `([^`]+)`(?: \(PR #(\d+)\))?", re.M)     # the docs PR that brings it (#116)
+PLAN_OK_LINE = re.compile(r"^Plan-ok:[ \t]*([0-9a-f]+)(?:[ \t]+([0-9a-f]+))?[ \t]*$", re.M)  # PLAN and spec blob
+PLAN_SAID = re.compile(r"^plan ok at ([0-9a-f]{40,64}) ([0-9a-f]{40,64})\b")    # who approved them: gate 2 (#115)
+MERGE_SAID = re.compile(r"^merge ok at ([0-9a-f]{40,64})\b")      # a person's gate 3 for a PR head (#118)
+GATE1_SAID = re.compile(r"^gate 1 ok at ([0-9a-f]{40,64}) (.+?): gate 1 approved by ")    # docs PR head, spec path
 REMOTE = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 MARK = re.compile(r"<!-- pulse:claim (\{.*?\}) -->")
 NOTE = re.compile(r"<!-- pulse:note (\{.*?\}) -->")
@@ -61,6 +58,11 @@ TAKE = "Released from {} by {} with pulse release --take {}."      # a person's 
 TAKEN = re.compile(r"{}([^\s,]+(?:, [^\s,]+)*){}\S+{}\d+{}".format(*map(re.escape, TAKE.split("{}"))))
 COMMENT = re.compile(r"#issuecomment-(\d+)$")
 ITEM_BRANCH = re.compile(r"^(?:feat|imp|fix)/(\d+)-")        # how pulse names an item's branch
+# what tells a hook where its chat runs; a headless job of pulse go has no chat (#61)
+SURFACE = ("CLAUDE_CODE_ENTRYPOINT", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+TAIL = 256 * 1024          # the end of a Codex rollout that ran_in reads
+SHELL = {"exec_command", "shell", "shell_command"}
+WORKDIR = re.compile(r"""\bworkdir["']?\s*:\s*["']([^"']+)["']""")
 
 
 class StateError(Exception):
@@ -71,6 +73,41 @@ def item_of(branch):
     """The item a branch builds; any branch pulse did not name <type>/<n>-<slug> is no item's."""
     m = ITEM_BRANCH.match(branch or "")
     return int(m.group(1)) if m else None
+
+
+def _tail(path) -> list:
+    """The lines in the last TAIL bytes of a transcript or rollout; [] when it cannot be read."""
+    try:
+        with open(path or "", "rb") as f:
+            start = max(0, f.seek(0, 2) - TAIL)
+            f.seek(start)
+            return f.read().decode("utf-8", "replace").split("\n")[1 if start else 0:]   # a cut first line
+    except (OSError, TypeError, ValueError):
+        return []
+
+
+def ran_in(payload: dict) -> str:
+    """Where a Codex command ran: its hook names the session's directory, the workdir of the call
+    stands only in its rollout (transcript_path). The last shell call there; '' when none says."""
+    for line in reversed(_tail(payload.get("transcript_path"))):
+        try:                                   # Codex's format: a line of another shape is skipped
+            item = json.loads(line)["payload"]
+            if item["type"] == "function_call" and item["name"] in SHELL:
+                wd = json.loads(item["arguments"]).get("workdir")
+            elif item["type"] == "custom_tool_call" and item["name"] != "apply_patch" \
+                    and "exec_command" in item["input"]:
+                # ponytail: code mode may call exec_command more than once; the last workdir stands for all
+                found = WORKDIR.findall(item["input"])
+                if "workdir" in item["input"] and not found:
+                    return ""                  # a workdir it computes: the place stays as it was
+                wd = found[-1] if found else None
+            else:
+                continue
+            cwd = payload.get("cwd") or ""
+            return os.path.join(cwd, wd) if wd else cwd
+        except (ValueError, LookupError, TypeError, AttributeError, RecursionError):
+            continue
+    return ""
 
 
 def gh(args: list, timeout=60) -> str:
@@ -85,11 +122,9 @@ def gh(args: list, timeout=60) -> str:
 
 def repo(root: Path, run=gh) -> str:
     """owner/name to act on. Never guessed when several GitHub remotes exist."""
-    cfg = config.load(root)
-    if cfg["source"] is None and (root / ".git").is_file():      # a worktree follows its main copy
-        cfg = config.load(config.common_dir(root).parent)
-    if cfg["repo"]:
-        return cfg["repo"]
+    pinned = config.clone_config(root)["repo"]
+    if pinned:
+        return pinned
     try:
         chosen = run(["repo", "set-default", "--view"]).strip()
     except StateError:
@@ -119,6 +154,46 @@ def can_push(repo_name: str, login: str, run=gh) -> bool:
     return said.strip() in WRITE
 
 
+def pusher(repo_name: str, login: str, run, known: dict) -> bool:
+    """Whether login may push, asked once per login (known, as writer() keeps it); without an answer, no (#115)."""
+    if login not in known:
+        try:
+            known[login] = can_push(repo_name, login, run)
+        except (StateError, OSError) as e:
+            known[login] = str(e) or type(e).__name__
+    return known[login] is True
+
+
+def pages(run, path: str) -> list:
+    """Every entry of a REST list over all its pages: gh writes one JSON array per page."""
+    text, dec, k, out = run(["api", "--paginate", path]).strip(), json.JSONDecoder(), 0, []
+    while k < len(text):
+        page, k = dec.raw_decode(text, k)
+        out += page if isinstance(page, list) else []
+        k = len(text) - len(text[k:].lstrip())
+    return out
+
+
+def labelers(repo_name: str, n: int, run=gh) -> dict:
+    """{label: the login that added it last} for every label n carries, from its events, oldest first (#115):
+    GitHub keeps who set a label, which the issue itself does not say."""
+    out = {}
+    for e in pages(run, f"repos/{repo_name}/issues/{n}/events?per_page=100"):
+        name = (e.get("label") or {}).get("name")
+        if e.get("event") == "labeled":
+            out[name] = (e.get("actor") or {}).get("login") or ""
+        elif e.get("event") == "unlabeled":
+            out.pop(name, None)
+    return out
+
+
+def item(repo_name: str, n: int, run=gh) -> dict:
+    """Issue n as normalize reads it, from GitHub now."""
+    return normalize(json.loads(run(["issue", "view", str(n), "--repo", repo_name, "--json",
+                                     "number,title,labels,body,comments,assignees,url,author"])),
+                     pushers(repo_name, run))
+
+
 def writer(comment: dict, repo_name: str, run, known: dict):
     """Whether the author of a comment may push (#74): True for the owner at once, and for a member or a
     collaborator (GitHub calls readers so too) once can_push says so; False for anyone else; GitHub's
@@ -136,35 +211,54 @@ def writer(comment: dict, repo_name: str, run, known: dict):
     return known[login]
 
 
-def _rank(body: str):
-    m = RANK.search(body)
-    return float(m.group(1)) if m else None
+def _owner(comment: dict) -> bool:
+    return comment.get("authorAssociation") == "OWNER"
+
+
+def pushers(repo_name: str, run=gh):
+    """comment -> whether its author may push (writer), each login asked once: GitHub calls readers MEMBER or
+    COLLABORATOR too (#89)."""
+    known = {}
+    return lambda comment: writer(comment, repo_name, run, known) is True
 
 
 def _plan_ok(labels: list, body: str):
-    """The digest of the PLAN a person approved, or None; the label alone binds no PLAN."""
+    """[the blob of the PLAN, the blob of the spec] a Plan-ok line names (#115), [its digest, None] for an old line
+    of 12 characters with its label; None without one."""
     m = PLAN_OK_LINE.search(body)
-    return m.group(1) if PLAN_OK in labels and m else None
+    return list(m.groups()) if m and (m.group(2) or PLAN_OK in labels) else None
 
 
-def normalize(issue: dict) -> dict:
+def normalize(issue: dict, trusted=_owner) -> dict:
+    """The record of an issue; trusted(comment) says whether its author may push, for a note (#89)."""
     labels = [l["name"] for l in issue.get("labels", [])]
     kind = next((t for t in TYPES if f"pulse:{t}" in labels), None)
     spec = SPEC.search(issue.get("body") or "")
     assignees = [a["login"] for a in issue.get("assignees", [])]
     marks = _marks(issue)
     mark = next((m for m in marks if m["author"] in assignees), None)     # the oldest holds it
-    notes = [c for c in issue.get("comments") or [] if NOTE.match(c.get("body") or "") and
-             (c.get("viewerDidAuthor") or (c.get("author") or {}).get("login") in assignees
-              or c.get("authorAssociation") in WRITERS)]      # a note steers the next holder
-    note = notes[-1] if notes and notes[-1].get("createdAt", "") > max((m["at"] for m in marks), default="") \
-        else None              # a note from before the last claim is that holder's past
+    last = max((m["at"] for m in marks), default="")      # a note from before the last claim is that holder's past
+    note = next((c for c in reversed(issue.get("comments") or []) if NOTE.match(c.get("body") or "")
+                 and c.get("createdAt", "") > last and (c.get("viewerDidAuthor")
+                                                        or (c.get("author") or {}).get("login") in assignees
+                                                        or trusted(c))),
+                None)          # a note steers the next holder; the newest first, so few authors are asked
     return {
         "number": issue["number"],
         "title": issue["title"],
         "type": kind,
         "approved": APPROVED in labels or LEGACY_READY in labels,
         "plan_ok": _plan_ok(labels, issue.get("body") or ""),
+        "author": (issue.get("author") or {}).get("login") or "",      # may edit the body, the Plan-ok line too
+        "plan_oks": [{"blobs": list(m.groups()), "author": c.get("author") or {},            # gate 2 by whom (#115)
+                      "authorAssociation": c.get("authorAssociation")}
+                     for c in issue.get("comments") or [] for m in [PLAN_SAID.match(c.get("body") or "")] if m],
+        "merge_oks": [{"sha": m.group(1), "author": c.get("author") or {},                     # gate 3 (#118)
+                       "authorAssociation": c.get("authorAssociation")}
+                      for c in issue.get("comments") or [] for m in [MERGE_SAID.match(c.get("body") or "")] if m],
+        "gate1_oks": [{"head": m.group(1), "path": m.group(2), "author": c.get("author") or {},   # gate 1 at (M-1)
+                       "authorAssociation": c.get("authorAssociation")}
+                      for c in issue.get("comments") or [] for m in [GATE1_SAID.match(c.get("body") or "")] if m],
         "assignees": assignees,
         "claimed_by": mark["author"] if mark else (assignees[0] if assignees else None),
         "claimed_holder": mark["id"] if mark else None,       # the session that holds it: codex:<thread>
@@ -175,13 +269,17 @@ def normalize(issue: dict) -> dict:
         "note": note["body"].partition("\n")[2].strip() if note else "",
         "note_at": note.get("createdAt", "") if note else "",
         "draft": DRAFT in labels,
+        "hold": HOLD in labels,
+        "failed": FAIL in labels,
+        "base_fix": BASE in labels,
+        "priority": next((k for k in range(3) if f"P{k}" in labels), 3),    # P0 to P2 (#116); none after P2 (#119)
         "parent": (issue.get("parent") or {}).get("number"),
         "blocked_by": [n["number"] for n in (issue.get("blockedBy") or {}).get("nodes", [])
                        if n.get("state") == "OPEN"],
         "blocking": [n["number"] for n in (issue.get("blocking") or {}).get("nodes", [])
                      if n.get("state") == "OPEN"],
+        "edges": [[n["number"], n.get("title") or ""] for n in (issue.get("blockedBy") or {}).get("nodes", [])],
         "spec": spec.group(1) if spec else None,
-        "rank": _rank(issue.get("body") or ""),
         "pr": None,            # attached in load(): the open PR that closes this item
         "url": issue.get("url"),
         "updated": issue.get("updatedAt"),
@@ -220,7 +318,7 @@ def spec_of(repo_name: str, n: int, run=gh):
 
 def _set_line(root: Path, repo_name: str, n: int, rx, line: str, run) -> None:
     """Replace or append one `Key: value` line in the issue body; nothing else in the body changes.
-    GitHub replaces the whole body, so a concurrent write of another line (rank against approve-plan)
+    GitHub replaces the whole body, so a concurrent write of another line (spec against a Plan-ok)
     can drop mine, even one that lands after I read mine back. So I read again after a short random
     pause until two reads agree, and put my line back whenever it is gone. A later value of my own
     line is another writer's, and stays."""
@@ -242,13 +340,14 @@ def _set_line(root: Path, repo_name: str, n: int, rx, line: str, run) -> None:
     drop_cache(root)
 
 
-def set_rank(root: Path, repo_name: str, n: int, value: float, run=gh) -> None:
-    _set_line(root, repo_name, n, RANK, "Rank: " + ("%f" % value).rstrip("0").rstrip("."), run)
+def spec_line(path: str, pr=None) -> str:
+    return f"Spec: `{path}`" + (f" (PR #{pr})" if pr else "")
 
 
 def set_spec(root: Path, repo_name: str, n: int, path: str, run=gh) -> None:
-    """The record links its spec at a new path (pulse number renamed it)."""
-    _set_line(root, repo_name, n, SPEC, f"Spec: `{path}`", run)
+    """The record links its spec at a new path (pulse number renamed it once the base branch had it, so its
+    docs PR is merged and the line names it no more)."""
+    _set_line(root, repo_name, n, SPEC, spec_line(path), run)
 
 
 def drop_cache(root: Path) -> None:
@@ -308,9 +407,9 @@ def _keep(path: Path, data: dict) -> None:
         pass                   # no cache: the next read asks GitHub again
 
 
-def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
+def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = TTL) -> list:
     """All open issues, normalized. Every POLL seconds a free check whether anything moved;
-    a full reload only on a change, or after TTL."""
+    a full reload only on a change, or after ttl (a waiting pulse go: 300, #119)."""
     path, now = cache_path(root), time.time()
     if not fresh and path.is_file():
         try:
@@ -320,7 +419,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
         if cached.get("repo") == repo_name and cached.get("format") == FORMAT:
             if now - max(cached.get("fetched_at", 0), cached.get("checked_at", 0)) < POLL:
                 return cached["items"]
-            if now - cached.get("fetched_at", 0) < TTL:
+            if now - cached.get("fetched_at", 0) < ttl:
                 moved, _ = changed(repo_name, cached.get("etag", ""), run)
                 if not moved:
                     _keep(path, {**cached, "checked_at": now})
@@ -328,25 +427,27 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False) -> list:
     _, etag = changed(repo_name, "", run)
     raw = json.loads(run(["issue", "list", "--repo", repo_name, "--state", "open",
                           "--limit", "1000", "--json", FIELDS]))
-    items = [normalize(i) for i in raw]
+    trusted = pushers(repo_name, run)
+    items = [normalize(i, trusted) for i in raw]
     prs = json.loads(run(["pr", "list", "--repo", repo_name, "--state", "open", "--limit", "200",
                           "--json", "number,headRefName,baseRefName,isDraft,closingIssuesReferences,"      # files:
                                     "statusCheckRollup,reviewRequests,files,changedFiles,isCrossRepository,"
-                                    "headRefOid,updatedAt"]))   # #62; the head a merge binds to (#70); #99
+                                    "headRefOid,updatedAt,autoMergeRequest"]))   # #62; #70; #99; #118
     closes = {n: {"number": pr["number"], "branch": pr["headRefName"], "base": pr.get("baseRefName"),
                   "draft": pr["isDraft"], "checks": checks(pr.get("statusCheckRollup") or []),
                   "head": pr.get("headRefOid"), "fork": bool(pr.get("isCrossRepository")),    # built on never (#63)
                   "updated": pr.get("updatedAt"),       # a verdict posted since: the map reads the PR again (#99)
+                  **({"auto": True} if pr.get("autoMergeRequest") else {}),    # pulse go turns it off (#118 H-1)
                   "reviewers": [r["login"] for r in pr.get("reviewRequests") or [] if r.get("login")]}
               for pr in sorted(prs, key=lambda p: not p.get("isCrossRepository"))   # an own PR wins over a fork's
               for n in pr_items(pr)}
     carry = [{"number": pr["number"], "branch": pr["headRefName"], "base": pr.get("baseRefName"),
-              "draft": pr["isDraft"], "docs": docs_only(pr),
+              "draft": pr["isDraft"], "docs": docs_only(pr), "head": pr.get("headRefOid"),   # gate 1 binds it
               "files": [f.get("path", "") for f in pr.get("files") or []]}
              for pr in prs if not pr.get("isCrossRepository")]         # a fork's PR blocks no approval (L-3)
     for i in items:
         i["pr"] = closes.get(i["number"])
-        i["spec_prs"] = [c for c in carry if i.get("spec") in c["files"]]      # approve merges it (#69)
+        i["spec_prs"] = [c for c in carry if i.get("spec") in c["files"]]      # pulse go merges it (#115)
     _keep(path, {"repo": repo_name, "format": FORMAT, "fetched_at": now, "checked_at": now, "etag": etag, "items": items})
     return items
 
@@ -372,84 +473,54 @@ def docs_only(pr: dict) -> bool:
         and all(f.get("path", "").startswith("_devprocess/") for f in files)
 
 
-def merge(root: Path, repo_name: str, pr: int, head: str, run=gh) -> None:
-    """Merge PR #pr with a merge commit, only while head is its head: what was checked is what lands.
-    ponytail: always a merge commit; a choice of squash or rebase once a repository allows none."""
-    run(["pr", "merge", str(pr), "--repo", repo_name, "--merge", "--match-head-commit", head])
+def merge(root: Path, repo_name: str, pr: int, head: str, run=gh, method: str = "merge") -> None:
+    """Merge PR #pr in the repository's method, only while head is its head: what was checked is what lands. Never
+    --auto, which GitHub keeps after a push (audit H-1 of #118), never --admin."""
+    run(["pr", "merge", str(pr), "--repo", repo_name, f"--{method}", "--match-head-commit", head])
     drop_cache(root)
 
 
-def sync_merged(root: Path, repo_name: str, items: list, run=gh) -> list:
-    """Catch up with merges GitHub does not act on: close an open item whose PR was merged
-    (GitHub closes only on the default branch; a stacked PR merges into its blocker's branch),
-    and retarget a stacked PR whose blocker's branch was merged. Returns the items it closed."""
-    merged = json.loads(run(["pr", "list", "--repo", repo_name, "--state", "merged", "--limit", "50",
-                             "--json", "number,headRefName,baseRefName,closingIssuesReferences,files,changedFiles,"
-                                       "isCrossRepository"]) or "[]")
-    open_ = {i["number"] for i in items}
-    closed = []
-    for pr in merged:
-        for n in sorted(pr_items(pr) & open_ - set(closed)):
-            done(root, repo_name, n, run=run, take=True)
-            closed.append(n)
-    # only an item branch carries a stack; a merged release PR (develop into main) moves nothing,
-    # nor does a fork's branch named like one here (#63)
-    into = {pr["headRefName"]: pr.get("baseRefName") for pr in merged
-            if item_of(pr["headRefName"]) and not pr.get("isCrossRepository")}
-    for i in items:
-        pr = i.get("pr") or {}
-        if pr.get("base") in into:
-            run(["pr", "edit", str(pr["number"]), "--repo", repo_name, "--base", into[pr["base"]]])
-    if closed:
-        drop_cache(root)
-    return closed
-
-
-def me(root: Path, run=gh) -> str:
-    """My GitHub login, kept with the caches for a day, or until gh logs in anew (its hosts file)."""
+def me(root: Path, run=gh, ttl=60) -> str:
+    """My GitHub login, kept with the caches ttl seconds or until gh logs in anew (its hosts file): a minute, so a
+    gh auth switch shows within one (#111). The hooks ask no network and take it for longer. It counts only for
+    the gh config dir and token that asked (a key of both, never the token): a map with a colleague's GH_TOKEN
+    in the same clone keeps his login apart (#111 B-1). A cache without a key, as an older Pulse wrote it, counts."""
     path = cache_dir(root) / "me"
     conf = os.environ.get("GH_CONFIG_DIR") or \
         os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "gh")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    key = hashlib.sha256(f"{conf}\0{token}".encode()).hexdigest()[:12]
     try:
         login_at = os.stat(os.path.join(conf, "hosts.yml")).st_mtime
     except OSError:
         login_at = 0
     try:
         kept = path.stat().st_mtime
-        if kept > login_at and time.time() - kept < 86400:
-            return path.read_text(encoding="utf-8").strip()
+        login, _, whose = path.read_text(encoding="utf-8").partition("\n")
+        if kept > login_at and time.time() - kept < ttl and whose.strip() in ("", key):
+            return login.strip()
     except OSError:
         pass
     login = run(["api", "user", "--jq", ".login"]).strip()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(login, encoding="utf-8")
+        path.write_text(f"{login}\n{key}\n", encoding="utf-8")
     except OSError:
         pass                   # asked again next time
     return login
 
 
-def critical_path(items: list) -> dict:
-    """Length of the longest chain of open work each item unblocks, itself included."""
-    by = {i["number"]: i for i in items}
-    memo: dict = {}
-
-    def walk(n, seen=()):
-        if n in memo:
-            return memo[n]
-        if n in seen or n not in by:
-            return 0
-        memo[n] = 1 + max((walk(m, seen + (n,)) for m in by[n]["blocking"]), default=0)
-        return memo[n]
-
-    return {n: walk(n) for n in by}
-
-
-def ready(items: list) -> list:
-    crit = critical_path(items)
-    pick = [i for i in items if i["type"] in WORK and i["approved"]
-            and not i["assignees"] and not i["blocked_by"]]
-    return sorted(pick, key=lambda i: (-crit[i["number"]], i["number"]))
+def who(root: Path, login=None, run=gh) -> str:
+    """The person as every surface of Pulse names them (#111): `Klarname (@login)`, the name from git config
+    user.name, the login given, else from me(); the name alone without a login, @login alone without a name."""
+    name = subprocess.run(["git", "-C", str(root), "config", "user.name"], capture_output=True,
+                          text=True).stdout.strip()
+    if login is None:
+        try:
+            login = me(root, run=run)
+        except StateError:
+            login = ""
+    return f"{name} (@{login})" if name and login else name or (f"@{login}" if login else "")
 
 
 def blocked(items: list) -> list:
@@ -457,14 +528,14 @@ def blocked(items: list) -> list:
 
 
 def create(root: Path, repo_name: str, kind: str, title: str, parent=None, blocked_by=(),
-           spec=None, body="", run=gh, draft=False) -> int:
+           spec=None, body="", run=gh, draft=False, pr=None, labels=()) -> int:
     if kind not in TYPES:
         raise StateError(f"type must be one of {', '.join(TYPES)}")
-    text = (f"Spec: `{spec}`\n\n" if spec else "") + body
+    text = (spec_line(spec, pr) + "\n\n" if spec else "") + body
     args = ["issue", "create", "--repo", repo_name, "--title", title,
             "--label", f"pulse:{kind}", "--body", text or title]
-    if draft:
-        args += ["--label", DRAFT]
+    for label in ([DRAFT] if draft else []) + list(labels):
+        args += ["--label", label]
     if parent:
         args += ["--parent", str(parent)]
     if blocked_by:
@@ -474,29 +545,45 @@ def create(root: Path, repo_name: str, kind: str, title: str, parent=None, block
     return int(url.rstrip("/").rsplit("/", 1)[-1])
 
 
-def block(root: Path, repo_name: str, n: int, blockers, run=gh) -> None:
-    run(["issue", "edit", str(n), "--repo", repo_name, "--add-blocked-by", ",".join(map(str, blockers))])
+def docs_pr(root: Path, repo_name: str, branch: str, base: str, title: str, run=gh) -> int:
+    """The docs PR of a spec branch into the base: the open one of this branch, else a new one (#116), so all
+    specs of one RE run go in together. Ready, and without Closes: its merge brings specs, no item is done. A
+    PR from a fork on a branch of the same name is none of mine (#63)."""
+    prs = json.loads(run(["pr", "list", "--repo", repo_name, "--head", branch, "--base", base, "--state", "open",
+                          "--json", "number,isCrossRepository"]) or "[]")
+    mine = next((p["number"] for p in prs if not p.get("isCrossRepository")), None)
+    if mine:
+        return mine
+    url = run(["pr", "create", "--repo", repo_name, "--base", base, "--head", branch, "--title", title,
+               "--body", f"Specs from `{branch}`, registered with `pulse new`."])
     drop_cache(root)
+    return int(url.strip().splitlines()[-1].rstrip("/").rsplit("/", 1)[-1])
 
 
-def approve(root: Path, repo_name: str, numbers, run=gh, undo=False) -> None:
-    """Approve, or take the approval back. The label from before 2026-09 stays: gh fails on a label
-    the repo no longer has, and `pulse setup --labels` renamed it on every issue."""
-    for n in numbers:
-        run(["issue", "edit", str(n), "--repo", repo_name, "--remove-label" if undo else "--add-label", APPROVED])
-    drop_cache(root)
-
-
-def approve_plan(root: Path, repo_name: str, n: int, digest: str, run=gh) -> None:
-    """A person approved exactly this PLAN (its digest); a rewritten PLAN waits again."""
-    _set_line(root, repo_name, n, PLAN_OK_LINE, f"Plan-ok: {digest}", run)
-    run(["issue", "edit", str(n), "--repo", repo_name, "--add-label", PLAN_OK])
+def approve(root: Path, repo_name: str, n: int, gate: int, blobs=(), run=gh, by=None) -> None:
+    """Write the approval n waits for and nothing else (#115); pulse go acts on it. Gate 1: the label and a comment,
+    `gate 1 ok at <head> <spec path>` when blobs names the head of the docs PR that carries the spec and its path,
+    which pulse go merges at that head only (M-1); gate 2: the line `Plan-ok: <plan blob> <spec blob>` and the
+    comment `plan ok at` with the same blobs, which counts only from someone who may push; gate 0: pulse:failed
+    goes, a new try for pulse go (#114). The comment names the account (#111), or by: pulse go's auto lever (#125)."""
+    by = by or who(root, run=run)
+    if gate == 3:          # a PR head, which pulse go merges only while it or a clean merge of the base on it leads
+        said = f"merge ok at {blobs[0]}: gate 3 approved by {by}"
+    elif gate == 2:
+        _set_line(root, repo_name, n, PLAN_OK_LINE, f"Plan-ok: {' '.join(blobs)}", run)
+        said = f"plan ok at {' '.join(blobs)}: gate 2 approved by {by}"
+    else:
+        run(["issue", "edit", str(n), "--repo", repo_name, "--add-label", APPROVED] +
+            (["--remove-label", FAIL] if gate == 0 else []))
+        said = (f"gate 1 ok at {' '.join(blobs)}: " if blobs else "") + f"gate 1 approved by {by}" + \
+            ("; pulse:failed is off, pulse go tries it again" if gate == 0 else "")
+    run(["issue", "comment", str(n), "--repo", repo_name, "--body", said])
     drop_cache(root)
 
 
 def _view(repo_name, n, run):
     return json.loads(run(["issue", "view", str(n), "--repo", repo_name,
-                           "--json", "state,labels,assignees,blockedBy,comments"]))
+                           "--json", "state,labels,assignees,blockedBy,comments,parent"]))
 
 
 def holder(env=None) -> dict:
@@ -515,8 +602,26 @@ def holder(env=None) -> dict:
     return {"id": f"terminal:{os.uname().nodename}:{os.getsid(0)}"}
 
 
-def run_holder() -> dict:
-    return {"id": f"go:{uuid.uuid4().hex[:12]}"}
+def run_holder(root: Path) -> dict:
+    """pulse go's holder: go:<clone>:<pid>, the clone as 8 hex of its shared git dir. The next run in this clone
+    knows its marks by the prefix and takes over those whose PR waits for a merge (#118)."""
+    return {"id": f"{clone_prefix(root)}{os.getpid()}"}
+
+
+def clone_prefix(root: Path) -> str:
+    """go:<clone>:, the clone as 8 random hex written once to .git/pulse/clone (audit M-4 of #118): its path names
+    it no better than a guess, since another clone can sit at the same path later."""
+    path = config.pulse_dir(root) / "clone"
+    try:
+        said = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        said = ""
+    if not re.fullmatch(r"[0-9a-f]{8}", said):
+        said, new = os.urandom(4).hex(), path.with_name(f".clone.{os.getpid()}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new.write_text(said, encoding="utf-8")
+        os.replace(new, path)
+    return f"go:{said}:"
 
 
 def _marks(v) -> list:
@@ -600,107 +705,17 @@ def holds(repo_name: str, n: int, run=gh, who=None) -> tuple:
     return _lead(_view(repo_name, n, run), who or holder())
 
 
-def taken(v, login: str, since="") -> str:
+def taken(v, login: str, trusted=_owner) -> str:
     """Who has the item now (the people assigned, else who took it) when a person took it from my login
-    with release --take at `since` or later (#84); "" otherwise. Only the comment of someone who may push
-    counts; a hand-over between sessions of my login leaves none. A take read halfway, its comment there
-    and my marks not yet gone, counts too."""
+    with release --take (#84); "" otherwise. Only the comment of someone assigned to it or who may push counts
+    (trusted, #89), as for a note; a hand-over between sessions of my login leaves none. A take read halfway, its
+    comment there and my marks not yet gone, counts too."""
+    held = {a["login"] for a in v.get("assignees", [])}
     for c in reversed(v.get("comments") or []):
         said, by = TAKEN.fullmatch((c.get("body") or "").strip()), (c.get("author") or {}).get("login")
-        if said and by and login in said.group(1).split(", ") and c.get("authorAssociation") in WRITERS \
-                and (c.get("createdAt") or "") >= since:
+        if said and by and login in said.group(1).split(", ") and (by in held or trusted(c)):
             return _people(v, login) or by
     return ""
-
-
-def stamp(root: Path, sid: str, kind="") -> Path:
-    """The heartbeat stamp of an agent session in the shared git dir, or with a kind the note beside it:
-    .held (what its last beat or claim held, #84), .lost (the news it has not heard yet, #77)."""
-    return config.pulse_dir(root) / "beats" / (re.sub(r"[^\w.-]", "_", sid) + kind)
-
-
-def _note(root: Path, who: dict, kind: str) -> Path:
-    return stamp(root, who["id"].partition(":")[2], kind)
-
-
-def read_note(path: Path) -> str:
-    """A note beside a stamp, from a regular file with one link only, as keep_note writes it, and at most
-    NOTE_BYTES of it. The git dir is writable from a Codex phase of pulse go: a link, a hard link to another
-    file, or a FIFO planted there is neither followed nor read (#84 audit M-1). The file opened is the one
-    looked at, where os has no O_NOFOLLOW too (native Windows, audit L-4)."""
-    try:
-        seen = os.lstat(path)
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
-        return ""
-    try:
-        st = os.fstat(fd)
-        ok = (st.st_dev, st.st_ino) == (seen.st_dev, seen.st_ino) and stat.S_ISREG(st.st_mode) and st.st_nlink == 1
-        return os.read(fd, NOTE_BYTES).decode("utf-8", "replace") if ok else ""
-    except OSError:
-        return ""
-    finally:
-        os.close(fd)
-
-
-def keep_note(path: Path, text: str) -> None:
-    """Write a note beside a stamp as a new file in its place: a link or a FIFO there is replaced, never
-    followed (#84 audit M-1)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, part = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(part, path)
-    finally:
-        if os.path.lexists(part):
-            os.unlink(part)
-
-
-def held(root: Path, who: dict) -> dict:
-    """What this session held at its last beat or claim, as its note says: {"at": since when, "items": [numbers]};
-    {} without a note, or for one of any other shape (#84 audit M-1): the time as _utc writes it, and at most
-    HELD_MAX items, since each costs a read of the board when it goes (audit L-3)."""
-    try:
-        note = json.loads(read_note(_note(root, who, ".held")))
-    except (ValueError, RecursionError):
-        return {}
-    ok = isinstance(note, dict) and isinstance(note.get("at"), str) and UTC.fullmatch(note["at"]) \
-        and isinstance(note.get("items"), list) and len(note["items"]) <= HELD_MAX \
-        and all(type(n) is int for n in note["items"])
-    return note if ok else {}
-
-
-def keep_held(root: Path, who: dict, at: str, items) -> None:
-    keep_note(_note(root, who, ".held"), json.dumps({"at": at, "items": sorted(items)}))
-
-
-def news(root: Path, who: dict, n: int, heard=False) -> str:
-    """The heartbeat's news about n that this session has not heard yet (a Codex session hears it at its next
-    prompt only), so pulse beat never says otherwise meanwhile (#84). heard: pulse beat says it now, so the note
-    keeps it no longer and the hook does not say it again (#99 FR-03)."""
-    path, head = _note(root, who, ".lost"), LOST.format(n)
-    lines = read_note(path).splitlines()
-    said = next((l for l in lines if l.startswith(head)), "")
-    if said and heard:
-        try:
-            keep_note(path, "\n".join(l for l in lines if not l.startswith(head)))
-        except OSError:
-            pass               # a note out of reach: the hook says it once more
-    return said
-
-
-def hold(root: Path, who: dict, n: int, on=True) -> None:
-    """A claim notes n for this session at once, a release takes it out: its heartbeat hears a take of n
-    before its first beat of n, and none after the session gave n back (#84 review). A note keeps its time
-    for the items it lists, one that lists none is dated anew; a note out of reach costs the claim nothing."""
-    note = held(root, who)
-    items = set(note.get("items", []))
-    try:
-        if (n in items) != on:
-            keep_held(root, who, note["at"] if items else _utc(SKEW), items | {n} if on else items - {n})
-    except OSError:
-        pass
 
 
 def _in_flight(v, cid: str) -> bool:
@@ -733,41 +748,45 @@ def _other_session(v, who: dict):
 
 
 def docs_branch(root: Path, n: int) -> str:
-    """The docs branch of draft n on origin as the last fetch left it (docs/<n>-<slug>), where its analysis and
-    spec are (#99 FR-05); "" without one."""
+    """The docs branch of draft n on origin as the last fetch left it (named as spec_branch says, or
+    docs/<n>-<slug>), where its analysis and spec are (#99 FR-05, #116); "" without one."""
     from pulse import ready
-    refs = ready._git(root, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes/origin/docs").split()
-    return next((b for b in refs if b.startswith(f"docs/{n}-")), "")
+    cfg = config.load(root)
+    refs = ready._git(root, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes/origin").split()
+    return next((b for b in refs if config.is_spec_branch(cfg, b, n)), "")
 
 
 def _work(root: Path, n: int, v: dict) -> str:
     """Where the work on n is, for whoever holds it next: for a draft (v, its issue) its docs branch (#99 FR-05),
     else the branch pulse go would build on, never a spec branch (#83), when origin has it. Fetched just now,
-    since the holder may have pushed after my last fetch; offline, as the last fetch saw it."""
+    since the holder may have pushed after my last fetch; offline, as the last fetch saw it, where names that
+    differ only in case cannot share a ref file (#97)."""
     from pulse import go, ready    # both read the board through this module
     ready.fetch(root, now=True)
+    base = config.load(root)["base_branch"] or config.default_branch(root)
     b = docs_branch(root, n) if DRAFT in {l.get("name") for l in v.get("labels", [])} else \
-        go._branch_of(root, n, config.load(root)["base_branch"] or config.default_branch(root), origin_first=True)
+        go._branch_of(root, n, base, origin_first=True)
+    named = b and ready._tip(root, f"refs/remotes/origin/{b}")
+    twin = ready.folded(root, base, b, item=n)      # a ref file two names share names no work (#97)
+    if twin and (named or twin != ready.NO_ANSWER):
+        return f"; where the work is stays unnamed: {twin}"
     # quoted as a shell reads it: an agent may run what the hint names (#83 audit L-1, as the start point, #78)
-    return "; the work is on " + ready.printable(shlex.quote(f"origin/{b}")) \
-        if b and ready._tip(root, f"refs/remotes/origin/{b}") else ""
+    return "; the work is on " + ready.printable(shlex.quote(f"origin/{b}")) if named else ""
 
 
 def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, blockers=True,
-          stacked_on=None, phase=None, files=None, approving=False, labels=None) -> tuple:
+          phase=None, files=None, labels=None) -> tuple:
     """Assign me and mark this session. Another session is refused, even under my login;
     of two concurrent claims the older mark wins. `blockers=False` for planning, which does
-    not wait for blockers; building does, except for the one blocker it stacks on. A draft
+    not wait for blockers; building does. A draft
     is claimed for its spec work: no approval, no blockers. `files` go on the mark, so every
     ramp holds them without a fetch. A claim again of the session that holds n only puts new files
     (a PLAN written since) or a new phase on its mark, whatever approval and blockers say by now.
-    `approving`: pulse approve --claim approves n right after, so no live map starts a run for it (#99 FR-08).
     A claim again of an item with an open blocker refuses a build: the planner pushes the PLAN and gives the item
     back (#99 fix round 1). `labels` gets the labels of n as the claim read them."""
     who = who or holder()
     v = _view(repo_name, n, run)
-    open_blockers = [b["number"] for b in (v.get("blockedBy") or {}).get("nodes", [])
-                     if b.get("state") == "OPEN" and b["number"] != stacked_on]
+    open_blockers = [b["number"] for b in (v.get("blockedBy") or {}).get("nodes", []) if b.get("state") == "OPEN"]
     names = {l["name"] for l in v.get("labels", [])}
     if labels is not None:
         labels.update(names)
@@ -776,7 +795,7 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
     login, marks = me(root, run=run), _marks(v)
     mine = next((m for m in marks if m["mine"] and m["id"] == who["id"]), None)
     again = mine is not None and marks[0] is mine and login in [a["login"] for a in v.get("assignees", [])]
-    if not again and not approving and not {APPROVED, LEGACY_READY, DRAFT} & names:
+    if not again and not {APPROVED, LEGACY_READY, DRAFT} & names:
         return False, f"#{n} is not approved"
     if blockers and open_blockers and DRAFT not in names:
         refs = ", ".join(f"#{b}" for b in open_blockers)
@@ -837,8 +856,8 @@ def _rewrite(repo_name: str, mark: dict, who: dict, phase, run) -> None:
          "-f", "body=" + _mark(who, phase, mark["files"])])
 
 
-# ponytail: kept per process, so pulse go beats with one write; a hook or `pulse beat` is a process of
-# its own and looks the mark up first. An agent of the run that claims with other files in its own
+# ponytail: kept per process, so pulse go beats with one write; another process looks the mark up
+# first. An agent of the run that claims with other files in its own
 # process loses them to the next beat; the agents are told not to touch GitHub.
 _KEPT = {}                 # (root, repo, n, holder id) -> my mark on n as I last wrote or read it: cid, files
 
@@ -887,7 +906,7 @@ def release(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, ta
     login = me(root, run=run)
     whom = _others(v, login)
     if whom and not take_person:
-        by = taken(v, login)
+        by = taken(v, login, pushers(repo_name, run))
         if by:                 # a person took it from me: nothing of it is mine to give back (#99 FR-04)
             return True, f"#{n} was handed over with pulse release --take and went to {by}: nothing to give back"
         return False, f"#{n} is held by {whom}; to hand it over: pulse release --take {n}" + _work(root, n, v)
@@ -916,30 +935,31 @@ def leave_note(repo_name: str, n: int, text: str, by: str, who: dict, run=gh) ->
 
 
 def attach(root: Path, repo_name: str, n: int, kind: str, path=None, parent=None, blocked_by=(),
-           run=gh, who=None, title=None) -> tuple:
+           run=gh, who=None, title=None, pr=None, labels=()) -> tuple:
     """Make an open issue that links no spec (a draft, an issue from the BA) a record of this kind,
-    as create makes a new one: its type, parent, blockers, and the spec at path with its title. Without a
-    path it becomes a draft. A draft that gets its spec is one no more, and my claim for its spec work goes back."""
+    as create makes a new one: its type, parent, blockers, labels, and the spec at path (in docs PR pr) with its
+    title. Without a path it becomes a draft. A draft that gets its spec is one no more, and my claim for its spec
+    work goes back."""
     have = spec_of(repo_name, n, run)
     if have:
         return False, f"#{n} already links {have}"
     v = _view(repo_name, n, run)
     if v.get("state") != "OPEN":
         return False, f"#{n} is closed"
-    labels = {l["name"] for l in v.get("labels", [])}
-    was = next((t for t in TYPES if f"pulse:{t}" in labels), kind)
+    on = {l["name"] for l in v.get("labels", [])}
+    was = next((t for t in TYPES if f"pulse:{t}" in on), kind)
     if was != kind:
         return False, f"#{n} has the type {was}, not {kind}"
-    if path:
-        _set_line(root, repo_name, n, SPEC, f"Spec: `{path}`", run)
-    add = [l for l in (f"pulse:{kind}", None if path else DRAFT) if l and l not in labels]
+    add = [l for l in (f"pulse:{kind}", None if path else DRAFT, *labels) if l and l not in on]
     edit = (["--title", title] if path and title else []) + (["--add-label", ",".join(add)] if add else []) + \
-        (["--remove-label", DRAFT] if path and DRAFT in labels else []) + \
-        (["--parent", str(parent)] if parent else []) + \
+        (["--remove-label", DRAFT] if path and DRAFT in on else []) + \
+        (["--parent", str(parent)] if parent and parent != (v.get("parent") or {}).get("number") else []) + \
         (["--add-blocked-by", ",".join(map(str, blocked_by))] if blocked_by else [])
-    if edit:
-        run(["issue", "edit", str(n), "--repo", repo_name, *edit])
-    if path and DRAFT in labels and me(root, run=run) in [a["login"] for a in v.get("assignees", [])]:
+    if edit:                   # before the Spec line: an edit GitHub refuses (a label it lacks) leaves no link, so a
+        run(["issue", "edit", str(n), "--repo", repo_name, *edit])      # rerun goes through (#116 fix round 1)
+    if path:
+        _set_line(root, repo_name, n, SPEC, spec_line(path, pr), run)
+    if path and DRAFT in on and me(root, run=run) in [a["login"] for a in v.get("assignees", [])]:
         release(root, repo_name, n, run=run, who=who, take=True)
     drop_cache(root)
     return True, f"#{n} links {path}" if path else f"#{n} is a draft"

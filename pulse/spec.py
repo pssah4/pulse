@@ -14,8 +14,10 @@ renumber() moves them. The issue number stays the ID of the record.
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -259,12 +261,38 @@ def add_item(epic: Path, number: int, title: str, link: str, under: str = None) 
     epic.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def read(path) -> str:
+    """The text of a regular file; OSError for a link, a FIFO, a device, or a path the system refuses: no file
+    here makes a reader hang or read without end (#93). pulse check names such a file (C1)."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise OSError(errno.EINVAL, "a link, a FIFO, or a device, not a file", str(path))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def readable(paths) -> dict:
+    """{path: text} for each of paths that read() can read."""
+    out = {}
+    for p in paths:
+        try:
+            out[p] = read(p)
+        except OSError:
+            pass
+    return out
+
+
+def _real(path) -> Path:
+    """The path through its links; os.path.realpath leaves a loop or an overlong part as it is, resolve() raises on
+    Python 3.9 (#93)."""
+    return Path(os.path.realpath(path))
+
+
 def link_problems(root: Path) -> list:
     """[(spec path, problem)] where parent links and Items lists disagree. A spec without an issue
     number may name a parent that does not list it yet: pulse new --spec lists it there."""
     base = root / REQUIREMENTS
-    specs = {p.resolve(): p.read_text(encoding="utf-8", errors="replace") for p in sorted(base.rglob("*.md"))}
-    parent = {p: (p.parent / fm["parent"]).resolve() for p, t in specs.items()
+    specs = {_real(p): t for p, t in readable(sorted(base.rglob("*.md"))).items()}
+    parent = {p: _real(p.parent / fm["parent"]) for p, t in specs.items()
               if (fm := front(t)).get("parent")}
     rel = lambda p: p.relative_to(root.resolve()).as_posix()
     listed = {}                                   # child -> the spec it is listed under
@@ -272,7 +300,7 @@ def link_problems(root: Path) -> list:
     for epic, text in specs.items():
         top = None
         for depth, link in items(text):
-            child = (epic.parent / link).resolve()
+            child = _real(epic.parent / link)
             if depth == 0:
                 top = child
             owner = epic if depth == 0 else top
@@ -310,8 +338,8 @@ def registered(root: Path) -> dict:
     """{issue number: spec path} for every spec that names its record in issue:."""
     out = {}
     for folder in FOLDERS:
-        for p in (root / REQUIREMENTS / folder).glob("*.md"):
-            n = str(front(p.read_text(encoding="utf-8", errors="replace")).get("issue", "")).lstrip("#")
+        for p, text in readable((root / REQUIREMENTS / folder).glob("*.md")).items():
+            n = str(front(text).get("issue", "")).lstrip("#")
             if n.isdigit():
                 out[int(n)] = p.relative_to(root).as_posix()
     return out
@@ -376,14 +404,13 @@ def numbering(root: Path, revs=(), base_rev=None) -> list:
     specs = []                                    # (path, kind, parent), parents before children
     for folder, kind in FOLDERS.items():
         found = []
-        for p in (base / folder).glob("*.md"):
-            text = p.read_text(encoding="utf-8", errors="replace")
+        for p, text in readable((base / folder).glob("*.md")).items():
             if not split(text)[0]:                # a README beside the specs is no spec
                 continue
             fm = front(text)
             n = str(fm.get("issue", "")).lstrip("#")
-            found.append((int(n) if n.isdigit() else float("inf"), p.name, p.resolve(),
-                          (p.parent / fm["parent"]).resolve() if fm.get("parent") else None))
+            found.append((int(n) if n.isdigit() else float("inf"), p.name, _real(p),
+                          _real(p.parent / fm["parent"]) if fm.get("parent") else None))
         specs += [(p, kind, up) for _, _, p, up in sorted(found)]
     holders = {}
     for p, _, _ in specs:

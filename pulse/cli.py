@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from pulse import archmap, check, config, dispatch, go, mapstart, migrate, ready, review, setup, spec, state
+from pulse import auto, check, config, go, mapstart, merge, migrate, ready, setup, spec, state
 from pulse import map as pmap
 
 
@@ -34,20 +34,22 @@ def _ctx():
 
 
 def cmd_status(args):
-    """The map frame once, or its view model; first, items whose PR was merged are closed
-    (GitHub closes only on the default branch). The map itself only reads (ADR-06)."""
+    """The map frame once, or its view model; it only reads, as the map does (ADR-06, FR-06 of #118): pulse go
+    closes what it merged. With n, that item."""
     root = config.find_root()
     if root is not None and config.load(root)["mode"] is None:      # asks GitHub nothing
-        note = ("Pulse is not active here (no .pulse/config.toml): /pulse-setup (in Codex $pulse:pulse-setup), "
-                "or pulse setup, activates it.")
+        note = ("Pulse is not active here (no .pulse/config.toml): /pulse (in Codex $pulse:pulse) sets it up, "
+                "or pulse setup activates it.")
         print(json.dumps({"active": False, "note": note}) if args.json else note)
         return 0
+    if args.n is not None:
+        return _item(args)
     root, repo, run = _ctx()
     note = ""
     try:
-        state.sync_merged(root, repo, state.load(root, repo, run=run, fresh=args.fresh), run=run)
+        state.load(root, repo, run=run, fresh=args.fresh)
     except state.StateError as e:
-        note = f"merged pull requests not checked: {e}"
+        note = f"the board could not be read: {e}"
     _fetch(root)               # waits, with a time limit: the ramp below counts every clone's PLANs
     vm = pmap.gather(root)
     vm["error"] = vm["error"] or note
@@ -70,11 +72,11 @@ def _last_run(rep) -> str:
     return "\n" + "\n".join(map(ready.printable, lines))     # a why quotes foreign text (#56)
 
 
-def _fetch(root):
+def _fetch(root, now=False):
     """ready.fetch, and one line when the last fetch failed or none could run: what git said, as every
     command names it (#85), or that origin did not answer, where git said nothing; on stderr, so --json
     stays JSON."""
-    got = ready.fetch(root)
+    got = ready.fetch(root, now=True) if now else ready.fetch(root)
     if not got:
         said = ready.fetch_said(root) if got is False else ""
         why = f"git fetch said: {said}" if said else \
@@ -85,7 +87,8 @@ def _fetch(root):
 def _unfetched(root) -> tuple:
     """(why, behind) after a fetch just now (#78), held against ready.behind after every fetch that reached
     origin (#85): ("", {}) when every branch of origin is here as origin has it; (why, None) when origin did
-    not answer or no fetch could run; else what git said, or which refs differ, and behind. A fetch the time
+    not answer or no fetch could run; else what git said, the branch names that share a ref file (#97), or
+    which refs differ, and behind. A fetch the time
     limit ended heard nothing, and ls-remote would wait as long again."""
     got = ready.fetch(root, now=True)
     if got is None:
@@ -94,25 +97,27 @@ def _unfetched(root) -> tuple:
     behind = ready.behind(root) if got or said else None
     if behind is None:
         return "origin did not answer", None
+    twin, rest = ready.conflict(behind), [b for b in behind if b not in ready.twins(behind)]     # #97
     if said:
-        return f"git fetch said: {said}", behind
-    return ("the fetch went through, but refs here differ from origin: " +
-            ", ".join(ready.printable(f"origin/{b}") for b in behind) if behind else ""), behind
+        return "; ".join(filter(None, (f"git fetch said: {said}", twin))), behind
+    return "; ".join(filter(None, (twin, rest and "the fetch went through, but refs here differ from origin: " +
+                                   ", ".join(ready.printable(f"origin/{b}") for b in rest)))), behind
 
 
-def cmd_show(args):
+def _item(args):
+    """pulse status <n>: one open item, its stage in the words of the map, its PLAN, claim, and blockers."""
     root, repo, run = _ctx()
     items = state.load(root, repo, run=run, fresh=args.fresh)
     i = next((i for i in items if i["number"] == args.n), None)
     if i is None:
         print(f"#{args.n} is not an open issue")
         return 1
-    _fetch(root)               # as pulse status: the PLAN another clone pushed counts
+    _fetch(root)               # as the board: the PLAN another clone pushed counts
     stages = {}                # the stage in the words of the map (#99 FR-14), without the board lines it never prints
     pmap.render(pmap.gather(root, board=False), color=0, stages=stages)
     p = ready.plans(root).get(args.n) or {}
     i = {**i, "stage": stages.get(args.n, ""), "plan": p.get("path"), "plan_ref": p.get("ref")}
-    # a title or note is foreign text (#56): each line of a value through printable, as in status, and its
+    # a title or note is foreign text (#56): each line of a value through printable, as on the board, and its
     # later lines indented, so none reads as a field
     text = "\n".join("  " * (j > 0) + ready.printable(line)
                      for k, v in i.items() for j, line in enumerate(f"{k}: {v}".splitlines()))
@@ -120,45 +125,25 @@ def cmd_show(args):
     return 0
 
 
-def cmd_rank(args):
-    if _go_agent("rank"):
-        return 1
-    root, repo, run = _ctx()
-    items = state.load(root, repo, run=run, fresh=True)
-    try:
-        writes = dispatch.place(items, args.n, before=args.before, after=args.after,
-                                top=args.top, bottom=args.bottom)
-    except ValueError:
-        print(f"pulse rank: #{args.n} and the item it goes next to must both be open and free")
-        return 1
-    for n, value in writes:
-        state.set_rank(root, repo, n, value, run=run)
-    print(f"#{args.n} moved; {len(writes)} record{'s' if len(writes) != 1 else ''} written")
-    return 0
-
-
 def cmd_go(args):
+    """pulse go in the foreground of this terminal: its output is the person's, Ctrl-C stops it."""
+    if _person_only("go"):
+        return 1
     root = _root()
-    # the live map where the user works, before a detached run starts (D-48), for a run its start
-    # checks let through: go.run refuses without verify and beside a run of this clone
-    if not (args.dry_run or args.json or (go.last_run(root) or {}).get("run", {}).get("running")) \
-            and config.load(root)["verify"]:
-        mapstart.ensure(root)
-    if args.detach:
-        return _detach(root, args)
-    rep = go.run(root, cap=args.cap, agent=args.agent, dry_run=args.dry_run)
-    stopped, mix = rep.get("run", {}).get("stopped"), rep.get("integration") or {}
-    clash = mix.get("error") or mix.get("conflict") or mix.get("unfetched") or \
-        not (mix.get("verify") or {}).get("ok", True)
-    # a PLAN that still fails P1 to P5 waits for a person, so the run is not clean; neither is a clash
+    cfg = config.load(root)
+    if cfg["verify"]:          # go.run refuses without it, before its first line
+        if not (go.last_run(root) or {}).get("run", {}).get("running"):
+            mapstart.ensure(root)          # the live map where the user works (D-48), beside no run of this clone
+        who = state.who(root, run=state.gh)          # the account the run acts as (#111)
+        warn = setup.untrusted(cfg["agent"])
+        print(f"pulse go: {'as ' + who + ', ' if who else ''}cap {cfg['cap']}, agents {cfg['agent']}; "
+              f"Ctrl-C stops it{'; ' + warn if warn else ''}", flush=True)
+    rep = go.run(root)
+    stopped = rep.get("run", {}).get("stopped")
+    # a PLAN that still fails P1 to P5 waits for a person, so the run is not clean
     rc = 128 + signal.Signals[stopped] if stopped else \
-        1 if rep["failed"] or clash or any(j["why"].startswith("plan: ") for j in rep["skipped"]) else 0
-    if args.json:
-        print(json.dumps(rep, indent=2))
-        return rc
-    verbs = {"plan": "would plan", "build": "would build", "resume": "would take up"} if args.dry_run else \
-        {"plan": "planning", "build": "building", "resume": "taking up"}
-    print(f"pulse go: parallel {rep['level']}, agents {rep['agent']}")
+        1 if rep["failed"] or rep.get("halt") or any(j["why"].startswith("plan: ") for j in rep["skipped"]) else 0
+    verbs = {"plan": "planning", "build": "building", "merge": "merging the base into"}
     for n in rep.get("took", []):
         print(f"  took over #{n} from a stopped run")
     for j in rep["started"]:           # branch names reach the terminal printable (#63)
@@ -173,38 +158,19 @@ def cmd_go(args):
             else "draft, a gate is red"
         print(f"  done   #{j['number']} -> {j['pr']} ({gates}{rounds}, {state_}{_spent(j)})")
     for j in rep["failed"]:
-        print(f"  failed #{j['number']}: {j['why']} (worktree {j['worktree']}, log {j['log']})")
+        print(ready.printable(f"  failed #{j['number']}: {j['why']} (worktree {j['worktree']}, log {j['log']})"))
     for j in rep["limited"]:
-        print(f"  limit  {j['agent']} hit its usage limit on #{j['number']}; #{j['number']} went back "
-              f"to the ramp (log {j['log']})")
+        print(ready.printable(f"  limit  #{j['number']}: {j['why']} (log {j['log']})"))
     for j in rep["skipped"]:
-        print(f"  skipped #{j['number']}: {j['why']}")
+        print(ready.printable(f"  skipped #{j['number']}: {j['why']}"))
     for n in rep.get("merged", []):
         print(f"  closed #{n}: its pull request was merged")
-    if rep.get("sync_error"):
-        print(f"  merged pull requests not checked: {rep['sync_error']}")
-    found = {}                 # an agent may write a whole page: its first line here, all of it in discovered.md
-    for d in rep["discovered"]:
-        found.setdefault(d["from"], []).append(d["item"])
-    for n, lines in found.items():
-        more = f"and {len(lines) - 1} more line{'s' if len(lines) > 2 else ''} " if len(lines) > 1 else ""
-        print(f"  discovered while building #{n}: {lines[0]} ({more}in "
-              f"{Path(rep['report']).with_name('discovered.md')})")
     for j in rep.get("stopped", []):
-        print(f"  stopped #{j['number']} in {j['phase']} ({j['why']})")
+        print(ready.printable(f"  stopped #{j['number']} in {j['phase']} ({j['why']})"))
     for u in rep.get("unclean", []):
-        print(f"  kept the worktree of closed #{u['number']}, it has changes: {u['worktree']}")
-    if mix.get("error"):
-        print(f"  integration not checked: {mix['error']}")
-    elif mix:
-        print(ready.printable(f"  integration on {mix['base']}: merged " + (", ".join(mix["merged"]) or "nothing")))
-        if mix.get("unfetched"):
-            print(ready.printable("  not fetched from origin, so not checked: " + ", ".join(mix["unfetched"])))
-        if mix["conflict"]:
-            print(ready.printable(f"  CONFLICT: {mix['conflict']['branch']} does not merge after the branches above"))
-        if mix["verify"]:
-            print(f"  verify `{mix['verify']['command']}`: {'ok' if mix['verify']['ok'] else 'FAILED'}")
-            print("\n".join("    " + l for l in mix["verify"]["tail"]))
+        print(ready.printable(f"  kept the worktree of closed #{u['number']}, it has changes: {u['worktree']}"))
+    if rep.get("halt"):
+        print(ready.printable(f"  held: {rep['halt']}"))     # a hook's name and git's words (L-4)
     if stopped:
         print(f"pulse go: stopped by {'Ctrl-C' if stopped == 'SIGINT' else stopped}; the report so far is above")
     if rep.get("report"):
@@ -217,88 +183,10 @@ def cmd_map(args):
     if args.ensure:
         return mapstart.ensure(_root())
     root = config.find_root()
-    if root is None or args.demo or args.once or not sys.stdout.isatty():
+    if root is None or not sys.stdout.isatty():
         return pmap.main(args)
     with mapstart.noted(root):
         return pmap.main(args)
-
-
-def _detach(root, args):
-    """pulse go apart from this terminal or chat session: a session of its own, its output in
-    run.log, its results in report.json (F2.07). It waits up to 10 s for the run to hold its lock
-    (go.pid names it) and for a board read since its start (the cache); a run that ended before,
-    e.g. refused without verify or unable to read the board, prints what it wrote and returns its
-    exit code."""
-    common, started = config.pulse_dir(root), time.time()
-    p, log, since = mapstart.start_go(root, (["--agent", args.agent] if args.agent else []) +
-                                      (["--cap", str(args.cap)] if args.cap else []))
-    end = time.time() + 10
-    while p.poll() is None and time.time() < end:
-        try:           # the board read after the lock is where gh fails: offline, no login (f9-docs)
-            if (common / "go.pid").read_text().strip() == str(p.pid) and \
-                    json.loads(state.cache_path(root).read_text(encoding="utf-8"))["fetched_at"] >= started:
-                break
-        except (OSError, ValueError, KeyError):
-            pass
-        time.sleep(0.1)
-    if p.returncode is not None:
-        with open(log, encoding="utf-8") as f:
-            f.seek(since)
-            print(f.read(), end="")
-        return p.returncode
-    print(f"pulse go runs detached, pid {p.pid}: log {log}, report {log.with_name('report.json')}; "
-          f"pulse status shows how far it got, kill {p.pid} stops it")
-    return 0
-
-
-def cmd_review(args):
-    """pulse review / pulse audit: a fresh session over an item's branch or any scope."""
-    root = _root()
-    scope = args.scope or ("branch" if args.n is not None else "working")
-    if scope == "range" and not args.rng:
-        raise state.StateError("--scope range needs --range A..B")
-    if (args.record or args.publish) and args.n is None:
-        raise state.StateError("--record and --publish keep the verdict of an item: give its number")
-    if args.publish:
-        done = review.publish(root, args.n, state.gh)
-        print(json.dumps({"number": args.n, "published": done}, indent=2) if args.json else
-              f"#{args.n}: " + (f"published on the PR: {', '.join(done)}" if done else
-                                "nothing new for an open PR of this branch"))
-        return 0
-    item = {}
-    if args.n is not None:
-        item = next((i for i in state.cached(root) if i["number"] == args.n), None)
-    if item is None:           # not in the cache: ask the board once, work without it offline
-        try:
-            item = next((i for i in state.load(root, state.repo(root)) if i["number"] == args.n), {})
-        except state.StateError:
-            item = {}
-    title, spec_path = item.get("title", ""), item.get("spec")
-    if not (args.run or args.record):
-        b = review.brief(root, args.n, title, spec_path, args.base, scope, args.rng) if args.kind == "review" \
-            else review.audit_brief(root, args.n, title, args.base, scope, args.rng)
-        print(json.dumps(b, indent=2) if args.json else b["prompt"])
-        return 0
-    rec = review.run(root, args.n, title, spec_path, args.base, args.agent, args.kind, scope, args.rng) \
-        if args.run else review.record(root, args.n, args.kind)
-    if args.n is not None and rec["verdict"]:
-        try:                   # on top of the kept verdict: GitHub's answer changes nothing kept here
-            rec["published"] = review.publish(root, args.n, state.gh)
-        except (state.StateError, OSError) as e:
-            rec["unpublished"] = str(e)
-    if args.json:
-        print(json.dumps(rec, indent=2))
-    else:
-        where = f" ({rec['path']})" if rec.get("path") else ""
-        print(f"{f'#{args.n}' if args.n is not None else scope}: " +
-              (f"{rec['verdict']}{where}" if rec["verdict"] else f"no verdict, {rec['why']}"))
-        if args.n is None and rec.get("report"):
-            print(rec["report"])
-        if rec.get("published"):
-            print(f"published on the PR: {', '.join(rec['published'])}")
-        if rec.get("unpublished"):
-            print(f"not published on the PR: {rec['unpublished']}")
-    return {"pass": 0, "block": 1}.get(rec["verdict"], 2)
 
 
 def cmd_migrate(args):
@@ -345,8 +233,11 @@ def cmd_migrate(args):
 
 def cmd_new(args):
     """A record for a spec every clone can read, or a draft claimed for the analysis and spec work;
-    --issue makes an issue that links no spec that record or that draft (D-43)."""
+    --issue makes an issue that links no spec that record or that draft (D-43). A spec an agent cannot plan
+    from is refused; on a spec branch the spec goes to origin and into the branch's docs PR (#116)."""
     root, repo, run = _ctx()
+    args.title = spec.with_id(args.spec, args.title)          # FEAT-04-02 Speech input, on the board too
+    pr, labels = None, []
     if not args.draft:
         if not (root / args.spec).is_file():
             print(f"pulse new: write the spec first, {args.spec} does not exist in the repository")
@@ -355,19 +246,37 @@ def cmd_new(args):
         if had.isdigit() and not args.issue:        # a rerun, after a rate limit say: no second record
             print(f"pulse new: {args.spec} has its record #{had} already; nothing created")
             return 0
+        here = spec.on_base(root, args.spec, "HEAD")          # as committed: what origin gets
+        wrong = []
+        if here is not None and args.type in spec.SECTIONS:  # an epic needs R1 only, as pulse check --spec says
+            lines, body = spec.split(here)     # issue: is mine to write, a template's {N} there too (IMP-11 FR-04)
+            wrong = spec.findings("---\n" + "\n".join(l for l in lines if not l.startswith("issue:")) +
+                                  "\n---\n" + body, args.type)
+        if wrong:
+            print(f"pulse new: {args.spec} is not ready: {'; '.join(wrong)}; fix it, commit, and run pulse new again")
+            return 1
+        prio = spec.front(here or "").get("priority")
+        labels = [prio] if prio in spec.PRIORITY else []
         branch = subprocess.run(["git", "-C", str(root), "branch", "--show-current"],
                                 capture_output=True, text=True).stdout.strip()
-        why, behind = _unfetched(root)
-        if behind is None or branch in behind:     # the ref that shows the spec on origin is not here
-            print(f"pulse new: {why}, so nothing shows {args.spec} on origin; nothing registered")
-            return 2
-        if why:                # stdout carries the number a skill reads
-            print(f"pulse new: {why}", file=sys.stderr)
-        here = spec.on_base(root, args.spec, "HEAD")
-        if here is None or here != spec.on_base(root, args.spec, f"origin/{branch}"):
-            print(f"pulse new: {args.spec} is not on origin as committed here; "
-                  f"commit it, then: git push -u origin {shlex.quote(branch)}")
-            return 2
+        base = config.load(root)["base_branch"] or config.default_branch(root)
+        if here is not None and _spec_branch_here(root, branch, base):
+            pushed = ready.net_git(root, "push", "-q", "-u", "origin", f"refs/heads/{branch}")
+            if pushed.returncode:
+                print(f"pulse new: git push said: {ready.git_error(pushed.stderr)}; nothing registered")
+                return 2
+            pr = state.docs_pr(root, repo, branch, base, f"docs: {args.title}", run=run)
+        else:                  # the base branch, or a build branch: its own PR brings the spec along
+            why, behind = _unfetched(root)
+            if behind is None or branch in behind:     # the ref that shows the spec on origin is not here
+                print(f"pulse new: {why}, so nothing shows {args.spec} on origin; nothing registered")
+                return 2
+            if why:            # stdout carries the number a skill reads
+                print(f"pulse new: {why}", file=sys.stderr)
+            if here is None or here != spec.on_base(root, args.spec, f"origin/{branch}"):
+                print(f"pulse new: {args.spec} is not on origin as committed here; "
+                      f"commit it, then: git push -u origin {shlex.quote(branch)}")
+                return 2
     if args.draft and not args.issue:      # one draft per type and title: two people start the same realign or BA
         same = next((i for i in state.load(root, repo, run=run, fresh=True) if i.get("draft")
                      and i["type"] == args.type and i["title"].casefold() == args.title.casefold()), None)
@@ -376,28 +285,37 @@ def cmd_new(args):
                   f"{same.get('claimed_by') or 'nobody'}; a free one or one of yours goes on with "
                   f"--issue {same['number']}, one another person holds stays theirs")
             return 1
-    args.title = spec.with_id(args.spec, args.title)          # FEAT-04-02 Speech input, on the board too
-    rel = {"parent": args.parent, "blocked_by": args.blocked_by or []}
+    rel = {"parent": args.parent, "blocked_by": args.blocked_by or [], "pr": pr, "labels": labels}
     if args.issue:
         ok, why = state.attach(root, repo, args.issue, args.type, args.spec, run=run, title=args.title, **rel)
         if not ok:
             print(why)
             return 1
         n = args.issue
-        if args.spec:          # a draft of this session's that gets its spec is given back, as by release (#84)
-            state.hold(root, state.holder(), n, on=False)
     else:
         n = state.create(root, repo, args.type, args.title, spec=args.spec, draft=args.draft, run=run, **rel)
     if args.draft:
         ok, why = state.claim(root, repo, n, run=run, phase=args.phase)
         print(n if ok else f"{n}\n{why}")
         if ok:
-            state.hold(root, state.holder(), n)     # a take before the draft's first beat is news too (#84)
             mapstart.ensure(root)
         return 0 if ok else 1
     link(root, repo, n, args, run)
     print(n)
     return 0
+
+
+def _spec_branch_here(root, branch, base) -> bool:
+    """Whether the branch checked out is a spec branch: not the base, and against the base it changes something,
+    all of it under _devprocess/, and no item's build branch. Only such a branch is pushed and gets a docs PR
+    (#116); a build branch reaches the base with its own PR, after its gates, even while it holds only its PLAN."""
+    if branch in ("", base):
+        return False
+    n = state.item_of(branch)
+    if n and not config.is_spec_branch(config.load(root), branch, n):     # feat/42-theme-spec is a spec branch
+        return False
+    changed = ready._git(root, "diff", "--name-only", "-z", f"{config.base_ref(root, base)}...HEAD").split("\0")
+    return any(changed) and all(c.startswith("_devprocess/") for c in changed if c)
 
 
 def link(root, repo, n, args, run):
@@ -488,109 +406,83 @@ def _follow(root):
             print(f"#{n} links {path}")
 
 
-def _refs(numbers):
-    return ", ".join(f"#{n}" for n in numbers)
+def _tty() -> bool:
+    return sys.stdin is not None and sys.stdin.isatty()
 
 
-def cmd_block(args):
-    if _other_item("block", args.n):
-        return 1
-    root, repo, run = _ctx()
-    state.block(root, repo, args.n, args.by, run=run)
-    print(f"#{args.n} waits for {_refs(args.by)}")
-    return 0
-
-
-def _go_agent(lever):
-    """Gate levers are a person's: an agent that pulse go started carries PULSE_HOLDER (D-21)."""
-    if not os.environ.get("PULSE_HOLDER"):
+def _person_only(lever):
+    """Gate levers are a person's (D-21, FEAT-03-01): auto.person, no agent marker and a terminal. It holds direct
+    calls only; the lever guard checks what goes into a pane."""
+    if auto.person(os.environ, _tty()):
         return False
-    print(f"pulse {lever}: only a person does this, not an agent that pulse go started")
+    print("pulse go: only a person does this: start it in your own terminal" if lever == "go" else
+          f"pulse {lever}: only a person does this, in their own terminal or the Pulse map; tell the person "
+          "which gate waits")
     return True
 
 
 def _other_item(cmd, n):
-    """An agent of pulse go holds as its run, which holds the run's other items too: it claims, gives back, and
-    blocks only the item pulse go started it for (PULSE_ITEM, #65); a session without one, none. A blocker on
-    a planned sibling would make the run give that sibling's claim back."""
+    """An agent of pulse go holds as its run, which holds the run's other items too: it claims and gives back
+    only the item pulse go started it for (PULSE_ITEM, #65); a session without one, none."""
     if not os.environ.get("PULSE_HOLDER") or os.environ.get("PULSE_ITEM") == str(n):
         return False
-    print(f"pulse {cmd} #{n}: an agent of pulse go claims, releases, and blocks only its own item")
+    print(f"pulse {cmd} #{n}: an agent of pulse go claims and releases only its own item")
     return True
 
 
 def cmd_approve(args):
-    if _go_agent("approve"):
+    """Write the approval each item waits for, and nothing else (#115): gate 1, gate 2 for its PLAN as origin has
+    it, gate 3 for the head of its ready PR (#118), or a new try after pulse:failed. pulse go acts on it: it merges
+    the docs PR, plans, builds, merges the PR."""
+    if _person_only("approve"):
         return 1
     root, repo, run = _ctx()
-    if args.undo:
-        state.approve(root, repo, args.n, run=run, undo=True)
-        print(f"approval taken back from {_refs(args.n)}")
-        return 0
-    items = {i["number"]: i for i in state.load(root, repo, run=run)}
-    good, refused, planned = [], {}, []
-    for n in args.n:           # agents plan from the base branch, so a spec on its branch is merged first (R1, #88)
-        plan = args.claim and (items.get(n) or {}).get("type") != "epic"       # an epic gets no PLAN
-        if plan:               # claimed before the approval: no live map starts pulse go for it (#99 FR-08)
-            ok, said = state.claim(root, repo, n, run=run, blockers=False, phase="plan", approving=True)
-            if not ok:
-                refused[n] = said
-                continue
-            state.hold(root, state.holder(), n)
-        try:
-            ok, said = ready.approve(root, repo, items.get(n) or {"number": n}, run=run)
-        except BaseException:
-            if plan:           # gh failed on the way, after the merge too: nothing to plan, the claim goes back
-                _give_back(root, repo, n, run)
-            raise
-        if ok:
-            good.append(n)
-            planned += [n] * plan
-            if said:
-                print(f"#{n}: {said}")
-        else:
-            refused[n] = said
-            if plan:           # nothing to plan: the claim goes back
-                _give_back(root, repo, n, run)
-    if good:
-        print(f"approved {_refs(good)}: the team wants {'it' if len(good) == 1 else 'them'} built")
-    for n in planned:
-        print(f"claimed #{n} for planning in this session; {_start_point(root, n)}")
-    for n, why in refused.items():
-        print(f"#{n} not approved: {why}")
-    return 1 if refused else 0
-
-
-def _give_back(root, repo, n, run):
-    """The claim approve --claim took for an approval that did not come goes back (#99 fix round 1); where GitHub
-    does not answer, one line names the command that gives it back."""
-    try:
-        state.release(root, repo, n, run=run)
-        state.hold(root, state.holder(), n, on=False)
-    except state.StateError as e:
-        print(f"#{n}: the claim for its planning stays ({e}): pulse release {n} gives it back", file=sys.stderr)
-
-
-def cmd_approve_plan(args):
-    """Only a PLAN that waits for a person and passes P1 to P5, and only the PLAN as it is now:
-    the pushed one when the item's branch on origin moved past the copy here (ready.plans)."""
-    if _go_agent("approve-plan"):
-        return 1
-    root, repo, run = _ctx()
-    _fetch(root)
-    items, cfg, code = state.load(root, repo, run=run, fresh=True), config.load(root), 0
+    _fetch(root, now=True)     # the spec and PLAN as origin has them now: what a Plan-ok binds
+    items = {i["number"]: i for i in state.load(root, repo, run=run, fresh=True)}
+    who, code = state.who(root, run=run), 0    # the account, as the comment on each item names it (#111)
+    as_ = f" as {who}" if who else ""
     for n in args.n:
-        d, why = ready.approvable(root, items, cfg, n)
-        if not d:
-            print(why)
+        gate, blobs, why = ready.waiting(root, items[n]) if n in items else (None, (), f"#{n} is not an open item")
+        if gate is None:
+            print(ready.printable(why))
             code = 1
             continue
-        state.approve_plan(root, repo, n, d, run=run)
-        p = ready.plans(root).get(n)
-        goal = spec.sections(p["text"]).get("goal", "").strip().split("\n")[0] if p else ""
-        where = f" on {p['ref']}" if p and p["ref"] else ""
-        print(f"PLAN of #{n} approved as it is now{where} ({d})" + (f": {goal}" if goal else ""))
+        if gate == 3:          # what waits for a person in it, named before the approval is written (L-2 of #118)
+            print(merge.seen(root, repo, items[n]["pr"]["number"], run, f"#{n}"))
+        state.approve(root, repo, n, gate, blobs, run=run)
+        print([f"#{n}: pulse:failed is off{as_}: the next pulse go tries it again",
+               f"approved #{n}{as_}" + (f" at {blobs[0][:12]} for {blobs[1]}" if gate == 1 and blobs else "") +
+               ": gate 1, the team wants it built",
+               f"approved the plan of #{n}{as_} at {' '.join(b[:12] for b in blobs)}: gate 2, agents may build it",
+               f"approved the merge of #{n}{as_} at {' '.join(b[:12] for b in blobs)}: gate 3, pulse go merges it"][gate])
     return code
+
+
+def cmd_auto(args):
+    """Your auto mode per gate (#124): without a gate, every login's switches; on says what then happens without
+    asking and asks once, off asks nothing. Only a person switches, in their own terminal or the Pulse map."""
+    if bool(args.gate) != bool(args.switch) or args.span and args.switch != "on":
+        print("pulse auto: <plan|build|merge> on [--for 8h|2d], or <gate> off; alone it shows the switches")
+        return 2
+    if args.switch and _person_only(f"auto {args.gate} {args.switch}"):
+        return 1
+    root, repo, run = _ctx()
+    if not args.switch:
+        print(auto.show(root, repo, run))
+        return 0
+    until = auto.stamp(time.time() + args.span) if args.span else None
+    if args.switch == "on":
+        login = state.me(root, run=run)
+        print(auto.explain(args.gate, login, config.load(root)["base_branch"] or config.default_branch(root), until))
+        try:
+            yes = input(f"Switch on as {state.who(root, login)}? [y/N] ").strip().lower() in ("y", "yes")
+        except EOFError:
+            yes = False
+        if not yes:
+            print("nothing switched")
+            return 1
+    print(auto.toggle(root, repo, args.gate, args.switch == "on", until, run))
+    return 0
 
 
 def _spent(j):
@@ -604,53 +496,24 @@ def _said(result):
     return 0 if ok else 1
 
 
-def cmd_beat(args):
-    """A sign of life for skills: this session's claim mark on n names the phase and the time now."""
-    root, repo, run = _ctx()
-    if state.beat(root, repo, args.n, args.phase, run=run):
-        print(f"#{args.n}: {args.phase}")
-        return 0
-    who = state.holder()
-    heard = state.news(root, who, args.n, heard=True)
-    if heard:                  # the heartbeat's news, not heard yet: a Codex session hears it at its next prompt
-        print(ready.printable(heard))
-        return 1
-    v, login = state._view(repo, args.n, run), state.me(root, run=run)
-    # a take counts from this session's last beat or claim on, as its note says; without a note, any (#84)
-    by = state._lead(v, who)[1] or state.taken(v, login, state.held(root, who).get("at", ""))
-    if by:                     # this session's mark no longer leads (#77), or a person took the item (#84)
-        state.drop_cache(root)                               # the stop hook reads the board as it is now
-        state.hold(root, who, args.n, on=False)              # and the next beat hears no take of it (#99 FR-03)
-        marks = state._marks(v)                              # a race another person won: my mark goes with release
-        back = f", and give it back with pulse release {args.n}" if any(
-            m["mine"] and m["id"] == who["id"] for m in marks) and marks[0]["author"] != login else ""
-        print(f"#{args.n} went to {by}: this session holds it no more; stop the work on it and push nothing of it"
-              + back)
-        return 1
-    print(f"#{args.n}: this session holds no claim on it, nothing written")
-    return 0
-
-
 def cmd_claim(args):
-    """The claim carries the files the work changes, so every ramp holds them without a fetch (WP-56):
-    those of the PLAN this clone has, or --files for work without one (hotfix lane). A file another
-    running item holds refuses it, as the ramp locks it (#46)."""
-    if _other_item("claim", args.n):
+    """The claim carries the files of the PLAN this clone has, so every ramp holds them without a fetch
+    (WP-56). A file another running item holds refuses it, as the ramp locks it (#46)."""
+    if args.take and _person_only("claim --take") or _other_item("claim", args.n):
         return 1
     root, repo, run = _ctx()
-    plans = dispatch.plan_files(root)
-    files = args.files or plans.get(args.n)
+    plans = ready.plan_files(root)
+    files = plans.get(args.n)
     if files:
         # ponytail: read, then claim; two claims on different items that share a file in the same
         # seconds can both win, and the ramp shows both. A read after the claim would close it.
         others = [i for i in state.load(root, repo, run=run, fresh=True) if i["number"] != args.n]
-        hit = dispatch.clash([posixpath.normpath(f) for f in files], dispatch.held(others, plans))
+        hit = ready.clash([posixpath.normpath(f) for f in files], ready.held(others, plans))
         if hit:
             return _said((False, f"#{args.n}: {hit[0]} is in use by #{hit[1]}; start #{args.n} once #{hit[1]} is done"))
     labels = set()             # as the claim read them: a draft starts on its docs branch (#99 FR-05)
     rc = _said(state.claim(root, repo, args.n, run=run, take=args.take, files=files, labels=labels))
     if rc == 0:
-        state.hold(root, state.holder(), args.n)     # a take while the session waits is its news (#84)
         print(_start_point(root, args.n, state.DRAFT in labels))
         mapstart.ensure(root)
     return rc
@@ -664,8 +527,9 @@ def _start_point(root, n, draft=False) -> str:
     while the base or a branch of n here is not where origin has it; any other ref that is not goes to
     stderr with what git said (#85)."""
     why, behind = _unfetched(root)
-    base = config.load(root)["base_branch"] or config.default_branch(root)
-    if behind is None or any(b == base or state.item_of(b) == n or draft and b.startswith(f"docs/{n}-")
+    cfg = config.load(root)
+    base = cfg["base_branch"] or config.default_branch(root)
+    if behind is None or any(b == base or state.item_of(b) == n or draft and config.is_spec_branch(cfg, b, n)
                              for b in behind):
         return f"start point not checked: {why}"
     if why:
@@ -682,11 +546,10 @@ def _start_point(root, n, draft=False) -> str:
 
 def cmd_release(args):
     """--take also hands over another person's claim (D-13)."""
-    if args.take and _go_agent("release --take") or args.drop_unpushed and _go_agent("release --drop-unpushed") \
-            or _other_item("release", args.n):
+    if args.take and _person_only("release --take") or _other_item("release", args.n):
         return 1
     root, repo, run = _ctx()
-    kept = [] if args.take or args.drop_unpushed else \
+    kept = [] if args.take else \
         ready.unpushed(root, args.n, config.load(root)["base_branch"] or config.default_branch(root))
     v = state._view(repo, args.n, run) if kept else {}
     if kept and not state._lead(v, state.holder())[1] and \
@@ -695,24 +558,16 @@ def cmd_release(args):
         # older claim holds pushes nothing of it (#77), and another person's item is theirs to name
         b, k = kept[0]
         print(f"#{args.n} keeps its claim: {ready.printable(b)} has {k} commit{'s' if k != 1 else ''} only this "
-              f"clone has; push first (git push -u origin {ready.printable(shlex.quote(b))}), or, when the "
-              f"person says so, give it back without them: pulse release --drop-unpushed {args.n}")
+              f"clone has; push first (git push -u origin {ready.printable(shlex.quote(b))})")
         return 1
-    ok, why = state.release(root, repo, args.n, run=run, take=args.take, take_person=args.take, note=args.note)
-    if ok:                     # given back: a later take of it is none of this session's news (#84)
-        state.hold(root, state.holder(), args.n, on=False)
-    return _said((ok, why))
-
-
-def cmd_done(args):
-    if _go_agent("done"):
-        return 1
-    root, repo, run = _ctx()
-    return max(_said(state.done(root, repo, n, run=run, take=args.take)) for n in args.n)   # one line each
+    return _said(state.release(root, repo, args.n, run=run, take=args.take, take_person=args.take))
 
 
 def cmd_setup(args):
-    """--cli and --codex-rules set up this machine, from anywhere; the rest sets up this project."""
+    """--cli and --codex-rules set up this machine, from anywhere; the rest sets up this project. Switching
+    Pulse off or out takes the lever guard along: a person's (#106)."""
+    if args.remove and _person_only("setup --remove") or args.mode == "off" and _person_only("setup --mode off"):
+        return 1
     if args.cli or args.codex_rules:
         return setup.machine(args.cli, args.codex_rules, args.remove, args.dry_run)
     return setup.main(args)
@@ -737,94 +592,65 @@ def parser() -> argparse.ArgumentParser:
         c.set_defaults(func=fn)
         return c
 
-    c = add("status", cmd_status, "where things stand: the map, once; --json gives its data")
+    c = add("status", cmd_status, "where things stand: the map, once, or one open item with its stage, spec, PLAN, "
+                                   "claim, and blockers; --json gives its data")
+    c.add_argument("n", type=int, nargs="?")
     c.add_argument("--json", action="store_true")
     c.add_argument("--fresh", action="store_true", help="skip the cache")
-    c = add("show", cmd_show, "one open item")
-    c.add_argument("n", type=int)
-    c.add_argument("--json", action="store_true")
-    c.add_argument("--fresh", action="store_true")
-    c = add("approve", cmd_approve, "the team wants these items built; a spec still on its branch of origin, or "
-                                     "a newer version of it there, is merged into the base branch first")
+    c = add("approve", cmd_approve, "write the approval each item waits for: gate 1 (agents may plan it), gate 2 "
+                                     "(its pushed PLAN: agents may build it), or a new try after pulse:failed; "
+                                     "pulse go acts on it")
     c.add_argument("n", type=int, nargs="+")
-    c.add_argument("--undo", action="store_true", help="take the approval back")
-    c.add_argument("--claim", action="store_true", help="claim them for planning in this session first, "
-                                                         "blockers aside (the /pulse-re session); an epic stays free")
-    c = add("approve-plan", cmd_approve_plan, "a person approves these items' PLANs")
-    c.add_argument("n", type=int, nargs="+")
-    c = add("rank", cmd_rank, "put an item in the team order: before or after another, top or bottom")
-    c.add_argument("n", type=int)
-    where = c.add_mutually_exclusive_group(required=True)
-    where.add_argument("--before", type=int)
-    where.add_argument("--after", type=int)
-    where.add_argument("--top", action="store_true")
-    where.add_argument("--bottom", action="store_true")
 
-    c = add("go", cmd_go, "plan and build every approved item in parallel: worktree + headless agent each")
-    c.add_argument("--agent", help="agents from [agents] with their slots, e.g. claude:2,codex:2 "
-                                   "(default: config 'agent')")
-    c.add_argument("--cap", type=int, help="parallel slots for this run (default: config 'cap')")
-    how = c.add_mutually_exclusive_group()
-    how.add_argument("--dry-run", action="store_true", help="show what would start, change nothing")
-    how.add_argument("--detach", action="store_true",
-                     help="run apart from this terminal or chat, overnight: log and report in .git/pulse/go")
-    c.add_argument("--json", action="store_true")
+    c = add("auto", cmd_auto, "your auto mode per gate: alone it shows every person's switches; <gate> on lets "
+                              "your own pulse go pass that gate for your items without asking you, off takes it back")
+    c.add_argument("gate", nargs="?", choices=auto.GATES, help="plan (gate 1), build (gate 2), merge (gate 3)")
+    c.add_argument("switch", nargs="?", choices=["on", "off"])
+    c.add_argument("--for", dest="span", type=auto.span, metavar="8h|2d",
+                   help="with on: for so many hours or days, then off by itself")
+
+    add("go", cmd_go, "plan and build every approved item in parallel, in the foreground of this terminal: "
+                      "worktree + headless agent each, at most cap of them, agents from agent (.pulse/config.toml)")
 
     c = add("map", cmd_map, "live map in the terminal: who does what, what goes out next")
-    c.add_argument("--once", action="store_true", help="print one frame and exit")
     c.add_argument("--ensure", action="store_true", help="open a live map where you work unless this clone "
-                   "has one; map_autostart = false in .pulse/config.toml or PULSE_MAP=off turns it off")
-    c.add_argument("--demo", action="store_true", help="sample data, no repo needed")
-    c.add_argument("--no-color", action="store_true")
-    c.add_argument("--color", action="store_true", help="force color when piping")
-    c = add("arch", archmap.main, "architecture map: features and decisions on the layers, rebuilt after every merge")
-    c.add_argument("--open", action="store_true", help="open it in the browser")
+                   "has one; PULSE_MAP=off turns it off")
 
     s = add("setup", cmd_setup, "activate Pulse here: config, anchor blocks, labels; "
                                 "--cli and --codex-rules set up this machine")
     s.add_argument("--mode", choices=["on", "off"], help="default: keep the current mode, else on")
-    s.add_argument("--cap", type=int, help="parallel slots for /pulse-go (default: keep, else 4)")
+    s.add_argument("--cap", type=int, help="agents pulse go runs at once (default: keep, else 4)")
     s.add_argument("--base-branch", help="default: keep, else the DIA source branch, else origin's default")
-    s.add_argument("--files", nargs="*", help="agent files for the anchor block (default: those that exist)")
+    s.add_argument("--files", nargs="*", help="agent files to write (default: those that exist): AGENTS.md carries the "
+                                              "anchor block, CLAUDE.md gets the line @AGENTS.md that imports it")
     s.add_argument("--labels", action="store_true", help="create the pulse:* labels on GitHub")
     s.add_argument("--remove", action="store_true",
-                   help="remove the anchor blocks and the git hook; "
-                        "with --cli or --codex-rules, those files instead")
-    s.add_argument("--parallel", choices=["off", "items", "max"], help="how far pulse go parallelizes")
+                   help="remove the anchor blocks, the @AGENTS.md line setup set in CLAUDE.md, and a git hook an "
+                        "older Pulse installed; with --cli or --codex-rules, those files instead")
     s.add_argument("--agent", help="agents pulse go starts headless: claude, codex, or claude:2,codex:2")
     s.add_argument("--verify", help="the command that runs the project's tests; pulse go runs it before review")
-    s.add_argument("--plan-approval", choices=["auto", "manual"],
-                   help="auto builds a PLAN nothing holds; manual waits for pulse approve-plan")
-    s.add_argument("--git-hook", action="store_true",
-                   help="install a pre-commit hook: protected branches + pulse check")
     s.add_argument("--anchors", action="store_true",
-                   help="rewrite only the Pulse block in the agent files that have one; config and labels stay")
+                   help="rewrite only the Pulse block in the agent files that have one, and move one in CLAUDE.md "
+                        "to AGENTS.md, leaving the import line; config and labels stay")
     s.add_argument("--cli", action="store_true",
                    help="the pulse command in ~/.local/bin; it runs the Pulse in $PULSE_HOME, else the agent's "
                         "own: a Codex session the newest in the Codex cache, a Claude Code session the newest "
                         "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
-                   help="Codex runs pulse without asking, except approve, approve-plan, rank, done, "
-                        "release --take, release --drop-unpushed, claim --take, and pulse -- <command>")
+                   help="Codex runs pulse without asking and never a person's lever: approve, auto <gate>, "
+                        "go, done, claim --take, release --take, pulse -- <command>, "
+                        "gh pr merge and ready, gh issue edit, close, and reopen")
     s.add_argument("--dry-run", action="store_true")
 
     for name, fn, text, take in (
             ("release", cmd_release, "give an item back",
              "also from another session of mine, or hand another person's claim over (with a comment)"),
-            ("done", cmd_done, "close items, one line each", "close it whoever holds it"),
             ("claim", cmd_claim, "hold an item for this session; exit 1 names why: closed, not approved, "
                                  "blocked, a file another item holds, or held by another person or session",
              "take over from a session of mine that has ended")):
         c = add(name, fn, text, plumb=name == "claim")
-        c.add_argument("n", type=int, nargs="+" if name == "done" else None)
+        c.add_argument("n", type=int)
         c.add_argument("--take", action="store_true", help=f"right after {name}: {take}")
-        if name == "release":
-            c.add_argument("--note", default="", help="why, and where the work is, for whoever takes it next")
-            c.add_argument("--drop-unpushed", action="store_true",
-                           help="right after release: give it back though its branch has commits only this clone has")
-        if name == "claim":
-            c.add_argument("--files", nargs="+", metavar="PATH", help="the files the work changes, "
-                           "for work without a PLAN (hotfix lane); default: those of its PLAN here")
 
     c = add("new", cmd_new, "create the record of an item on the board (a GitHub issue) for a spec, "
                             "or a draft without one; print its number", plumb=True)
@@ -833,8 +659,9 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("--parent", type=int)
     c.add_argument("--blocked-by", type=_numbers, help="comma-separated issue numbers")
     what = c.add_mutually_exclusive_group(required=True)
-    what.add_argument("--spec", help="the spec file in the repository, committed and pushed; "
-                                     "the record on the board only links it")
+    what.add_argument("--spec", help="the spec file in the repository, committed and ready (R2 to R6); on a spec "
+                                     "branch pulse new pushes it and opens the branch's docs PR, or uses the open "
+                                     "one; the record on the board links spec and PR and carries its priority")
     what.add_argument("--draft", action="store_true", help="no spec yet: a record claimed for the work on it")
     c.add_argument("--phase", choices=["analysis", "spec"], default="spec",
                    help="with --draft: the work (default: spec)")
@@ -842,32 +669,9 @@ def parser() -> argparse.ArgumentParser:
                    help="an open issue without a spec (a draft, an issue from the BA) instead of a new one: "
                         "with --spec it links the spec and takes <title> as its title, "
                         "with --draft it becomes the draft")
-    c = add("beat", cmd_beat, "a sign of life: this session's claim on n names its phase and time; exit 1: the "
-                              "item went to someone else, stop the work on it", plumb=True)
-    c.add_argument("n", type=int)
-    c.add_argument("phase")
-    c = add("block", cmd_block, "item n waits until the given items are done", plumb=True)
-    c.add_argument("n", type=int)
-    c.add_argument("--by", type=_numbers, required=True, help="comma-separated item numbers")
-    for kind, what, report in (("review", "a fresh session reviews", "REVIEW.md"),
-                               ("audit", "a fresh session audits the security of", "AUDIT.md")):
-        c = add(kind, cmd_review, f"{what} an item's branch or any scope", plumb=True)
-        c.add_argument("n", type=int, nargs="?", help="the item; its verdict is kept for its PR")
-        c.add_argument("--scope", choices=review.SCOPES,
-                       help="default: branch with an item, else working (the current work)")
-        c.add_argument("--base", help="the branch scope measures against this ref (default: the base branch)")
-        c.add_argument("--range", dest="rng", help="A..B for --scope range")
-        how = c.add_mutually_exclusive_group()
-        how.add_argument("--run", action="store_true", help="start the session headless and read its verdict")
-        how.add_argument("--record", action="store_true", help=f"keep the {report} a subagent wrote")
-        how.add_argument("--publish", action="store_true",
-                         help="put the kept review and audit verdicts for HEAD on the open PR of this branch")
-        c.add_argument("--agent", help="agent template from [agents] (default: review_agent, else agent)")
-        c.add_argument("--json", action="store_true")
-        c.set_defaults(kind=kind)
     c = add("check", check.main, "drift a script can see: links, paths, state, caps, stubs", plumb=True)
     c.add_argument("--spec", nargs="+", action="extend", metavar="PATH", help="only R1 to R6, on these spec "
-                   "files as they are here: what pulse approve refuses before it merges them; asks GitHub nothing")
+                   "files as they are here: what pulse go refuses before it merges them; asks GitHub nothing")
     c = add("number", cmd_number, "start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them")
     c.add_argument("--apply", action="store_true", help="rename them, rewrite the paths to them, "
                                                         "and move their records along")
@@ -888,13 +692,9 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     p = parser()
     args = p.parse_args(argv)
-    flags = [f for f in ("--take", "--drop-unpushed") if getattr(args, f[2:].replace("-", "_"), False)]
-    if flags and argv[:2] not in [[args.cmd, f] for f in flags]:
+    if getattr(args, "take", False) and argv[:2] != [args.cmd, "--take"]:
         # a Codex rule sees only how a command starts (setup.CODEX_RULES): elsewhere it would run unasked
-        p.error(f"{flags[0]} goes right after the command: pulse {args.cmd} {flags[0]} <n>")
-    if len(flags) > 1:         # the second lever would stand where no rule looks (#87 audit M-1)
-        p.error("--take and --drop-unpushed do not go together: release --take gives the item back "
-                "whatever this clone holds")
+        p.error(f"--take goes right after the command: pulse {args.cmd} --take <n>")
     try:
         return args.func(args)
     except state.StateError as e:

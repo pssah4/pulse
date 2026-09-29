@@ -37,23 +37,28 @@ runtime when detected. Safe local PoC verification (isolated).
 Out of scope: penetration testing against systems you do not own,
 compliance certification, architecture design (done by the pulse-plan skill).
 
-## In the chain (pulse go, /pulse-build, `pulse audit <n>`)
+## In the chain (pulse go, /pulse-build)
 
-After the tests and the review, a fresh session audits the feature
-branch. It asks nobody and does no live lookup (Phase 0 is skipped;
-the brief names the as-of date of the bundled references instead):
+After the tests, the audit of the feature branch runs together with the
+review in one fresh session, also with `risk: [security]`; a red gate
+gets one fix round per item. It asks nobody and does no live lookup (Phase 0 is
+skipped; the brief names the as-of date of the bundled references
+instead):
 
-1. `pulse audit <n>` runs `audit_scan.py all --scope branch --base
-   <base> --no-baseline` itself before the session starts (in
-   `pulse go` outside any agent sandbox, with the network) and saves
-   the JSON at `_devprocess/temp/audit-scan.json`. Its brief names
+1. The scan, scope branch against the base:
+   `python3 <plugin root>/skills/pulse-audit/tools/audit_scan.py all --scope branch
+   --base <base> --no-baseline`, the plugin root being the directory
+   above the Pulse CLI's `bin/`, never the audited project. `pulse go` runs it itself before the
+   session starts, outside any agent sandbox and with the network, and
+   saves the JSON at `_devprocess/temp/audit-scan.json`; its brief names
    that path, the SCA status, the as-of date, and the files and
    manifests changed since the previous audit that counted
-   (`.git/pulse/audit-context.json`: date, commit, manifests).
+   (`~/.cache/pulse/<clone>/audit-context.json`: date, commit, manifests). A
+   subagent of `/pulse-build` runs the scan itself.
 2. Triage the JSON (source to sink through the full tree, false
    positives out) and read the changed code yourself.
-3. Write `AUDIT.md` where the brief says (the worktree root, or in
-   `pulse go` the path it names beside the checkout): first line
+3. Write `AUDIT.md` where the brief says (in `pulse go` the path it
+   names beside the checkout, else the worktree root): first line
    `Verdict: pass` or `Verdict: block` (block while a Critical or High
    finding is open), then `Coverage: <what the scan and you checked,
    and what not>`, then one line per finding, `- [H-1|M-1|L-1]
@@ -63,14 +68,14 @@ the brief names the as-of date of the bundled references instead):
    `SCA unavailable`. Do not change code, do not commit, do not touch
    GitHub.
 
-`pulse audit <n> --record` keeps the verdict, stamped with the commit,
-and notes the audit for the next brief. It gives no verdict without the
-brief of this run, without the scan of this commit or without a
-Coverage line, and none for a pass whose SCA was `offline`, `error` or
-`partial` unless the Coverage line says `SCA unavailable`.
+`pulse go` keeps the verdict, stamped with the commit, and notes the
+audit for the next brief. It gives no verdict without the scan of this
+commit or without a Coverage line, and none for a pass whose SCA was
+`offline`, `error` or `partial` unless the Coverage line says
+`SCA unavailable`.
 
-The builder fixes blocking findings, and the chain starts again at the
-tests. Medium and Low findings go into the PR body as notes.
+The builder fixes blocking findings; then the tests run again and the
+audit looks again. Medium and Low findings go into the PR body as notes.
 
 ## Ask the scope first (by hand, before any scan)
 
@@ -300,7 +305,7 @@ it like any other fix:
    working as FR-02 (unchanged); `parent:` the affected feature (or
    epic). Run `pulse number --apply`: it names the file
    `FIX-{ee}-{ff}-{nn}-<slug>.md` after its place under that parent.
-2. Commit the fix spec on a docs branch from `origin/<base>` after
+2. Commit the fix spec on a docs branch from `refs/remotes/origin/<base>` after
    `git fetch origin` and push it: `pulse new` takes a spec
    only once its commit is on origin. Then register it:
    `pulse new fix "<title>" --parent <affected feature or epic> --spec <the fix spec>`.

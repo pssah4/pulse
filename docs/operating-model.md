@@ -12,7 +12,7 @@ Pulse has three parts:
 ```
 Pulse
 |- Operating model              rhythm: three tempos, conscious filter, roles as hats (this page)
-|- Collaboration                presence, ramp, pulse go, the live map
+|- Collaboration                claims, ramp, pulse go, the live map
 `- Digital Innovation Agents    the V-Model method: BA, RE, plan, build, test, audit
 ```
 
@@ -117,15 +117,14 @@ The V-Model walk runs inside this layer: [`/pulse`](/guides/pulse)
 says where things stand and what comes next, the phase skills
 ([`/pulse-ba`](/guides/pulse-ba), [`/pulse-re`](/guides/pulse-re) with
 its [planning](/guides/pulse-plan) step, [`/pulse-build`](/guides/pulse-build)
-with its planning and [review](/guides/pulse-review) steps,
+with its planning and review steps,
 [`/pulse-audit`](/guides/pulse-audit)) cover partial cycles, and
-[`/pulse-go`](/guides/pulse-go) plans and builds every approved item at
+[`pulse go`](/guides/pulse-go) plans and builds every approved item at
 once, each in its own worktree ([Parallel work](/concepts/parallel-work)).
 Pulse stops for a person only [where a person decides](/concepts/v-model#where-pulse-stops-for-you):
-the BA, each spec (`pulse approve` means build it), a PLAN that something
-holds, and the merge. Between those points the phases hand over without
+the BA, each spec (`pulse approve` means build it), each PLAN, and the merge. Between those points the phases hand over without
 asking; nobody passes approved work on by hand, and the order in the ramp
-(`pulse rank`) decides what an agent takes next.
+decides what an agent takes next.
 
 ### Coordination layer (daily)
 
@@ -141,7 +140,7 @@ The team synchronises through three lightweight rituals:
   channel, adjust priorities.
 - **Merge (continuous, async).** Before a PR reaches a person, a
   reviewer agent in a fresh session has checked it against its spec,
-  PLAN, and decisions ([review](/guides/pulse-review)) and put the
+  PLAN, and decisions ([review](/concepts/verification-gates)) and put the
   verdict into the PR. The person reads the PR at feature level (does
   it deliver what the spec promised?) and merges. Architecture
   conformance, duplicates, dead code, and syntax are the agents' job.
@@ -156,11 +155,6 @@ Direction, not tickets.
   planning, sprint review, and retrospective in one. Focus: what 3 to
   5 outcomes do we want in the next two weeks? What did we learn?
   What needs to change?
-- **Repository review (every two weeks, before the direction
-  session).** [`/pulse`](/guides/pulse) offers it when the last one is
-  older than two weeks. It looks for drift no single PR shows:
-  hotspots, duplicates, dead code, decisions the code stopped
-  following. Its findings feed the direction session.
 - **Roadmap review (monthly, 60 min).** Does the roadmap still match
   the Business Analysis?
 
@@ -197,8 +191,7 @@ one home ([Where things live](/concepts/where-things-live)):
   comments or come up in the sync call.
 - Pull requests and commits: every commit names its item
   (`Refs: #<n>`), every build pull request closes its item
-  (`Closes #<n>`); a spec pull request, the fallback on a protected
-  base branch, names it with `Refs: #<n>` only.
+  (`Closes #<n>`); a docs pull request closes none: `pulse new` opens it without `Closes`, and `pulse go` merges it at gate 1.
 - `AGENTS.md`, `CLAUDE.md`, and the Pulse rules: institutional memory
   and working rules, loaded into every session and every subagent.
 
@@ -215,16 +208,17 @@ shows each item a teammate holds or writes:
 - `spec in progress by alice, 20 min`: Alice's BA or spec session
   registered the item as a draft. Talk to her before you write about
   the same thing.
-- `building, 4 min ago`: the phase of the session that holds the item
-  and the age of its last sign of life. `pulse go` reports each phase
-  it starts, and every 10 minutes while one runs; an interactive
-  session reports `working` at most every 10 minutes.
-- `no sign of life for 2 h`: the holding session has been silent for
-  30 minutes or more. It may have ended.
+- `building, 4 min ago`: the phase of the `pulse go` run that holds
+  the item and the age of its last sign of life. `pulse go` reports
+  each phase it starts, and every 10 minutes while one runs.
+- `no sign of life for 2 h`: that run has been silent for 30 minutes
+  or more. Ask its holder.
+- `no PR yet, held 2 h`: a session holds the item. Nothing reports a
+  session's progress, so the line shows how long it is held; ask the
+  holder.
 - `last run: <note>` on a free item: a `pulse go` run gave it back
-  after a failure, a usage limit, or a stop, or a session with
-  `pulse release <n> --note`, and says why and which branch holds its
-  work.
+  after a failure, a usage limit, or a stop, and says why and which
+  branch holds its work.
 
 Work moves with the item branch, which `pulse go` pushes after every
 agent phase that committed. A free item with a note is claimed like
@@ -247,8 +241,8 @@ into a feature immediately. Pulse creates a deliberate pipeline:
 ```
 Ideas channel  ->  Sync call filter  ->  Approved  ->  Ramp  ->  Work
    (free flow)    (10 min review,      (pulse       (order:    (pulse go:
-                  matches against BA   approve,     pulse      plan, build,
-                  and roadmap)         label        rank)      review, PR)
+                  matches against BA   approve,     critical   plan, build,
+                  and roadmap)         label        path)      review, PR)
                                        pulse:approved)
 ```
 
@@ -324,8 +318,8 @@ To run Pulse you need:
 
 1. The Pulse plugin installed ([Installation](/tutorials/installation))
 2. A GitHub repository (Pulse keeps its records there) and the GitHub CLI `gh` 2.94 or newer
-3. `/pulse-setup` once per project (in Codex `$pulse:pulse-setup`):
-   config, labels, the anchor block in the agent files
+3. `pulse setup` once per project, which `/pulse` (in Codex `$pulse:pulse`)
+   runs with you: config, labels, the anchor block in `AGENTS.md`
 
 Once that runs, the rituals layer on top. Start with the async status
 and the sync call. Add the direction session at the first natural
@@ -392,9 +386,9 @@ What changed: the
 second pattern. Code that proves a design wrong amends the decision
 record first, in the same flow as the bug trigger. With parallel
 builds, the first merge no longer holds silent authority either: the
-ramp keeps items that touch the same files apart, and the integration
-check at the end of a `pulse go` run merges the ready branches in
-dependency order and runs the tests on the result.
+ramp keeps items that touch the same files apart, and `pulse go`
+checks every new commit of the base branch with the tests before it
+builds on it.
 
 ### "The reading budget per person is not in the model"
 

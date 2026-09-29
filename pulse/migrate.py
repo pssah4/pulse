@@ -362,7 +362,7 @@ def _backlog_stays(root: Path, bl: Path, skipped: list) -> str | None:
 def detect(root: Path) -> dict:
     dia = root / ".dia" / "config.toml"
     mode = _toml_str(dia.read_text(encoding="utf-8"), "mode") if dia.is_file() else None
-    anchors = [t.path for t in setup.TARGETS if (root / t.path).is_file()
+    anchors = [t.path for t in setup.EVERY if (root / t.path).is_file()
                and t.block_re(setup.LEGACY).search((root / t.path).read_text(encoding="utf-8"))]
     bl = _backlog(root)
     rows = parse_backlog(bl.read_text(encoding="utf-8"))[1] if bl else []
@@ -432,7 +432,7 @@ def apply_local(root: Path) -> dict:
         else:
             p.unlink()
     anchors = []
-    for t in setup.TARGETS:
+    for t in setup.EVERY:
         p = root / t.path
         if p.is_file() and t.block_re(setup.LEGACY).search(p.read_text(encoding="utf-8")):
             p.write_text(setup.write_anchor(p.read_text(encoding="utf-8"), t, mode), encoding="utf-8")

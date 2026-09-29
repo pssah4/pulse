@@ -1,8 +1,10 @@
-<!-- Navigation map for agents, written on request by the pulse-plan skill.
-     Names stable boundaries and first code entry
-     points. It is NOT a full module inventory and is read on demand,
-     never auto-loaded. Cap: 120 lines. Project file:
-     _devprocess/SYSTEM-MAP.md. -->
+<!-- Navigation map for agents. Every planner reads it before a PLAN; a
+     planning session with a person, or /pulse-realign, creates it on a docs
+     branch into the base, never an item branch; a build updates an
+     existing one as its last task when the item changes an entry point,
+     data ownership, an invariant, or a quality goal. Names stable boundaries and first
+     code entry points; it is NOT a full module inventory and is never
+     auto-loaded. Cap: 150 lines. Project file: _devprocess/SYSTEM-MAP.md. -->
 
 # System map: {project}
 
@@ -24,6 +26,12 @@ Core boundaries:
 - {invariant, e.g. "renderer never gets raw credentials"}
 - {invariant; changing one of these requires a decision record BEFORE
   implementation}
+
+## Quality goals, constraints, risks
+
+- Quality goal: {goal, e.g. "a stopped run loses no work"}
+- Constraint: {constraint and its reason}
+- Risk: {risk and what keeps it small}
 
 ## Fast paths
 

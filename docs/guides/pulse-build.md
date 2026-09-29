@@ -7,24 +7,26 @@ description: Implement one item test-first against its PLAN, capture bugs, write
 
 `/pulse-build` (in Codex `$pulse:pulse-build`) implements one item: test first, the smallest complete change, and nothing is done until the evidence says so.
 
-## /pulse-build or /pulse-go
+## /pulse-build or pulse go
 
-`/pulse-build <n>` is the way one item gets built, in your session, with you watching and answering when something comes up. [`/pulse-go`](./pulse-go) is a script that runs this same discipline for every ready item at once: it claims each item, gives it its own worktree, starts one headless agent per item, checks itself that the spec tests failed before the code, and runs the same gates after each build ([the chain](../concepts/verification-gates#the-chain-after-the-build)). Build one item together: `/pulse-build <n>`. Build everything the ramp has released: `/pulse-go`.
+`/pulse-build <n>` is the way one item gets built, in your session, with you watching and answering when something comes up. [`pulse go`](./pulse-go) is a script that runs this same discipline for every ready item at once: it claims each item, gives it its own worktree, starts one headless agent per item, checks itself that the spec tests failed before the code, and runs the same gates after each build ([the chain](../concepts/verification-gates#the-chain-after-the-build)). Build one item together: `/pulse-build <n>`. Build everything the ramp has released: `pulse go` in your own terminal.
 
 ## Start
 
-`pulse show <n>` gives the item, its spec, and its PLAN. `pulse claim <n>` assigns it to this session (exit code 1 names why: the item is closed, not approved, or blocked, another item holds one of its files, another person or another of your sessions holds it, or a claim in the same moment won). The claim fetches from origin and names the start point: the item's branch on origin when an earlier holder or a planning run pushed it, else a new `<type>/<n>-<slug>` from `origin/<base>`, never from the local base branch; a feature whose one blocker has a ready pull request that is not merged yet branches from the blocker's branch instead, and its PR targets that branch. Without a PLAN, a trivial bug takes the hotfix lane; for anything else the build runs the [planning step](./pulse-plan) first and then continues.
+`pulse status <n>` gives the item, its spec, and its PLAN. `pulse claim <n>` assigns it to this session (exit code 1 names why: the item is closed, not approved, or blocked, another item holds one of its files, another person or another of your sessions holds it, or a claim in the same moment won). The claim fetches from origin and names the start point: the item's branch on origin when an earlier holder or a planning run pushed it, else a new `<type>/<n>-<slug>` from `origin/<base>`, never from the local base branch; a feature whose one blocker has a ready pull request that is not merged yet branches from the blocker's branch instead, and its PR targets that branch. Without a PLAN, the build runs the [planning step](./pulse-plan) first and then continues.
 
 ## Build
 
 The spec tests come first: one per requirement from the PLAN's wave 1, run red once, and committed alone. From then on they are frozen; the code changes, never these tests.
 
-Then the PLAN's tasks, wave by wave at `parallel = max` (one subagent per task, the wave's checks before the next wave), task by task otherwise. For every task:
+Then the PLAN's tasks, task by task, wave by wave (the wave's checks before the next wave). Where the agent can start subagents, each task of a wave goes to a subagent of its own, in parallel in the same worktree; their results are committed one after another, and the wave's check runs once. For every task:
 
 1. **Reuse first.** Search for an existing helper, pattern, or dependency before writing anything new.
 2. **Test first.** State the expected failure, run the test, quote the actual output. Then the minimal code that passes. Then refactor while green. A test that passes at once, or fails for another reason, is a failed RED step.
 3. **Stay in budget.** A task that runs over twice its diff budget gets one line in the PLAN's change log.
-4. **Run the task's check** before the next task.
+4. **Run the task's check** before the next task: the tests the task touches, not the whole suite.
+
+After each step, run the tests that step affects; `verify`, the whole suite, runs once, before the gates, and again only after a change.
 
 ## When something breaks
 
@@ -40,10 +42,6 @@ Root cause before any fix: read the whole error, reproduce it, check what change
 | An unplanned user-facing capability | stop, ask for persona, job, and outcome one question at a time, write the spec, register it |
 
 Each gets a line in the PLAN's change log; the commit names every item it touched.
-
-## Hotfix lane
-
-A trivial bug may be fixed first and recorded right after when all five hold: at most 3 files, no new feature or dependency, no breaking change, under 15 minutes, an existing feature as parent. The regression test still comes first. When hotfixes pass 30% of an iteration, the lane has become a bypass and needs an improvement item of its own.
 
 ## Tests for existing code
 
@@ -71,7 +69,7 @@ Nothing closes on a claim:
 
 | Claim | Evidence |
 |---|---|
-| Tests and build pass | the PLAN's verify commands, exit 0 |
+| Tests and build pass | one run of the configured `verify` (the PLAN's verify commands only when there is none), exit 0 |
 | Every requirement is proven | each spec test is green and unchanged since it was committed |
 | New code is reachable | a caller outside its own file and outside tests, see [Reachability by stack](../reference/reachability-by-stack) |
 | The feature works for its user | every Activation Path entry matches an identifier in the code |
@@ -79,8 +77,7 @@ Nothing closes on a claim:
 
 Then, without asking in between: the commit (`Refs: #<n>`) and three gates in order:
 
-1. **Tests:** the `verify` command from `.pulse/config.toml`, or the PLAN's verify commands, exit 0.
-2. **Review** in a fresh session, never the one that built the item ([review](./pulse-review), scope branch): a subagent gets the brief from `pulse review <n>` and writes `REVIEW.md`, then `pulse review <n> --record` keeps the verdict; without subagents, `pulse review <n> --run`.
-3. **Security audit** of the branch in a fresh session ([/pulse-audit](./pulse-audit)): `pulse audit <n>` runs the scan and prints the brief, the subagent writes `AUDIT.md` with its `Coverage:` line, `pulse audit <n> --record` keeps the verdict; or `pulse audit <n> --run`. It blocks while a Critical or High finding is open.
+1. **Tests:** that one run of the configured `verify`, exit 0: the evidence above, not a second run.
+2. **Review and security audit** in one fresh session, never the one that built the item: a subagent (without subagents, a headless session) gets the review brief and the audit's ([/pulse-audit](./pulse-audit), scope branch against the base, the scan run by the subagent itself) and writes `REVIEW.md` and `AUDIT.md` with its `Coverage:` line, each with its own verdict. The audit blocks while a Critical or High finding is open. An item whose spec or PLAN has `risk: [security]` gets the same one session. `REVIEW.md` and `AUDIT.md` are deleted before the session starts and after their text went into the pull request; neither is committed.
 
-A red gate gets a fix, test first, and after every fix the gates start again at the tests; at most two fix rounds per gate. Then one PR, `Closes #<n>`, against the base branch or the blocker's branch when stacked, with the state of the three gates, the review and audit reports, and a section `## Deviations from the PLAN` when the build departed from it. It is ready only when all three passed on the last commit, and a draft otherwise, naming what is open; a departure from the PLAN alone never makes it a draft. Right after opening it, `pulse review <n> --publish` puts the review and audit verdicts for the last commit on the PR, so whoever takes the item over in another clone need not run them again ([verdicts on the pull request](./pulse-review#verdicts-on-the-pull-request)). The merge is yours; when the PR went into a base other than the default branch, the next `pulse status` or `pulse go` closes the item. After the merge, a sweep over the PLAN's decisions for the ones worth a record. A stub left behind carries `FIXME(stub): <reason> -- see #<n>` naming an open item; `pulse check` finds the ones without.
+A red gate gets a fix, test first, and after it the tests run again and only the gates that were red; one fix round per item. Then one PR, `Closes #<n>`, against the base branch, with the state of the three gates, the review and audit reports, and a section `## Deviations from the PLAN` when the build departed from it. It is ready only when all three passed, each on the commit its table row names (a gate that stayed green after a fix did not run again), and a draft otherwise, naming what is open; a departure from the PLAN alone never makes it a draft. The merge is yours; after a merge on GitHub, the next `pulse go` closes the item, on any base branch. After the merge, a sweep over the PLAN's decisions for the ones worth a record. A stub left behind carries `FIXME(stub): <reason> -- see #<n>` naming an open item; `pulse check` finds the ones without.

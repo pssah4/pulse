@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 912" role="img" aria-labelledby="vm-title vm-desc" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',sans-serif">
   <title id="vm-title">The Pulse workflow and how pairs of a person and their agents share the work</title>
-  <desc id="vm-desc">Top: the workflow as a line of ten steps, each with who works and what it leaves behind. Business analysis (/pulse-ba), you and an agent: Project-BA and Item-BA. Requirements (/pulse-re), you and an agent: feature specs and the architect handoff. Plan (the pulse-plan skill, inside /pulse-re, /pulse-build, and pulse go), an agent: the PLAN and decision records. Build (/pulse-build), an agent: spec tests, code, unit tests. Tests (verify), run by pulse: a test result per commit. Review (the pulse-review skill) and audit (/pulse-audit), agents in fresh sessions: a review report and an audit report, pass or block. Pull request, opened by pulse: the pull request with its gate table and Closes #n. Merge, you: the feature on the base branch, the item closed. Release, you: a versioned release. You decide at business analysis, requirements, the merge, and at the plan only when it is held. Plan to pull request run under pulse go for each approved feature in parallel. A red gate goes back to the build and all gates run again; a requirement gap goes back from plan to requirements, a design gap from build to plan; release outcomes go back to business analysis. Bottom: the map that everyone sees. 1: pulse go claims the front item of the ramp, which the team orders and approves. 2: each person works with their own agents, one worktree and branch per item, and runs plan to pull request. 3: a pair hands back a pull request with the gate reports; you merge it. 4: the merge closes the item and waiting work moves up the ramp; a failed build returns its item to the ramp. The board on GitHub stores the state behind the map; only pulse writes it, and every map reads it.</desc>
+  <desc id="vm-desc">Top: the workflow as a line of ten steps, each with who works and what it leaves behind. Business analysis (/pulse-ba), you and an agent: Project-BA and Item-BA. Requirements (/pulse-re), you and an agent: feature specs and the architect handoff. Plan (the pulse-plan skill, inside /pulse-re, /pulse-build, and pulse go), an agent: the PLAN and decision records. Build (/pulse-build), an agent: spec tests, code, unit tests. Tests (verify), run by pulse: a test result per commit. Review (the review brief of pulse-build) and audit (/pulse-audit), an agent in one fresh session: a review report and an audit report, pass or block. Pull request, opened by pulse: the pull request with its gate table and Closes #n. Merge, you: the feature on the base branch, the item closed. Release, you: a versioned release. You decide at business analysis, requirements, every plan, and the merge. Plan to pull request run under pulse go for each approved feature in parallel. A red gate goes back to the build, and the tests and the red gates run again; a requirement gap goes back from plan to requirements, a design gap from build to plan; release outcomes go back to business analysis. Bottom: the map that everyone sees. 1: pulse go claims the front item of the ramp, which the team approves. 2: each person works with their own agents, one worktree and branch per item, and runs plan to pull request. 3: a pair hands back a pull request with the gate reports; you merge it. 4: the merge closes the item and waiting work moves up the ramp; a failed build returns its item to the ramp. The board on GitHub stores the state behind the map; only pulse writes it, and every map reads it.</desc>
   <style>
     .h { font-size: 20px; font-weight: 700; fill: #172033; }
     .sub { font-size: 13.5px; fill: #475569; }
@@ -91,7 +91,7 @@
 
   <!-- Plan -->
   <rect x="260" y="132" width="100" height="100" rx="12" fill="#7e22ce"/>
-  <rect x="257" y="129" width="106" height="106" rx="14" class="stop" stroke-dasharray="7 5"/>
+  <rect x="257" y="129" width="106" height="106" rx="14" class="stop"/>
   <use href="#i-robot" x="299" y="144" width="22" height="22" fill="#ffffff"/>
   <text x="310" y="190" class="n" text-anchor="middle">Plan</text>
   <text x="310" y="218" class="c" text-anchor="middle">pulse-plan</text>
@@ -132,7 +132,7 @@
   <rect x="608" y="132" width="100" height="100" rx="12" fill="#4338ca"/>
   <use href="#i-robot" x="647" y="144" width="22" height="22" fill="#ffffff"/>
   <text x="658" y="190" class="n" text-anchor="middle">Review</text>
-  <text x="658" y="218" class="c" text-anchor="middle">pulse-review</text>
+  <text x="658" y="218" class="c" text-anchor="middle">pulse-build</text>
   <path d="M 710 182 H 721" class="step"/>
   <path d="M 658 234 V 247" stroke="#4338ca" stroke-width="2"/>
   <path d="M 608 248 H 694 L 708 262 V 326 H 608 Z" fill="#ffffff" stroke="#4338ca" stroke-width="1.5"/>
@@ -200,7 +200,7 @@
   <path d="M 28 484 a 12 12 0 0 1 12 -12 H 1160 a 12 12 0 0 1 12 12 V 500 H 28 Z" fill="#1e293b"/>
   <text x="48" y="491" font-size="13" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#ffffff">pulse map</text>
   <text x="1152" y="491" text-anchor="end" font-size="12" fill="#cbd5e1">terminal and sidebar, updated within seconds</text>
-  <text x="52" y="528" class="col">RAMP · TEAM ORDER</text>
+  <text x="52" y="528" class="col">RAMP · ORDER</text>
   <rect x="52" y="542" width="280" height="30" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
   <text x="64" y="562" class="item">#18 settings panel</text>
   <text x="320" y="562" class="state" text-anchor="end" fill="#15803d" font-weight="700">starts next</text>
@@ -214,7 +214,7 @@
   <text x="64" y="676" class="item">#15 dark mode</text>
   <text x="320" y="676" class="state" text-anchor="end">not approved</text>
   <use href="#i-person" x="52" y="700" width="20" height="20" fill="#334155"/>
-  <text x="78" y="715" class="note">you rank and approve here</text>
+  <text x="78" y="715" class="note">you approve here</text>
   <text x="404" y="528" class="col">WHO IS DOING WHAT</text>
   <rect x="404" y="542" width="396" height="44" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
   <use href="#i-person" x="414" y="552" width="24" height="24" fill="#334155"/>
@@ -277,9 +277,9 @@
   <!-- The board on GitHub stores what the map shows -->
   <rect x="28" y="806" width="1144" height="48" rx="10" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
   <text x="48" y="836" font-size="15" font-weight="700" fill="#9a3412">Board on GitHub</text>
-  <text x="190" y="836" font-size="13" fill="#57534e">one record per item: approved, rank, claim, blockers, open or closed. Only <tspan font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#c2410c">pulse</tspan> writes it.</text>
+  <text x="190" y="836" font-size="13" fill="#57534e">one record per item: approved, claim, blockers, open or closed. Only <tspan font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#c2410c">pulse</tspan> writes it.</text>
   <path d="M 380 778 V 802" class="rec"/>
-  <text x="390" y="796" class="rec-t">writes: approve, rank, claim, close</text>
+  <text x="390" y="796" class="rec-t">writes: approve, claim, close</text>
   <path d="M 820 804 V 780" class="rec"/>
   <text x="830" y="796" class="rec-t">every map reads it</text>
 
@@ -292,14 +292,12 @@
   <text x="266" y="888" class="leg">pulse, no model</text>
   <rect x="395" y="875" width="28" height="16" rx="5" fill="none" stroke="#f59e0b" stroke-width="3"/>
   <text x="431" y="888" class="leg">you decide</text>
-  <rect x="525" y="875" width="28" height="16" rx="5" fill="none" stroke="#f59e0b" stroke-width="3" stroke-dasharray="6 4"/>
-  <text x="561" y="888" class="leg">only when the PLAN is held</text>
-  <path d="M 753 883 H 781" class="loop"/>
-  <text x="789" y="888" class="leg">paths back</text>
-  <circle cx="884" cy="883" r="5" fill="#22c55e"/>
-  <text x="895" y="888" class="leg">working</text>
-  <circle cx="967" cy="883" r="5" fill="#eab308"/>
-  <text x="978" y="888" class="leg">needs you</text>
-  <circle cx="1064" cy="883" r="5" fill="#ef4444"/>
-  <text x="1075" y="888" class="leg">failing</text>
+  <path d="M 525 883 H 553" class="loop"/>
+  <text x="561" y="888" class="leg">paths back</text>
+  <circle cx="656" cy="883" r="5" fill="#22c55e"/>
+  <text x="667" y="888" class="leg">working</text>
+  <circle cx="739" cy="883" r="5" fill="#eab308"/>
+  <text x="750" y="888" class="leg">needs you</text>
+  <circle cx="836" cy="883" r="5" fill="#ef4444"/>
+  <text x="847" y="888" class="leg">failing</text>
 </svg>

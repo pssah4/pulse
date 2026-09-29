@@ -38,7 +38,7 @@ a service-level agreement.
 ## Trademarks
 
 Product names and trademarks mentioned in this documentation (Claude,
-Cursor, Codex, OpenCode, Gemini, GitHub Copilot, etc.) are the property
+Cursor, Codex, GitHub Copilot, etc.) are the property
 of their respective owners and are used here only for descriptive purposes.
 
 ## Privacy

@@ -127,111 +127,142 @@ follows the same order in your session ([/pulse-build](../guides/pulse-build#don
 `.pulse/config.toml`: the RED check and the tests gate need it.
 
 1. **Plan gate.** An item without a PLAN gets a planning agent first. The
-   PLAN must pass P1 to P5: the frontmatter names issue, spec, files, and
+   PLAN must pass P1 to P6: the frontmatter names issue, spec, files, and
    verify; every requirement and success criterion has a task, and every
    requirement its spec test in the first wave; every task names its
    files and a check; the tasks of one wave touch different files; no
-   placeholder is left. A PLAN that fails goes back to the planner with
+   placeholder is left; every spec test file of the first wave matches a
+   pattern in `[spec_tests]` of the config on the base branch. A PLAN that fails goes back to the planner with
    the findings, for up to two fix rounds; after that the item fails and
-   the PLAN waits on its branch for a person. A PLAN that passes goes on
-   to the build, unless something holds it for `pulse approve-plan`: a
-   risk flag or `effort: L` in the spec, `needs:` in the PLAN, or
-   `plan_approval = "manual"`.
+   the PLAN waits on its branch for a person. A PLAN that passes waits
+   for a person's approval, `pulse approve <n>`, which binds the PLAN and
+   its spec as origin has them; `risk:` in the spec or the PLAN asks for
+   a closer look. Then it goes on to the build.
 2. **Spec tests, frozen.** The builder writes the spec tests of the
    PLAN's first wave, one per requirement, and commits them alone as
    `test: spec tests for #<n>`. From that commit on they are frozen.
    After the build and after every fix round, `pulse go` checks them
    line by line: every run of lines the freeze commit added must still
    stand at HEAD, unchanged and in one piece. An older test in the same
-   file may go or change. A frozen line that changed gets a fix round
+   file may go or change. A file the freeze commit created stays whole:
+   no line of it changes, and none comes to it. A frozen line that changed gets a fix round
    ("restore them and change the code instead"); once the rounds are
    spent, the pull request opens as a draft that names the files, and no
    gate runs, because bent tests prove nothing.
 3. **RED check.** After the build, `pulse go` checks out the freeze
-   commit in a scratch worktree and runs `verify` there, whatever the
-   agent reported: before the code exists, the tests must fail. When they
-   fail, the pull request says "RED evidenced". When they pass, the
-   builder gets up to two fix rounds ("spec tests must fail first"),
-   shared with the rounds for changed spec tests, and the RED check runs
-   again after each; when they still pass, or the check timed out, the
-   pull request says "RED not evidenced". Without a freeze
-   commit it says "No spec-test commit, RED not evidenced". A missing
-   RED is a note for the person who merges and makes no draft on its
-   own: the gates follow. They do not when a fix round itself fails or
+   commit in the item's own worktree, where `setup` ran, runs the runner
+   of each frozen spec test there (from `[spec_tests]` of the config on
+   the base branch), and goes back to the branch, whatever the agent
+   reported: before the code exists, every runner must fail. When they
+   fail, the pull request says "RED evidenced". When one passes, the
+   builder gets a fix round ("spec tests must fail first") out of the
+   item's two, and the RED check runs again after it; when a runner still
+   passes, or the check timed out, the row `spec tests` of the gate table
+   says "RED not evidenced" and the pull request stays a draft. The gates
+   follow either way. They do not when a fix round itself fails or
    times out. Then no gate runs, and the item ends as a draft pull
    request that says "The fix round for spec tests ended early" with
    the reason.
 4. **Leftovers committed.** Before any gate judges the branch, `pulse go`
-   commits what the agent left uncommitted (never `DISCOVERED.md` or
+   commits what the agent left uncommitted (never
    `_devprocess/temp/`), so the tests, the review, and the audit all
    judge the same commit. A phase that committed pushes the item branch
    at once, so whoever holds the item next builds on the work.
-5. **Tests.** The `verify` command runs in the item's worktree.
-6. **Review.** A fresh session that did not build the item checks the
-   changes against the spec, the PLAN, and the decisions
-   ([review](../guides/pulse-review)). Its brief says the tests passed
-   at HEAD, so it does not run them again.
-7. **Security audit.** Pulse runs the scanner itself, with dependency
-   advisories live from OSV, and a fresh session triages the result
+5. **Tests.** In the item's worktree, `verify` runs, then the runner of
+   each frozen spec test, one runner at a time per machine under
+   `~/.cache/pulse/spec-tests.lock` and with `CI=1`, then `pulse check`
+   (C1 to C10), whose findings count in the files the branch changed.
+   Without a freeze commit, when no frozen file matches a pattern in
+   `[spec_tests]`, or when a test file that wave 1 of the PLAN names is
+   not among the frozen ones, the tests gate is red, and no fix round
+   follows: no round makes spec tests fail before code that is already
+   there. Tests that change a tracked file or move HEAD make it red as
+   well, since what they judged is gone. A RED check git cannot check
+   out, or a worktree its runners left changed, gives the row
+   `spec tests` "RED not checked" with the reason; in the second case no
+   gate runs and the worktree stays at the freeze commit for a person.
+6. **Review and security audit.** One fresh session that did not build
+   the item does both, each part with its own report and its own verdict,
+   also for an item whose spec or PLAN has `risk: [security]`. The review checks the changes against the spec, the
+   PLAN, the decisions, and the system map (`skills/pulse-build/references/review.md`);
+   its brief says the tests passed at HEAD, so it does not run them
+   again. For the audit, Pulse runs the scanner itself, with dependency
+   advisories live from OSV, and the session triages the result
    ([/pulse-audit](../guides/pulse-audit)). A report without a
    `Coverage:` line, without a scan of the commit it judges, or with a
    pass while the OSV lookup failed or left a lockfile unread
    (`partial`) and the Coverage line does not say `SCA unavailable`
    gives no verdict
-   ([the Coverage rule](../guides/pulse-audit#the-coverage-rule)).
+   ([the Coverage rule](../guides/pulse-audit#the-coverage-rule)). A
+   report counts as green only when its first line reads exactly
+   `Verdict: pass` and no finding below it is `- [block]`; "pass (stays
+   draft)" there, or a pass further down, is none. The review brief names
+   `conftest.py`, runner configs, the pytest sections of
+   `pyproject.toml`, the scripts of `package.json`, and test setup files
+   that changed after the spec tests were frozen.
 
-**Fix rounds.** Red tests, a blocking review, and a blocking audit each
-get up to two fix rounds. A fix agent gets the blocking findings (for
+Each gate leaves its result as the commit status `pulse/tests`,
+`pulse/review`, or `pulse/audit` on the head it judged, and in
+`~/.cache/pulse/<clone>/gates/<sha>` of the clone that ran it, outside
+the git directory a Codex agent can write, like the kept verdicts
+([what `pulse go` keeps outside the git directory](../reference/configuration#what-pulse-go-keeps-outside-the-git-directory)).
+That file is local evidence, not proof: a Claude Code agent runs without
+a sandbox and can write any file you can. The base check takes the tree
+from the commit the file is named for, never from the file.
+
+**Fix round.** An item gets one fix round for all its gates
+together: red RED, changed spec tests, red tests, a blocking review, and
+a blocking audit. One session that fixes the review and the audit is one
+round. A fix agent gets the blocking findings (for
 the tests, the end of their output), works test first, and commits;
-then the chain starts again with the frozen-test check and the tests,
-so a fresh review and a fresh audit look again. A fix round that fails
+then the frozen-test check and the tests run again, and only the gates
+that were not green: a fresh session looks again at a blocking review
+or audit, a passed one stays as it is. A fix round that fails
 or times out ends the chain the same way as under the RED check: no
 further gate, a draft that names the round. A session that gives no
 verdict (it failed, timed out, changed the branch, or wrote no verdict
-line) gets no fix round.
+line) gets no fix round. A gate still red after the round leaves the
+pull request a draft that names the open findings, for a person.
 
 **The pull request.** One per item, `Closes #<n>`, against the base
-branch, or against the blocker's branch when the item is stacked on it.
-It is ready when every gate passed, and a draft otherwise. Its text
-gives the reasons: a table of the gates with their results and the fix
-rounds spent, the commit the gates ran at, the RED note, the files that
-depart from the PLAN, the work the agent discovered, and the review and
-audit reports. The test output stays in the local log
+branch. It is ready when every gate passed, and a draft otherwise. Its text
+gives the reasons: a table of the gates with their results, the fix
+rounds spent, and the commit each gate saw (a gate that stayed green
+after a fix did not run again and keeps its own), the commit the chain
+ended at, the RED note, the files that
+depart from the PLAN, and the review and audit reports. The test output stays in the local log
 (`.git/pulse/go/<n>.log`), because a test may print what a pull request
 must not. Once the pull request exists, `pulse go` puts the review and
 audit verdicts for its last commit on it as comments, one per gate, so
-whoever holds the item next, in another clone, finds them
-([verdicts on the pull request](../guides/pulse-review#verdicts-on-the-pull-request)).
-When GitHub refuses them, the pull request stays as it is and the item's
-log says so. The item keeps its claim until the merge.
+whoever holds the item next, in another clone, finds them: `Pulse
+review: pass for <commit>.` with a hidden marker, one per gate and
+commit. A marker counts only on a line of its own and only from someone
+who may push to the repository (the owner, or a member or collaborator
+with write or admin permission); when GitHub cannot say whether its
+author may push, it counts for nothing, and no older verdict of its gate
+counts in its place. When GitHub refuses them, the pull request stays as
+it is and the item's log says so. The item keeps its claim until the
+merge.
 
-**A draft taken up.** When a draft of `pulse go` gets new commits after
-its gates ran (you fixed it, in this clone or pushed from another), the
-next run takes it up: the frozen-test check, then the gates from the
-tests. The text is written anew, and the pull request turns ready once
-every gate passes. Without a new commit, no run touches a draft. A run
-takes up only a draft that a run under your login holds; while a session
-of yours works on it, the run keeps out.
+**Given back with code.** A draft of `pulse go` you fixed goes back with
+`pulse release <n>`; the next run takes it straight into the gates: the
+frozen-test check, then the gates from the tests. The text is written
+anew, and the pull request turns ready once every gate passes. Gate 3,
+the merge itself, waits for your `merge ok` ([pulse go](../guides/pulse-go#gate-3-the-merge)).
 
-**The hold.** After every phase, `pulse go` compares the shared git
-directory's `config`, the files in its `hooks` folder, and the files
-that tie the worktree to it (`commondir`, `config.worktree`, the
-worktree's `.git`) with their state before the phase. An agent that can
-write there (Codex with `--add-dir`) could leave a hook that runs later
-outside every sandbox and shows in no diff. When one of these files
-changed, the item stops: nothing is pushed, no further phase runs, the
-claim stays, and the run's report and `pulse status` name the changed
-paths. A draft that was taken up gets the same note at the top of its
-text, and no run takes it up again until a person has looked and
-removed that note.
-
-**Integration at the end.** When a run ends, and two or more ready pull
-requests are open, `pulse go` merges their branches into the base branch
-in dependency order, in a scratch worktree, and runs `verify` on the
-result. A conflict or a red `verify` between parallel work shows up
-before anyone merges: the run's output and its report name the branches
-merged, the first conflict, and the end of the test output, and the run
-exits with 1.
+**The hold.** After every phase, `pulse go` compares the whole git
+config the worktree reads, except `branch.*`, the shared
+`info/attributes`, the hooks, in the shared `hooks` folder and where
+`core.hooksPath` points for the worktree, and the files that tie the
+worktree to the git directory with their state before the phase. An agent that can write
+there (Codex with `--add-dir`) could leave a program that runs later
+outside every sandbox and shows in no diff. When one of them changed,
+the item stops: nothing is pushed or thrown away, no further phase
+runs, the claim stays, and the run's report and `pulse status` name
+what changed. Settings under `branch.*`, such as the merge base VS Code
+notes per branch, stop nothing; any other change to the config does,
+since `gpg.program`, `credential.helper`, or a remote's URL can run a
+program as you.
 
 ## Where the rule is enforced
 
@@ -242,15 +273,16 @@ exits with 1.
   reachability and Activation Path steps before a feature closes
 - **The chain** in `/pulse-build` and `pulse go`: the spec tests
   frozen and RED checked, then the tests, a review, and a security
-  audit on the last commit before the PR leaves draft
+  audit before the PR leaves draft; the PR names the commit each gate
+  saw
 - **The test fix-loop of `/pulse-build`** (tests for existing code):
   each iteration verifies that previously failing tests now pass, with
   fresh command output
 - **`/pulse-audit` fix-loop**: each iteration re-runs the audit
   phase for the affected category, with fresh output
-- **The end of a `pulse go` run**: with two or more ready pull
-  requests open, their branches merged in dependency order and the
-  project's `verify` command run on the combined result
+- **The base check of `pulse go`**: each new commit of the base branch
+  checked with the project's CI, `setup`, and `verify` before anything
+  starts on it
 
 ## See also
 

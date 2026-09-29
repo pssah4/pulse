@@ -10,8 +10,8 @@ VS Code extensions bring) and puts the pulse command into ~/.local/bin. It asks 
 line to your shell profile or writes the Codex rules (--yes answers yes, --no answers no, a run
 without a terminal answers no), shows every command before it runs it, and removes nothing.
 Turning on auto-update in Claude Code once, trusting the Codex hooks while Codex has no trust for
-them, loading the new Pulse in your sessions, and /pulse-setup in a new project stay with you: the
-end of the run names what is still open. The manual way is on the installation page.
+them, loading the new Pulse in your sessions, and /pulse in a new project, which sets it up, stay
+with you: the end of the run names what is still open. The manual way is on the installation page.
 Python 3.9 or newer, standard library only.
 """
 import argparse
@@ -242,8 +242,8 @@ def main(argv=None):
         say("    on each Pulse hook on the Hooks page of its settings.")
     say("  - Load the new Pulse: /reload-plugins in a running Claude Code session, or a new one; a new")
     say("    Codex chat, or restart codex; after a change to your PATH, quit VS Code and open it again.")
-    say("  - In each new project: /pulse-setup (in Codex $pulse:pulse-setup); a project set up before")
-    say("    refreshes its Pulse block in its next session.")
+    say("  - In each new project: /pulse (in Codex $pulse:pulse) sets Pulse up; in a project set up before,")
+    say("    pulse setup --anchors refreshes its Pulse block.")
     say(f"Details: {GUIDE}")
     return 0
 

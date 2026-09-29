@@ -11,7 +11,7 @@ Planning runs as a step of other commands: [`/pulse-re`](./pulse-re) plans every
 
 ## Code first
 
-The planner reads the item (`pulse show <n>`), its spec, the decision records whose "Read When" matches, and then the code the spec touches. Before planning it checks the design against the code and reports only what diverges: decisions that no longer match, patterns that contradict them, modules the spec forgot. A gap in the spec stops planning for that item and goes back to [`/pulse-re`](./pulse-re); planning around a broken spec carries the fault into the code.
+The planner reads the item (`pulse status <n>`), its spec, the decision records whose "Read When" matches, and then the code the spec touches. Before planning it checks the design against the code and reports only what diverges: decisions that no longer match, patterns that contradict them, modules the spec forgot. A gap in the spec stops planning for that item and goes back to [`/pulse-re`](./pulse-re); planning around a broken spec carries the fault into the code.
 
 The architect handoff from RE carries a Dialog section for open questions. It never blocks more than the item that depends on it: the planner answers what it can from the artifacts and the code and asks the rest in one question.
 
@@ -34,19 +34,17 @@ The rejected options matter most: the code will only ever show the winner.
 
 The PLAN file is the item's only plan. A plan mode, such as the one in Claude Code, shows it for approval and keeps no plan of its own: a plan outside the repository reaches no teammate, no other agent, and no ramp.
 
-**Coverage gate.** Before any code, checked mechanically as P1 to P5: the frontmatter names issue, spec, files, and verify, and the file is UTF-8; every requirement and success criterion is covered by a task or deferred with a reason, and every requirement has its spec test in wave 1; every task names files and a check, and `files` is exactly their union; tasks in one wave touch disjoint files; no placeholder is left. Every decision the plan relies on has a task that puts it into effect. The gate runs again whenever the spec or a decision changes.
+**Coverage gate.** Before any code, checked mechanically as P1 to P6: the frontmatter names issue, spec, files, and verify, and the file is UTF-8; every requirement and success criterion is covered by a task or deferred with a reason, and every requirement has its spec test in wave 1; every task names files and a check, and `files` is exactly their union; tasks in one wave touch disjoint files; no placeholder is left; every spec test file of wave 1 matches a pattern in `[spec_tests]` of the config on the base branch. Every decision the plan relies on has a task that puts it into effect. The gate runs again whenever the spec or a decision changes.
 
-**Who approves it.** With `plan_approval = "auto"` (the default) a PLAN that passes the gate is approved at once, unless a risk flag (`risk:`) or `effort: L` in the spec, or an entry under `needs:` in the PLAN, holds it for a person. With `manual`, every PLAN waits. A person approves with `pulse approve-plan <n>` or in the ramp. The approval binds to the PLAN as it is at that moment: `pulse approve-plan` prints its digest and its goal, and a PLAN rewritten afterwards waits again. The map sends back the digest of the PLAN the person read and refuses the approval when the PLAN changed since. [`pulse go`](./pulse-go) writes PLANs for approved items by itself, in ramp order.
-
-**Its place on the architecture map.** When the project has layers in `_devprocess/architecture-map.md`, the planner writes the item's place into its spec along with the PLAN (`layer: <layer>/<group>`), and each new decision record gets its `layer:` too. Without that file, a planner in a session with you proposes the layers once, from the code and the system map; a headless planner of `pulse go` never writes them. `pulse arch --open` shows the result ([Architecture map](../reference/artifacts#architecture-map)).
+**Who approves it.** A person, for every PLAN that passes the gate: the ramp shows `plan waits for you` until `pulse approve <n>`, or `a` in the map, writes its Plan-ok. The approval binds the PLAN as origin has it (the id git gives it on the item's pushed branch) and the spec on the base branch: `pulse approve` prints both ids, a PLAN or spec changed afterwards waits again (`plan changed since plan ok`, `spec changed since plan ok`), and a PLAN only in your working tree cannot be approved before it is pushed. The map binds the ids of the PLAN the person read and refuses the approval when they changed since. `pulse go` counts it only when the person may push to the repository. `risk:` in the spec or in the PLAN is named beside it for a closer look. Neither `effort: L` nor `needs:` holds a PLAN: [`pulse go`](./pulse-go) makes each `needs:` entry a blocker of the item, and a new title a draft item; writing its `#m` into the PLAN changes the PLAN, so it waits for the person again. [`pulse go`](./pulse-go) writes PLANs for approved items by itself, in ramp order.
 
 ## Planning for parallel work
 
 - **Disjoint files.** Two items that change the same file cannot run at once; avoid shared files where a new module or a registry entry in its own file would do.
 - **Contract first.** If one item needs another only for an interface, the interface becomes its own small blocking item, and the rest runs in parallel.
-- **Stacking.** An item that needs a blocker's unmerged code (more than its interface) keeps that item as its one blocker. As soon as the blocker's PR is ready, it starts on the blocker's branch and its PR targets that branch, at every parallel level and without a line in the PLAN. When two or more pull requests are ready, the integration check at the end of a `pulse go` run merges their branches in that order in a scratch checkout and runs `verify` there, before anyone merges.
+- **Unmerged code waits.** An item that needs a blocker's code (more than its interface) keeps that item as its blocker and starts once it is merged; nothing builds on a blocker's branch.
 - **One feature, one traceable merge.** Cut features so that each merge back to the base branch reads well on its own. A PLAN whose tasks would make a merge nobody can follow in one reading is two features: split the spec with [`/pulse-re`](./pulse-re) before planning on.
-- **Waves.** Tasks of one wave run at once at `max`; a task that needs another one's result goes into a later wave.
+- **Waves.** Tasks of one wave touch disjoint files; a task that needs another one's result goes into a later wave.
 
 ## Decision records, only with a read-when
 
@@ -58,6 +56,6 @@ A record goes into `_devprocess/decisions/` only if you can write a "Read When" 
 
 Records follow MADR and carry `applies-to` and `read-when`; the router `decisions/README.md` has one row each. When a decision changes, the record is updated with a dated section that names what became history, instead of a new record superseding it. Core sections carry no code paths; `pulse check` enforces that.
 
-## On request
+## System map and arc42
 
-arc42 constraints before the code (quality goals, constraints, scenarios, risks), the full arc42 reference after it for auditors and customers, a system map with fast paths into the code, and the layers of the [architecture map](../reference/artifacts#architecture-map), with `layer:` for every spec that has none yet and a drawn overview if you like.
+Every planner reads `_devprocess/SYSTEM-MAP.md` before a PLAN: system shape, data ownership, invariants, quality goals, constraints, risks, and fast paths into the code, at most 150 lines. The plan prompt of `pulse go` names it; where it is missing, a planning session with a person, or `/pulse-realign`, creates it on a docs branch into the base, never on an item branch. A build updates an existing map as its last task when the item changes one of these, and the review blocks a diff that changes one while the map stays silent. arc42 comes only on request of a person, for auditors or customers: `_devprocess/arc42.md` with all 12 sections from one template, allowed to lag behind the code.

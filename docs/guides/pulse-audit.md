@@ -18,21 +18,23 @@ item per deferred `H-N`, `M-N`, or `L-N` finding
 
 ### Per-item audit
 
-The third gate of every feature branch in [`/pulse-go`](./pulse-go)
-and [`/pulse-build`](./pulse-build), after the tests and the review. It
-asks nobody and runs in two steps:
+The third gate of every feature branch in [`pulse go`](./pulse-go)
+and [`/pulse-build`](./pulse-build), after the tests, in one fresh
+session with the review, also when the spec or the PLAN has
+`risk: [security]`. It asks nobody and runs in two steps:
 
-1. **Pulse runs the scan itself.** `pulse go` and `pulse audit <n>` run
+1. **Pulse runs the scan itself.** `pulse go` runs
    `audit_scan.py all --scope branch --base <base> --no-baseline` before
-   the session starts (`pulse go` outside every agent sandbox, with the
-   network) and save its JSON at `_devprocess/temp/audit-scan.json`.
+   the session starts, outside every agent sandbox and with the network,
+   and saves its JSON at `_devprocess/temp/audit-scan.json`. A subagent
+   of `/pulse-build` runs the same scan itself.
 2. **A fresh session triages it.** The auditor did not build the item.
    Its brief names the scan's JSON, the SCA status
    (`SCA (OSV) ran over <count> packages`, or `offline`, `error`,
    `partial`, `not-applicable` with the reason), the as-of date of the bundled
    references with a warning for any reference undated or at least 90
    days old, and the files and manifests changed since the previous audit
-   that counted in this clone (`.git/pulse/audit-context.json`). It does no live lookup of its own.
+   that counted in this clone (`~/.cache/pulse/<clone>/audit-context.json`). It does no live lookup of its own.
    It triages the findings from source to sink, reads the changed code,
    and writes `AUDIT.md` where the brief says (the worktree root, or in
    `pulse go` the path it names beside the checkout):
@@ -46,9 +48,9 @@ Coverage: SAST grep and semgrep on the branch diff, SCA over 212 packages, secre
 
 It blocks while a Critical or High finding is open, and a report
 without a Coverage line is no verdict at all ([the Coverage
-rule](#the-coverage-rule)). The builder fixes blocking findings, and the
-chain starts again at the tests. Medium and Low findings go into the PR
-body as notes.
+rule](#the-coverage-rule)). The builder fixes blocking findings; then
+the tests run again and the audit looks again. Medium and Low findings
+go into the PR body as notes.
 
 ### Periodic full-codebase audit
 
@@ -60,63 +62,36 @@ dependency upgrade).
 The two modes share the same six audit phases below; only the scope
 differs.
 
-## Scope and the command
+## Scope
 
 Called by hand, `/pulse-audit` first asks what to audit: `full` (the
-whole codebase), `branch` (against `--base REF`, default the base
-branch), `commit`, `working` (uncommitted and untracked), `staged`, or
-`range` (`--range A..B`). In the chain it never asks.
-
-| Command | Does |
-|---|---|
-| `pulse audit 12` | runs the scan and prints the brief for a fresh session over #12's branch |
-| `pulse audit 12 --run` | runs the scan, starts the auditor headless, and keeps its verdict |
-| `pulse audit 12 --record` | keeps the AUDIT.md a subagent wrote |
-| `pulse audit 12 --publish` | puts the kept verdicts for HEAD on the branch's open pull request |
-| `pulse audit --scope staged` | prints the brief for any scope, no item |
-
-The default scope is `branch` with an item number and `working`
-without one; `--base REF` sets what the branch scope measures against,
-`--range A..B` goes with `--scope range`. Only a run with an item number
-keeps its verdict, in `.git/pulse/audits/<n>.md` and stamped with the
-commit, for that item's pull request; `--record` and `--publish` need
-one, and only one of `--run`, `--record`, and `--publish` goes in a call.
-Once the branch has an open pull request, a kept verdict goes onto it as
-well, as a review verdict does ([verdicts on the pull
-request](./pulse-review#verdicts-on-the-pull-request)). `--agent` picks
-another template from `[agents]` (default: `review_agent`, else
-`agent`), `--json` prints the result as JSON. The exit code is 0 for
-pass, 1 for block, 2 when the auditor gave no verdict or the call was
-wrong.
-
-Every call without `--record` or `--publish` runs the scan, so it asks
-the OSV API over the network. Run from an agent's sandbox without
-network, the lookup says `offline`, and a pass then needs `SCA
-unavailable` in its Coverage line.
+whole codebase), `branch` (against a base, default the base branch),
+`commit`, `working` (uncommitted and untracked), `staged`, or `range`
+(`A..B`). It then runs the scanner with that scope itself,
+`python3 skills/pulse-audit/tools/audit_scan.py all --scope <scope>`,
+and asks the OSV API over the network; without network, the lookup says
+`offline`. In the chain it never asks.
 
 ## The Coverage rule
 
 An audit counts only when it says what it checked and stands on the
-scan of the commit it judges. Pulse gives no verdict, in `pulse go` as
-with `--run` and `--record`, when:
+scan of the commit it judges. `pulse go` gives no verdict when:
 
 - `AUDIT.md` has no `Coverage:` line (what the scan and the auditor
   checked, and what not);
-- there is no scan of this commit, for example a subagent wrote the
-  report without `pulse audit <n>` running the scan first;
-- the report came without a brief of this run: `pulse audit <n>` (or
-  `--run`) notes HEAD and the working tree before the session, and
-  `--record` reads that note once;
+- there is no scan of this commit;
+- the session changed the branch: the brief notes HEAD and the working
+  tree before the session, and the verdict reads that note once;
 - the verdict is `pass` while the OSV lookup did not run (`offline`,
   `error`) or left dependencies unchecked (`partial`: a lockfile it could
   not read, or a `package.json`, `pyproject.toml` or version range in
   `requirements*.txt` without a lockfile) and the Coverage line does not
   say `SCA unavailable`.
 
-A scan that fails or times out gives no verdict either; with `--run` it
-starts no session. One scan gives one verdict: reading the report takes
+A scan that fails or times out gives no verdict either, and no audit
+session starts for it. One scan gives one verdict: reading the report takes
 the saved JSON away. An audit that counts is noted in
-`.git/pulse/audit-context.json` (date, commit, manifests), so the next
+`~/.cache/pulse/<clone>/audit-context.json` (date, commit, manifests), so the next
 brief can say what changed since.
 
 ## Six audit phases

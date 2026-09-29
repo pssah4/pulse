@@ -1,37 +1,29 @@
 """pulse map --ensure: a live map of this clone where the user works, once per clone (D-48).
 
-Each live map notes its pid on a line of map.pid under the shared git dir while it runs.
---ensure opens a map when no process has one of those pids and no map it opened is still
-starting (map.command younger than 15 s): a tmux pane beside, a window of the terminal app on
-macOS or Linux; in VS Code the task "Pulse map" runs it, so --ensure only names that task, where
-.vscode/tasks.json has it, and the command. Every line it prints goes to stderr, the stdout of
-claim and new --draft stays theirs. `map_autostart = false` in .pulse/config.toml or PULSE_MAP=off
-switch it off; an agent of pulse go opens none. A Codex session whose hooks never reached the presence
-log hears first that they wait for the person's trust: without them the map cannot show it.
-
-runner() is the other way round: the live map starts pulse go when approved work waits (#44).
+Each live map notes its pid on a line of map.pid under the shared git dir while it runs, and in a
+Herdr or tmux pane its pane in map-pane, which the lever guard keeps agents out of (#121 FR-10).
+In Herdr --ensure opens the map beside the session's pane, one per tab and repository (#121).
+Elsewhere it opens a map when no process has one of those pids and no map it opened is still
+starting (map.command younger than 15 s): in tmux a pane beside; in VS Code the task "Pulse map"
+runs it, so --ensure only names that task, where .vscode/tasks.json has it, and the command;
+elsewhere one line names the command for a second terminal. It opens no window, and nothing
+here starts pulse go: a person starts it in a terminal. Every line it prints goes to stderr, the
+stdout of claim and new --draft stays theirs. PULSE_MAP=off switches it off; an agent of pulse go
+opens none.
 """
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from pulse import config, go, presence, setup, state
-
-LINUX = ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm")
-PAUSE = 60                     # seconds between two starts of pulse go from the maps of a clone
-OFF = ("off", "0", "false", "no")                  # PULSE_GO values that switch the start off
-HELD = ("failed", "limited", "stopped", "skipped")  # what the last run did not finish waits for a person
-NO_VERIFY = 'pulse go needs a test command: pulse setup --verify "<cmd>"'   # a footer line: fits 80 columns
+from pulse import config, go, setup, state
 
 
 def pid_file(root: Path) -> Path:
@@ -55,12 +47,42 @@ def running(root: Path) -> int:
                  if pid > 0 and go._alive(pid)), 0)
 
 
+def panes(root: Path) -> dict:
+    """{pane id: {tab, started_at, pid, label}}: the Herdr (w1:p2) and tmux (%3) panes live maps of this clone run
+    in, or were opened for and start in; pid comes once the map runs, label where --ensure gave the pane one. A sandbox that keeps .git read-only reads the
+    one a map outside it wrote there."""
+    found = {}
+    for path in (config.pulse_dir(root) / "map-pane", state.cache_dir(root) / "map-pane"):
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            found.update(json.loads(path.read_text(encoding="utf-8")))
+    return found
+
+
+def _note_pane(root: Path, pane: str, entry) -> None:
+    """Set the entry of pane in map-pane, or drop it (None)."""
+    # ponytail: two maps that start or end at the same moment can lose an entry; a lost one leaves its pane
+    # unguarded until its map starts again, which notes it anew; lock map-pane when that shows in practice
+    known = panes(root)
+    if entry is None:
+        known.pop(pane, None)
+    else:
+        known[pane] = entry
+    state._keep(state.cache_dir(root) / "map-pane", known)
+
+
+def _herdr_bin(env) -> str:
+    return env.get("HERDR_BIN_PATH") or "herdr"
+
+
 @contextlib.contextmanager
 def noted(root: Path):
     """While a live map runs: its pid on a line of map.pid, beside those of the clone's other live
-    maps. map.main turns SIGTERM and SIGHUP into an end, so its line goes with it, and the file with
-    the last map; a map killed outright leaves a pid no process has, which the next one drops."""
+    maps, and in a Herdr or tmux pane its pane in map-pane. map.main turns SIGTERM and SIGHUP into an
+    end, so its line and its pane go with it, the file with the last map, and the label --ensure gave
+    its Herdr pane (FR-03); a map killed outright leaves a pid no process has, which the next one drops."""
     path, me = pid_file(root), os.getpid()
+    pane = os.environ.get("HERDR_PANE_ID") or os.environ.get("TMUX_PANE")
+    labelled = (panes(root).get(pane) or {}).get("label") if pane else None     # by --ensure, in Herdr
 
     def note(*mine):
         # ponytail: two maps of one clone that start or end at the same moment can lose a line;
@@ -73,6 +95,9 @@ def noted(root: Path):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         note(me)
+        if pane:
+            _note_pane(root, pane, {**panes(root).get(pane, {"tab": os.environ.get("HERDR_TAB_ID"),
+                                                            "started_at": time.time()}), "pid": me})
     except OSError:
         pass                   # the map runs all the same
     try:
@@ -80,6 +105,58 @@ def noted(root: Path):
     finally:
         with contextlib.suppress(OSError):
             note()
+            if pane:
+                _note_pane(root, pane, None)
+        if labelled and os.environ.get("HERDR_PANE_ID"):
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run([_herdr_bin(os.environ), "pane", "rename", pane, "--clear"], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=3)
+
+
+STARTING = 10                  # seconds a map opened in Herdr may take to note its pid
+
+
+def _herdr(root: Path, env, repo: str) -> str:
+    """The map beside the session's Herdr pane, one per tab and repository (#121 FR-01 to FR-03), and the line
+    that says so. Under a lock per tab: a pane of this repository's map (its label, or its entry in map-pane)
+    whose map runs, or started less than STARTING s ago, is left be; one whose map is gone, as after a cold
+    start, gets the map again; else a new pane to the right, the focus staying. Entry and label come before
+    the map runs, so a session that starts at the same moment finds them and types into no pane."""
+    import fcntl                               # Herdr runs on macOS and Linux
+
+    pane = env.get("HERDR_PANE_ID") or env.get("HERDR_ACTIVE_PANE_ID")
+    label = f"pulse map {repo}"               # two repositories in one tab get two maps
+
+    def call(*args):
+        out = subprocess.run([_herdr_bin(env), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                             timeout=3, check=True).stdout
+        return (json.loads(out) if out.strip() else {}).get("result") or {}
+    tab = call("pane", "get", pane)["pane"]["tab_id"]        # a moved pane keeps its old HERDR_TAB_ID
+    lock = state.cache_dir(root) / f"map-{re.sub(r'[^A-Za-z0-9.-]', '_', tab)}.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        known = panes(root)
+        mine = [p["pane_id"] for p in call("pane", "list").get("panes", [])
+                if p.get("tab_id") == tab and (p.get("label") == label or p.get("pane_id") in known)]
+        for p in mine:
+            pid = (known.get(p) or {}).get("pid") or 0
+            if pid > 0 and go._alive(pid) or not pid and time.time() - known.get(p, {}).get("started_at", 0) < STARTING:
+                return "pulse map: runs beside"
+        new = mine[0] if mine else call("pane", "split", "--pane", pane, "--direction", "right", "--no-focus",
+                                        "--cwd", str(root))["pane"]["pane_id"]
+        _note_pane(root, new, {"tab": tab, "started_at": time.time(), "label": label})
+        call("pane", "rename", new, label)
+        call("pane", "run", new, f"exec {shlex.quote(str(pulse_bin()))} map")
+    return "pulse map: opened beside"
+
+
+def _repo(root: Path) -> str:
+    """owner/name, else the folder of the clone: what the label of its map pane names."""
+    try:
+        return state.repo(root)
+    except (state.StateError, OSError):
+        return config.common_dir(root).parent.name
 
 
 def pulse_bin() -> Path:
@@ -96,20 +173,20 @@ def ensure(root: Path) -> int:
         # the agents of pulse go carry PULSE_HOLDER: the run opened the map, they work in worktrees
         if env.get("PULSE_HOLDER"):
             return 0
-        cfg = config.load(root)
-        tid = env.get("CODEX_THREAD_ID")     # a Codex hook's session_id is its thread id (audit phase 4)
-        if tid and cfg["mode"] == "on" and not presence.seen(root, tid):
-            print("pulse: this Codex session reaches no Pulse hook: no light on the map, no heartbeat, "
-                  "and no rules unless AGENTS.md brings them. Trust the pulse hooks (/hooks in the CLI, "
-                  "then t; the Hooks page of the IDE extension's settings), then start a new chat; "
-                  "Pulse installed from a clone has no hooks to trust", file=sys.stderr)
-        if env.get("PULSE_MAP", "").lower() == "off" or not cfg["map_autostart"]:
+        if env.get("PULSE_MAP", "").lower() == "off":
             return 0
+        if (env.get("HERDR_PANE_ID") or env.get("HERDR_ACTIVE_PANE_ID")) and \
+                (env.get("HERDR_ENV") == "1" or env.get("HERDR_ACTIVE_PANE_ID")):
+            try:                                   # one map per tab: a map elsewhere does not count here
+                print(_herdr(root, env, _repo(root)), file=sys.stderr)
+                return 0
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+                pass                               # Herdr did not answer: as in any other terminal
         pid = running(root)
         if pid:
             print(f"pulse map: the map of this clone runs (pid {pid})", file=sys.stderr)
             return 0
-        script = state.cache_dir(root) / "map.command"   # .command: Terminal and iTerm run it
+        script = state.cache_dir(root) / "map.command"   # what the tmux pane runs
         with contextlib.suppress(OSError):         # the map the last open wrote it for has no pid yet
             if time.time() - script.stat().st_mtime < 15:
                 print("pulse map: the map of this clone is starting", file=sys.stderr)
@@ -118,217 +195,33 @@ def ensure(root: Path) -> int:
         cmd = f"cd {here} && {pulse} map"
         if env.get("TERM_PROGRAM") == "vscode" or "vscode" in env.get("CLAUDE_CODE_ENTRYPOINT", "") \
                 or env.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE") == "codex_vscode":
-            try:                                   # the task, where /pulse-setup wrote it
+            try:                                   # the task, where /pulse wrote it at setup
                 task = re.search(r'"label"\s*:\s*"Pulse map"',
                                  (root / ".vscode" / "tasks.json").read_text(errors="replace"))
             except OSError:
                 task = None
             codex = env.get("CODEX_THREAD_ID") or env.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
-            skill = "$pulse:pulse-setup" if codex else "/pulse-setup"    # the name the session calls it by
+            skill = "$pulse:pulse" if codex else "/pulse"    # the name the session calls it by
             print(f'pulse map: run the task "Pulse map" (Terminal > Run Task), or in a terminal panel: {cmd}'
                   if task else f'pulse map: in a terminal panel: {cmd} ({skill} adds the task "Pulse map")',
                   file=sys.stderr)
             return 0
-        how = where = None
         if env.get("TMUX"):
-            how, where = ["tmux", "split-window", "-d", "-h"], "a tmux pane beside"
-        elif sys.platform == "darwin" and env.get("TERM_PROGRAM"):
-            app = "iTerm" if env["TERM_PROGRAM"] == "iTerm.app" else "Terminal"
-            how, where = ["open", "-a", app], f"a new {app} window"
-        elif sys.platform.startswith("linux") and (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
-            term = next((t for t in LINUX if shutil.which(t)), None)
-            if term:
-                how, where = [term, "--" if term == "gnome-terminal" else "-e"], f"a new {term} window"
-        if how:
-            # ponytail: an opener that starts and then fails (no display, a refused window) says
-            # nothing back; wait for its exit code when that happens in practice
             try:
                 script.parent.mkdir(parents=True, exist_ok=True)
                 script.write_text(f"#!/bin/sh\ncd {here} && exec {pulse} map\n")
                 script.chmod(0o755)
-                word = shlex.quote(str(script)) if how[0] == "tmux" else str(script)   # tmux hands it to sh
-                subprocess.Popen(how + [word], cwd=root, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-                print(f"pulse map: opened in {where}", file=sys.stderr)
-                return 0
-            except OSError:
+                split = subprocess.run(["tmux", "split-window", "-d", "-h", "-P", "-F", "#{pane_id}",
+                                        shlex.quote(str(script))], cwd=root, stdin=subprocess.DEVNULL,
+                                       capture_output=True, text=True, timeout=3)   # tmux hands its one word to sh
+                if split.returncode == 0:
+                    if split.stdout.strip():               # the guard keeps agents out of it (FR-10)
+                        _note_pane(root, split.stdout.strip(), {"tab": None, "started_at": time.time()})
+                    print("pulse map: opened in a tmux pane beside", file=sys.stderr)
+                    return 0
+            except (OSError, subprocess.SubprocessError):
                 pass
-        print(f"pulse map: in a terminal of its own: {cmd}", file=sys.stderr)
+        print(f"pulse map: run pulse map in a second terminal: {cmd}", file=sys.stderr)
     except Exception as e:
         print(f"pulse map: no map opened: {e}", file=sys.stderr)
     return 0
-
-
-def start_go(root: Path, extra=(), by: str = "pulse go --detach") -> tuple:
-    """pulse go in a session of its own, apart from the terminal, chat, or map that starts it; its
-    output goes to run.log (F2.07), under a line that says who started it. -> (the process, run.log,
-    where this start's output begins)"""
-    log = config.pulse_dir(root) / "go" / "run.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with open(log, "a", encoding="utf-8") as out:
-        out.write(f"--- {by}, {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-        out.flush()
-        since = out.tell()
-        p = subprocess.Popen([str(setup.PULSE_BIN), "go", *extra], cwd=root, stdin=subprocess.DEVNULL,
-                             stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-    return p, log, since
-
-
-def _on_origin(root: Path, ref: str):
-    """The .pulse/config.toml of exactly this ref, a full name under refs/remotes/origin/: git show-ref
-    --verify never falls back to a tag or a branch of that name. None when there is none."""
-    if not ref.startswith("refs/remotes/origin/") or ".." in ref or not re.fullmatch(r"[\w./-]+", ref):
-        return None
-    out = subprocess.run(["git", "-C", str(root), "show-ref", "--verify", "--hash", ref],
-                         capture_output=True, text=True, timeout=5)
-    sha = out.stdout.strip()
-    if out.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", sha):
-        return None
-    out = subprocess.run(["git", "-C", str(root), "show", f"{sha}:.pulse/config.toml"], capture_output=True, timeout=5)
-    return out.stdout if out.returncode == 0 else None
-
-
-def trusted(root: Path) -> bool:
-    """The config in the working tree is, byte for byte, the one origin holds on its default branch
-    (refs/remotes/origin/HEAD), or on the base branch that one names. The working tree names no ref:
-    checking out someone's branch, even one pushed to origin, must never run the verify or agents its
-    config names (audit of #44, H-1 and H-2)."""
-    try:
-        return (root / ".pulse" / "config.toml").read_bytes() in _theirs(root)
-    except OSError:
-        return False
-
-
-def _theirs(root: Path):
-    """The configs origin holds, as they are needed: the one on its default branch, then the one on the
-    base branch that one names; none without origin/HEAD."""
-    try:
-        head = subprocess.run(["git", "-C", str(root), "symbolic-ref", "refs/remotes/origin/HEAD"],
-                              capture_output=True, text=True, timeout=5).stdout.strip()
-    except OSError:
-        return
-    default = _on_origin(root, head)
-    if default is None:
-        return
-    yield default
-    base = config._parse(default.decode("utf-8", "replace")).get("base_branch")
-    # a plain branch name only: "origin/x", "remotes/...", "heads/..." would name a branch anyone with push
-    # access can create under refs/remotes/origin/ (audit of #44, L-1)
-    if isinstance(base, str) and base.split("/")[0] not in ("origin", "remotes", "heads", "tags", "refs"):
-        on_base = _on_origin(root, f"refs/remotes/origin/{base}")
-        if on_base is not None:
-            yield on_base
-
-
-def differs(root: Path) -> list:
-    """The lines of this clone's .pulse/config.toml that origin's config lacks, [] when origin holds it
-    byte for byte: what a start with this config runs that origin's would not (#76 audit H-1)."""
-    try:
-        here = (root / ".pulse" / "config.toml").read_bytes()
-    except OSError:
-        return []
-    theirs = list(_theirs(root))
-    if here in theirs:
-        return []
-    there = set((theirs[-1] if theirs else b"").decode("utf-8", "replace").splitlines())
-    return [line for line in here.decode("utf-8", "replace").splitlines() if line.strip() and line not in there]
-
-
-def digest(root: Path) -> str:
-    """The config a confirmation showed, to hold Enter to it: a checkout since changes it (#76 audit M-1)."""
-    try:
-        return hashlib.sha256((root / ".pulse" / "config.toml").read_bytes()).hexdigest()
-    except OSError:
-        return ""
-
-
-def waiting(vm: dict) -> list:
-    """The items a run would take: a build that starts next, or an approved item nobody holds that
-    waits for its PLAN. The map's own start and its g see the same (#76)."""
-    ramp = vm["ramp"]
-    return sorted({i["number"] for i in ramp["next"]} | {r["number"] for r in ramp["rows"]
-                                                         if r["stage"] == "needs a plan" and not r["assignees"]})
-
-
-def hold(root: Path, vm: dict, env=os.environ) -> str:
-    """Why the map starts no pulse go by itself for the waiting work: its switch, or the line its own
-    start shows; "" when it would start one (#76)."""
-    if env.get("PULSE_GO", "").strip().lower() in OFF:     # the confirmation says the rest (#99 FR-15)
-        return "PULSE_GO is off here"
-    if config.load(root)["go_autostart"] is not True:
-        return "go_autostart is off"
-    return runner(root, vm, env, start=False)
-
-
-def offer(root: Path, vm: dict, env=os.environ):
-    """What g on the map offers (#76): the waiting items, the agent, the test command, and why the map
-    does not start the run by itself. None while a run of this clone lives or nothing waits."""
-    cfg = config.load(root)
-    items = waiting(vm) if cfg["mode"] == "on" and not vm.get("error") and not go.running(root) else []
-    if not items:
-        return None
-    before = digest(root)      # a checkout while this reads: what it shows binds no Enter (#76 final check)
-    out = {"items": items, "agent": cfg["agent"], "verify": cfg["verify"] or "",
-           "hold": hold(root, vm, env) if cfg["verify"] else "", "differs": differs(root)}
-    return {**out, "config": before if digest(root) == before else ""}
-
-
-def runner(root: Path, vm: dict, env=os.environ, start=True) -> str:
-    """The live map starts pulse go (#44) when approved work waits and no run of this clone lives: a
-    build that starts next, or an approved item nobody holds that waits for its PLAN. What the last run
-    did not finish (failed, at a usage limit, stopped, a claim refused) waits for a person; so does
-    every start after a run a person stopped or one that ended before its report, until pulse go
-    runs by hand. It starts only with the config origin holds (trusted), and a minute passes between
-    two starts. `go_autostart = false` or PULSE_GO=off switch it off. -> the line the map shows, or
-    ''; whatever goes wrong is that line, the map runs on. `start=False` only says why it would not
-    start one (hold)."""
-    # ponytail: a draft PR with new commits (pulse go takes it up) starts no run; the next run does
-    try:
-        cfg = config.load(root)
-        if env.get("PULSE_GO", "").strip().lower() in OFF or cfg["mode"] != "on" \
-                or cfg["go_autostart"] is not True or vm.get("error") or go.running(root):
-            return ""
-        last = go.last_run(root) or {}
-        stopped = (last.get("run") or {}).get("stopped")
-        if stopped:
-            return f"the last pulse go run was stopped ({stopped}): the map starts none until pulse go runs by hand"
-        work = set(waiting(vm))
-        held = work & {int(n) for n, r in (last.get("items") or {}).items() if r.get("result") in HELD}
-        work -= held
-        if not work:
-            one = held and len(held) == 1
-            return (f"{', '.join(f'#{n}' for n in sorted(held))} {'waits' if one else 'wait'} for you: the last "
-                    f"pulse go run did not finish {'it' if one else 'them'} (pulse show "
-                    f"{min(held) if one else '<n>'})") if held else ""
-        if not cfg["verify"]:
-            return NO_VERIFY
-        if not trusted(root):
-            if subprocess.run(["git", "-C", str(root), "symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
-                              capture_output=True, timeout=5).returncode:
-                return "pulse go starts by hand here: git knows no origin/HEAD yet (git remote set-head origin -a)"
-            return ("pulse go starts by hand here: .pulse/config.toml differs from the one on origin's default "
-                    "branch or the base it names, so the map starts no run by itself with it; g lists the lines and "
-                    "enter runs them")
-        stamp, log = state.cache_dir(root) / "go.autostart", config.pulse_dir(root) / "go" / "run.log"
-        rep = config.pulse_dir(root) / "go" / "report.json"
-        names = ", ".join(f"#{n}" for n in sorted(work))
-        with contextlib.suppress(OSError, ValueError):
-            if time.time() - stamp.stat().st_mtime < PAUSE:
-                return ""
-            if not rep.is_file() or rep.stat().st_mtime < stamp.stat().st_mtime:
-                return f"pulse go ended before it wrote its report ({log}): the map starts none until it runs by hand"
-            # the map counts slots as the ramp does, pulse go as its agents allow: the same items a run
-            # left alone start no second one, a changed ramp (an approval, a slot come free) does
-            tried = set(json.loads(stamp.read_text(encoding="utf-8") or "{}").get("work") or ())
-            if tried == work and not tried & {int(n) for n in last.get("items") or {}}:
-                return f"the last pulse go run started nothing for {names}: the map starts it again when the ramp changes"
-        if not start:
-            return ""          # it would start one now
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(json.dumps({"work": sorted(work)}), encoding="utf-8")
-        # ponytail: a checkout between trusted() and the run's own config read (under a second) still
-        # reaches the run; hand the checked bytes' hash to go.run if that window ever matters
-        p, log, _ = start_go(root, by="pulse go started by the live map")
-        return f"pulse go started (pid {p.pid}) for {names}; log {log}"
-    except Exception as e:
-        return f"pulse go not started: {e}"

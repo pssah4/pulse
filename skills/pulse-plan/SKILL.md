@@ -5,8 +5,8 @@ description: >
   Turns a ready spec into a PLAN (tasks, files, decisions with rejected
   alternatives, coverage of every success criterion) and keeps the few
   decisions worth a record. Use for "plan", "architecture", "ADR",
-  "decision record", "arc42", "system map", "architecture map", "solution
-  design", or before building a feature.
+  "decision record", "arc42", "system map", "solution design", or before
+  building a feature.
 ---
 
 # Planner and architect
@@ -17,15 +17,22 @@ decision record exists only for what constrains future changes.
 
 ## 1. Read, code first
 
-1. `pulse show <n>`: the item, its spec, its parent.
+1. `pulse status <n>`: the item, its spec, its parent.
 2. Claim it, as the planning job of `pulse go` does, so that no second
    session plans the same item: `pulse claim <n>`, unless `pulse go` or
    `/pulse-build` already holds it for this session. Exit 1 prints why
    (`/pulse-build` lists the reasons); plan nothing you could not claim.
-3. The spec and, for a new epic, `_devprocess/requirements/handoff/architect-handoff.md`.
-4. `_devprocess/decisions/README.md`: read the records whose "Read When"
+3. Before every PLAN, read `_devprocess/SYSTEM-MAP.md` where it exists:
+   system shape, data ownership, invariants, quality goals, constraints,
+   risks, fast paths. Only in a session with a person, where it is missing,
+   create it from `templates/SYSTEM-MAP-TEMPLATE.md` (cap 150 lines) from
+   what the code shows, on a docs branch from `refs/remotes/origin/<base>` after
+   `git fetch origin`, pushed for the person to merge into the base,
+   never on an item branch. A planner of `pulse go` plans without it.
+4. The spec and, for a new epic, `_devprocess/requirements/handoff/architect-handoff.md`.
+5. `_devprocess/decisions/README.md`: read the records whose "Read When"
    matches this change.
-5. The code the spec touches: flow, callers, tests, existing patterns.
+6. The code the spec touches: flow, callers, tests, existing patterns.
 
 **Critical review.** Before planning, check the design against the code:
 do the decisions match the real architecture, do existing patterns
@@ -60,14 +67,15 @@ it without asking. It carries:
 - **Interfaces:** signatures, types, schemas this item creates or changes.
 - **Tasks:** each covers requirement or criterion ids (`Covers`), names
   concrete files (create, modify, test), a rough diff budget, and the
-  check that proves it. A task that ends up more than twice its budget
+  check that proves it: the test files the task affects. The full
+  `verify` is no task's check; it runs once, before the gates. A task that ends up more than twice its budget
   gets one change-log line saying why.
 - **Spec tests first.** Wave 1 holds the spec tests: one test per FR,
   named after its id, written from the EARS line and its examples at the
   boundary the Activation Path names. The builder runs them once (they
   fail), commits them alone, and never changes them afterwards. Inside,
   the build is test-first as always.
-- **files:** the union of every file the tasks touch. `/pulse-go` keeps
+- **files:** the union of every file the tasks touch. `pulse go` keeps
   plans with overlapping files from running at the same time.
 - **verify:** the build and test commands that prove the item. The
   agents of `pulse go` run a line only when it starts with a program of
@@ -83,38 +91,27 @@ it without asking. It carries:
   then the regression checks; the `verify:` commands run them.
 - **Stop conditions:** what makes the builder stop and report instead of
   guessing.
-- **needs:** work that has to come first and is not yet an item, or a
-  step that needs a person's OK (a new dependency, a changed schema or
-  public interface, a breaking or destructive change). An entry holds
-  the PLAN for a person, and the approval covers the step. An entry that
-  starts with `#M` holds only while #M is open and no blocker of this
-  item: the board already waits for a blocker, and a closed item is done.
-
-## Place it on the architecture map
-
-`pulse arch` shows the project's architecture as a page: each layer with
-its features and decisions, rebuilt by Pulse after every merge. Its
-layers are `_devprocess/architecture-map.md`
-(`templates/ARCHITECTURE-MAP-TEMPLATE.md`). When the project has one,
-write the item's place into its spec before the PLAN:
-`layer: <layer>/<group>` (or `layer: <layer>`) in the frontmatter, the
-layer its main change lands in, committed alone as
-`docs(spec): #<n> its place on the architecture map`, so the PLAN's
-commit stays the PLAN alone. A fix or improvement stands with its parent
-and needs none. Every new decision record gets its `layer:` too.
-`pulse check` (C11) reports a layer or group the model lacks.
-
-No model yet: in a session with a person, propose one once, from the
-code and `_devprocess/SYSTEM-MAP.md`, and write it on the person's OK,
-committed with this PLAN. A headless session (an agent `pulse go`
-started) never writes one, since parallel planners would each write their
-own; the map groups by epic until a model exists.
+- **needs:** work that has to be built first: `'#M title'` (quoted: a
+  bare `#` starts a YAML comment) for an item on the board, else a short
+  title. At the end of each planning or build round of this item,
+  `pulse go` makes each entry a blocker of it. A title that is a draft
+  already (named as `'#M title'`, a blocker of this item with that title,
+  open or closed, or an open draft) stays that item; a new title becomes a
+  draft item with this item's type and parent, at most one new draft a
+  round. Each title then turns into `'#M title'` in the PLAN or the needs
+  file, committed as `docs(plan): #<n>`, so it never makes a second draft.
+  The planning prompt names the open drafts that came from `needs:`:
+  reuse one where it fits. An entry that would close a cycle becomes no
+  edge and comes back as a finding. `needs:` never holds the PLAN for a
+  person.
+- **risk:** a step that needs a person's OK (a new dependency, a changed
+  schema or public interface, a breaking or destructive change). An entry asks the person who approves the PLAN for a closer look, and the approval covers the step.
 
 ## Plan for parallel work
 
-Pulse builds in parallel as far as `.pulse/config.toml` allows (`parallel`:
-`off`, `items`, `max`). Plan so that as much as possible can run at once,
-and so that parallel results merge cleanly:
+Pulse builds items in parallel, up to `cap` in `.pulse/config.toml`. Plan
+so that as much as possible can run at once, and so that parallel results
+merge cleanly:
 
 - **Disjoint files.** Two items that change the same file cannot run at
   the same time. If a shared file is avoidable (a new module instead of
@@ -124,12 +121,10 @@ and so that parallel results merge cleanly:
   interface into its own small item that blocks B, and let A's
   implementation stop blocking B. B then starts as soon as the contract
   lands, in parallel with the rest of A.
-- **Unmerged code stacks by itself.** A dependent that needs A's code
-  (not only its interface) keeps A as its one blocker. As soon as A's PR
-  is ready, the dependent starts on A's branch and its PR targets A's
-  branch; no line in the PLAN is needed. Merge order is then A before B,
-  which the integration check at the end of a `pulse go` run tests
-  before anyone merges.
+- **Unmerged code waits.** A dependent that needs A's code (not only
+  its interface) keeps A as its blocker and starts once A is merged;
+  nothing builds on A's branch. Cut the interface out (contract first)
+  where the dependent should not wait that long.
 - **One feature, one traceable merge.** A PLAN whose tasks would make a
   merge nobody can follow in one reading is two features. Say so and
   split the spec with `/pulse-re` before planning on.
@@ -137,7 +132,7 @@ and so that parallel results merge cleanly:
   each wave ends with its checks passing before the next begins.
 
 **Coverage gate** (before any code, re-run whenever the spec or a
-decision changes). `pulse go` and the ramp check P1 to P5 mechanically:
+decision changes). `pulse go` and the ramp check P1 to P6 mechanically:
 
 1. P1: the frontmatter names `issue`, `spec`, `files`, and `verify`,
    and the file is UTF-8.
@@ -150,7 +145,11 @@ decision changes). `pulse go` and the ramp check P1 to P5 mechanically:
 4. P4: tasks in one wave touch disjoint files.
 5. P5: no placeholder outside the change log; braces in code blocks and
    inline code are code.
-6. By judgment: every decision the plan relies on has a task that puts it
+6. P6: every spec test file of wave 1 matches a pattern in `[spec_tests]`
+   of `.pulse/config.toml` on the base branch, which names its runner.
+   Name spec test files so they match; a missing pattern is a config
+   change a person merges, never a line in the PLAN.
+7. By judgment: every decision the plan relies on has a task that puts it
    into effect.
 
 ## Where the PLAN lives, and who approves it
@@ -163,8 +162,7 @@ the item already): the claim then carries the PLAN's `files:`, and every
 ramp keeps other items off those files without a fetch. If it answers
 `<file> is in use by #m`, the claim stays without them and the item
 waits for #m: commit and push the PLAN as below, then, unless `pulse go`
-holds the item, give it back with `pulse release <n> --note "waits for
-#m: <file>"` and build nothing. If it answers that the item is blocked
+holds the item, give it back with `pulse release <n>` and build nothing. If it answers that the item is blocked
 (its build waits for a blocker), push the PLAN the same way and give the
 item back with `pulse release <n>`: planning does not wait, the build does.
 Commit the PLAN
@@ -173,11 +171,12 @@ from the start point `pulse claim` names) and push it: the ramp and every teamma
 continues on that branch. `pulse go` plans approved items with a ready
 spec by itself, in ramp order, as the first phase of their job.
 
-With `plan_approval = "auto"` (the default) a PLAN that passes P1 to P5 is
-approved at once, unless something holds it: a risk flag (`risk:`) or
-`effort: L` in the spec, or an entry under `needs:`. With `manual`, or
-when something holds it, the ramp shows "plan waits for you" until a
-person approves it (`pulse approve-plan <n>`, or the action in the ramp).
+Every PLAN that passes P1 to P6 waits for a person: the ramp shows "plan
+waits for you" until a person approves it (`pulse approve <n>`, or `a` in
+the map), which binds the PLAN as origin has it and the spec on the base
+branch; a PLAN or spec changed since waits again ("plan changed since
+plan ok"). `risk:` in the spec or in the PLAN is named beside it for a
+closer look. Neither `effort: L` nor `needs:` holds it.
 
 ## 3. Decision records: only with a read-when
 
@@ -209,20 +208,10 @@ project's AGENTS.md or a path-local AGENTS.md, not in `_devprocess/`.
 
 ## 4. On request
 
-- **arc42 constraints** (`templates/arc42-CONSTRAINTS-TEMPLATE.md`, cap
-  40): quality goals, constraints, quality scenarios, risks. Before code.
-- **arc42 reference** (`templates/arc42-REFERENCE-TEMPLATE.md`): the full
-  document for auditors or customers, after code, allowed to lag.
-- **System map** (`templates/SYSTEM-MAP-TEMPLATE.md`, cap 120): system
-  shape, data ownership, security invariants, fast paths into the code.
-- **Architecture map** (`templates/ARCHITECTURE-MAP-TEMPLATE.md`): the
-  layer model, and `layer:` in every feature spec and decision record on
-  the base branch that has none. A drawn picture on request:
-  `_devprocess/architecture-map.svg`, with `{{features:<layer>}}` where a
-  count goes (it becomes "3 features") and `<a href="#layer-<layer>">` around a layer's box. The
-  page keeps shapes, text, markers, and links within the page, nothing
-  else: no style element or attribute, so colors go into attributes
-  (`currentColor` follows the page into dark mode).
+**arc42** only on request of a person, for auditors or customers:
+`_devprocess/arc42.md` from `templates/arc42-TEMPLATE.md`, all 12
+sections, allowed to lag behind the code. Agents plan from the code, the
+system map, and the decision records.
 
 ## 5. Handoff
 
@@ -230,15 +219,16 @@ Commit the PLAN alone as `docs(plan): #<n>`, then any records in a
 commit of their own (`Refs: #<n>`), and push the branch. Then give the
 claim back with `pulse release <n>`, unless `pulse go` holds the item or
 this session goes on to build it (`/pulse-build <n>`).
-Set new blockers with `pulse block <n> --by <m>` or
-`pulse new ... --blocked-by`.
+A new item gets its blockers with `pulse new ... --blocked-by`; for an
+item on the board already, tell the person which blocker to add in
+GitHub (the issue's Relationships).
 
-An approved item goes straight on, unless its PLAN waits for a person
-(a risk flag or effort L in the spec, `needs:`, or
-`plan_approval = "manual"`): then show the user the goal, the decisions,
-the risks, and the files, and wait for `pulse approve-plan <n>`.
-Otherwise `/pulse-build <n>` in this session, or `pulse go` when several
-are ready; `pulse go` builds in ramp order without asking. An item that
+An approved item goes on once a person approved its pushed PLAN: show
+the user the goal, the decisions, the risks (`risk:` in the spec or in
+the PLAN), and the files, and tell the person how they approve it:
+`pulse approve <n>` in their own terminal. Then `/pulse-build <n>` in
+this session, or, when several are ready, tell the person: `pulse go`
+in their own terminal builds them in ramp order without asking. An item that
 is not approved yet waits for the person who approves its spec. When the
 plan reveals an order the team should know, name it: `pulse status`
-shows the current one, and `pulse rank` moves an item.
+shows the current one.

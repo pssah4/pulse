@@ -36,7 +36,7 @@ My first answer was the Digital Innovation Agents, a set of skills that walks an
 
 Then the agents got fast enough that one person ran several at once, and a team ran many. The bottleneck moved from writing code to coordination: who works on what, what may run in parallel, what waits for whom. Pulse is the next step. It keeps the method as one of three parts and adds an operating model for the team and a shared, live view of the work, with parallel builds that do not collide.
 
-Pulse runs in Claude Code and Codex, in the terminal and in the VS Code extension. Support for GitHub Copilot, Cursor, Gemini CLI, and OpenCode will follow.
+Pulse runs in Claude Code and Codex, in the terminal and in the VS Code extension. Support for GitHub Copilot will follow.
 
 ## Get in touch
 

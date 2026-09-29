@@ -1,4 +1,5 @@
-"""/pulse-setup: config, anchor blocks in agent files, GitHub labels.
+"""pulse setup: config, anchor blocks in agent files, GitHub labels, and outside Herdr the VS Code
+task that starts the live map.
 
 Anchor blocks point agents without hook support at Pulse. Blocks that DIA
 wrote are recognised and replaced in place, so a migrated project never
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -38,8 +40,14 @@ LABELS = {                     # name: (color, description)
     "pulse:imp": ("1d76db", "Pulse: improvement on an existing feature"),
     "pulse:fix": ("d93f0b", "Pulse: fix for a bug or drift"),
     "pulse:approved": ("fbca04", "Pulse: the team wants it built"),
-    "pulse:plan-ok": ("c2e0c6", "Pulse: a person approved the PLAN a hold stopped"),
     "pulse:draft": ("d4c5f9", "Pulse: no spec yet, analysis or spec work in progress"),
+    "pulse:hold": ("b60205", "Pulse: a person holds it; pulse go neither plans nor builds it"),
+    "pulse:failed": ("e99695", "Pulse: pulse go gave up on it; pulse approve lets it try again"),
+    "pulse:base": ("0052cc", "Pulse: fixes a red base; pulse go plans and builds it on a red base too"),
+    "pulse:auto": ("c5def5", "Pulse: the control issue of the auto mode switches, one per repository"),
+    "P0": ("b60205", "Priority: at once"),              # pulse new copies priority: of the spec (#116)
+    "P1": ("d93f0b", "Priority: soon"),
+    "P2": ("fbca04", "Priority: later"),
 }
 
 BODY = """## Pulse
@@ -52,15 +60,16 @@ a shared board on GitHub with one record per item, and parallel agents.
   comes next, and the command for it.
 - Item state (draft, approved, taken, blocked, done) lives on the board on GitHub, one record per item
   and only `pulse` writes it. Never write status into Markdown.
-- Parallel work runs through `pulse go`, as far as `parallel` in the
-  settings allows: ready items with disjoint files never wait for each other.
+- Parallel work runs through `pulse go`, which a person starts in a terminal:
+  ready items with disjoint files never wait for each other, up to `cap` in
+  the settings.
 - An item's plan is its PLAN file `_devprocess/plans/{{n}}-{{slug}}.md`. A
   plan mode, where the agent has one, only shows that PLAN for approval and
   keeps no plan of its own; in this project this holds over any other rule about plans.
 - The always-on rules arrive through the Pulse hooks. An agent without
   hook support reads them from hooks/rules.md in the Pulse plugin.
 
-`/pulse-setup` changes the mode or removes this block."""
+A person changes the mode or removes this block with `pulse setup`, in their own terminal."""
 
 
 @dataclass(frozen=True)
@@ -73,7 +82,7 @@ class Target:
         return re.compile(re.escape(start) + r".*?" + re.escape(end) + r"\n?", re.DOTALL)
 
 
-TARGETS = (
+EVERY = (                      # every agent file a block of Pulse or DIA may sit in: --remove and migrate
     Target("CLAUDE.md", "markdown"),
     Target("AGENTS.md", "markdown"),
     Target("GEMINI.md", "markdown"),
@@ -81,10 +90,18 @@ TARGETS = (
     Target(".github/copilot-instructions.md", "markdown"),
     Target(".windsurfrules", "hash"),
 )
+CLAUDE, AGENTS = EVERY[:2]
+# the files setup writes the block into; an older Pulse also wrote the others of EVERY (#109) and CLAUDE.md (#123)
+TARGETS = tuple(t for t in EVERY if t.path in ("AGENTS.md", ".github/copilot-instructions.md"))
+IMPORT = "@AGENTS.md <!-- pulse -->"   # the line setup sets in CLAUDE.md, marked so --remove takes only its own
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?(?:^ {0,3}\1|\Z)", re.M | re.S)   # Claude imports nothing from there
 
 
-def target(path: str) -> Target:
-    return next(t for t in TARGETS if t.path == path)
+def target(path: str, pool=TARGETS) -> Target:
+    found = next((t for t in pool if t.path == path), None)
+    if found is None:          # one line, no traceback (#109 gate)
+        raise state.StateError(f"{path} is no agent file of pulse setup: {', '.join(t.path for t in pool)}")
+    return found
 
 
 def anchor_block(t: Target, mode: str) -> str:
@@ -98,9 +115,13 @@ def write_anchor(text: str, t: Target, mode: str) -> str:
         rx = t.block_re(markers)
         if rx.search(text):
             return rx.sub(lambda _m: block, text, count=1)
+    return _append(text, block)
+
+
+def _append(text: str, piece: str) -> str:
     if not text:
-        return block
-    return text + ("" if text.endswith("\n") else "\n") + ("" if text.endswith("\n\n") else "\n") + block
+        return piece
+    return text + ("" if text.endswith("\n") else "\n") + ("" if text.endswith("\n\n") else "\n") + piece
 
 
 def remove_anchor(text: str, t: Target) -> str:
@@ -110,26 +131,46 @@ def remove_anchor(text: str, t: Target) -> str:
     return text.rstrip() + "\n" if text.strip() else ""
 
 
+def claude_import(text: str) -> str:
+    """CLAUDE.md without a Pulse block and with a line that imports AGENTS.md (#123): Claude Code reads
+    AGENTS.md by itself only where no CLAUDE.md is, the import brings it in with every setting."""
+    if any(CLAUDE.block_re(m).search(text) for m in (MARKERS, LEGACY)):
+        text = remove_anchor(text, CLAUDE)
+    if re.search(r"(?m)(^|\s)@(\./)?AGENTS\.md(\s|$)", FENCE.sub("", text)):   # the person's own import, or ours
+        return text
+    return _append(text, IMPORT + "\n")
+
+
+def remove_claude_import(text: str) -> str:
+    """CLAUDE.md without the line setup set and without a Pulse block; a line the person wrote stays."""
+    return remove_anchor(re.sub(r"(?m)^" + re.escape(IMPORT) + r"[ \t]*(\n|$)", "", text), CLAUDE)
+
+
+def shared(root: Path) -> bool:
+    """CLAUDE.md and AGENTS.md are one file, linked either way: it carries the block, never an import of itself."""
+    try:
+        return (root / CLAUDE.path).samefile(root / AGENTS.path)
+    except OSError:
+        return False
+
+
 def gh_version(output: str) -> tuple:
     m = re.search(r"gh version (\d+)\.(\d+)\.(\d+)", output or "")
     return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
 
 
-HOOK_TEMPLATE = Path(__file__).resolve().parent.parent / "hooks" / "git-pre-commit"
 PULSE_BIN = Path(__file__).resolve().parent.parent / "bin" / "pulse"
 
 
-def write_git_hook(root: Path, remove: bool = False) -> dict:
-    """Install the pre-commit hook, a foreign one kept as pre-commit.bak; remove takes out only
-    ours (its marker line says `written by pulse setup`) and puts the kept one back."""
+def remove_git_hook(root: Path) -> dict:
+    """The pre-commit hook an older Pulse installed (setup --git-hook, which kept a foreign one as
+    pre-commit.bak): take out only ours (its marker line says `written by pulse setup`) and put the kept
+    one back."""
     rel = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-path", "hooks"],
                          capture_output=True, text=True).stdout.strip()
     hooks = Path(rel) if Path(rel).is_absolute() else root / rel
     hook, bak = hooks / "pre-commit", hooks / "pre-commit.bak"
-    if not remove and hook.exists() and MARK not in hook.read_text(encoding="utf-8", errors="replace"):
-        hook.replace(bak)
-    body = HOOK_TEMPLATE.read_text(encoding="utf-8").replace("{{pulse_bin}}", str(PULSE_BIN))
-    status = _machine_file(hook, body, remove, False)
+    status = _machine_file(hook, "", True, False)
     if status == "removed" and bak.exists():
         bak.replace(hook)
         status = "removed, pre-commit.bak put back"
@@ -161,29 +202,38 @@ fi
 exec "$bin" "$@"
 """
 CODEX_RULES = """# Pulse, written by `pulse setup --codex-rules`: Codex runs `pulse` without
-# asking, outside its sandbox; what a person decides still asks.
+# asking, outside its sandbox, and never pulls a person's lever, in any mode.
 prefix_rule(
     pattern = ["pulse"],
     decision = "allow",
     justification = "Pulse reads and writes the board on GitHub",
 )
-# `pulse -- <command>` asks too: Python 3.12 reads it as the command itself.
+# `pulse -- <command>` too: Python 3.12 reads it as the command itself.
 prefix_rule(
-    pattern = ["pulse", ["approve", "approve-plan", "rank", "done", "--"]],
-    decision = "prompt",
-    justification = "A person decides what gets built, in which order, and when it is done; pulse -- hides the command",
+    pattern = ["pulse", ["approve", "approve-plan", "go", "done", "--"]],
+    decision = "forbidden",
+    justification = "A person decides what gets built and when it is done, in their own terminal",
 )
 # A rule matches a prefix only: pulse takes --take right after the command and nowhere else.
 prefix_rule(
     pattern = ["pulse", ["release", "claim"], "--take"],
-    decision = "prompt",
+    decision = "forbidden",
     justification = "A person decides who takes over a claim",
 )
-# The same for --drop-unpushed: pulse takes it right after release and nowhere else.
 prefix_rule(
-    pattern = ["pulse", "release", "--drop-unpushed"],
-    decision = "prompt",
-    justification = "A person decides that commits only this clone has are given up",
+    pattern = ["pulse", "auto", ["plan", "build", "merge"]],
+    decision = "forbidden",
+    justification = "A person switches their own auto mode, in their own terminal or the Pulse map",
+)
+prefix_rule(
+    pattern = ["gh", "pr", ["merge", "ready"]],
+    decision = "forbidden",
+    justification = "A person marks a pull request ready and merges it",
+)
+prefix_rule(
+    pattern = ["gh", "issue", ["edit", "close", "reopen"]],
+    decision = "forbidden",
+    justification = "Only pulse writes the records on the board",
 )
 """
 
@@ -240,7 +290,7 @@ def _late_take_in_codex() -> str:
     if not found:
         return ""
     try:
-        run = subprocess.run([found, "claim", "--help"], env={**os.environ, "CODEX_THREAD_ID": "pulse-setup"},
+        run = subprocess.run([found, "claim", "--help"], env={**os.environ, "CODEX_THREAD_ID": "rules-probe"},
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return found
@@ -262,6 +312,29 @@ def shim_runs(root: Path, env: dict) -> bool:
         return False
 
 
+UNTRUSTED = "Codex hooks not trusted: run /hooks in Codex"
+
+
+def codex_hooks_trusted(home=None) -> bool:
+    """Whether Codex keeps a trust entry for a Pulse hook, as the install script reads it (#111): the person gave
+    it with /hooks, and Codex asks again after a change. home: CODEX_HOME, else ~/.codex."""
+    path = Path(home or os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        return '[hooks.state."pulse@pssah4-skills:' in path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def untrusted(agent: str) -> str:
+    """UNTRUSTED where agent (the config's) names Codex and Codex runs no Pulse hook yet, else "":
+    until then the lever guard does not run there."""
+    try:
+        codex = "codex" in config.agent_slots(agent or "", 1)
+    except ValueError:
+        codex = False
+    return UNTRUSTED if codex and not codex_hooks_trusted() else ""
+
+
 def _version(root: Path) -> str:
     return json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
 
@@ -269,6 +342,40 @@ def _version(root: Path) -> str:
 def version_key(text) -> tuple:
     """(0, 1, 10) for "0.1.10": versions compare by their numbers."""
     return tuple(int(n) for n in re.findall(r"\d+", text or ""))
+
+
+TASK = {"label": "Pulse map", "type": "shell", "command": "pulse map", "runOptions": {"runOn": "folderOpen"},
+        "problemMatcher": [], "presentation": {"panel": "dedicated"}}
+
+
+def vscode_task(root: Path, dry_run: bool) -> dict:
+    """The task "Pulse map" in .vscode/tasks.json, which starts the live map in a terminal panel as VS Code opens
+    the folder (#121 FR-06); the other tasks stay. A file that is no plain JSON (comments, trailing commas) is
+    never rewritten: the report carries the task to add by hand."""
+    path, rel = root / ".vscode" / "tasks.json", ".vscode/tasks.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": "2.0.0", "tasks": []}
+        tasks = data.setdefault("tasks", [])
+        if not isinstance(tasks, list):
+            raise ValueError("tasks is no list")
+    except (OSError, ValueError, AttributeError):
+        return {"path": rel, "status": "kept: no plain JSON, add the task by hand", "task": TASK}
+    if any(isinstance(t, dict) and t.get("label") == TASK["label"] for t in tasks):
+        return {"path": rel, "status": "unchanged"}
+    if dry_run:
+        return {"path": rel, "status": "would change"}
+    tasks.append(TASK)
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return {"path": rel, "status": "written"}
+
+
+def herdr_key() -> str:
+    """The key of Herdr's config.toml that opens the live map beside the focused pane; setup names it and never
+    writes it. The path is absolute: a key command runs with the PATH of the Herdr server."""
+    from pulse import mapstart          # which imports this module
+    command = f"{shlex.quote(str(mapstart.pulse_bin()))} map --ensure"
+    return f'[[keys.command]]\nkey = "prefix+m"\ntype = "shell"\ncommand = {json.dumps(command)}'
 
 
 def _gh(*args) -> bool:
@@ -281,12 +388,19 @@ def _gh(*args) -> bool:
 
 
 def run(root: Path, mode: str, cap: int, base_branch: str, files: list,
-        labels: bool, remove: bool, dry_run: bool, git_hook: bool = False,
-        parallel: str = None, agent: str = None, verify: str = None, plan_approval: str = None) -> dict:
+        labels: bool, remove: bool, dry_run: bool,
+        agent: str = None, verify: str = None) -> dict:
     report = {"root": str(root), "changes": []}
+    pool = EVERY if remove else TARGETS + (CLAUDE,)        # setup gives CLAUDE.md the import line (#123)
+    chosen = [target(f, pool) for f in files] if files else [t for t in pool if (root / t.path).exists()]
+    one = shared(root)
+    if CLAUDE in chosen and AGENTS not in chosen and (one or not remove):
+        chosen.insert(0, AGENTS)                         # the block that line imports, or the one file itself
+    if one:
+        chosen = [t for t in chosen if t != CLAUDE]
     if not remove:
-        values = {k: v for k, v in dict(mode=mode, cap=cap, base_branch=base_branch, parallel=parallel,
-                                        agent=agent, verify=verify, plan_approval=plan_approval).items()
+        values = {k: v for k, v in dict(mode=mode, cap=cap, base_branch=base_branch,
+                                        agent=agent, verify=verify).items()
                   if v is not None}
         path = root / ".pulse" / "config.toml"
         before = path.read_text(encoding="utf-8") if path.is_file() else None
@@ -298,21 +412,27 @@ def run(root: Path, mode: str, cap: int, base_branch: str, files: list,
         status = "unchanged" if same else ("would change" if dry_run else "written")
         report["config"] = values
         report["changes"].append({"path": ".pulse/config.toml", "status": status})
-    chosen = [target(f) for f in files] if files else [t for t in TARGETS if (root / t.path).exists()]
     for t in chosen:
         path = root / t.path
         before = path.read_text(encoding="utf-8") if path.exists() else ""
-        after = remove_anchor(before, t) if remove else write_anchor(before, t, mode)
+        if t == CLAUDE:
+            after = remove_claude_import(before) if remove else claude_import(before)
+        else:
+            after = remove_anchor(before, t) if remove else write_anchor(before, t, mode)
         status = "unchanged" if after == before else ("would change" if dry_run else "written")
-        if status == "written" and not after:          # it held the Pulse block only
+        if status == "written" and not after and not (one and t == AGENTS):    # it held the Pulse block only
             path.unlink()
             status = "removed"
         if status == "written":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(after, encoding="utf-8")
         report["changes"].append({"path": t.path, "status": status})
-    if (git_hook or remove) and not dry_run:
-        report["git_hook"] = write_git_hook(root, remove)
+    if remove and not dry_run:
+        report["git_hook"] = remove_git_hook(root)
+    if not remove:                     # in Herdr the map opens beside each session, no task needed
+        if not os.environ.get("HERDR_ENV") and mode != "off":      # Pulse off: no map starts with the folder
+            report["vscode_task"] = vscode_task(root, dry_run)
+        report["herdr_key"] = herdr_key()
     try:
         found = gh_version(state.gh(["--version"]))
     except (OSError, state.StateError):
@@ -334,12 +454,14 @@ def main(args) -> int:
     known = config.load(root)
     if getattr(args, "anchors", False):        # the Pulse block only, where a file has one (IMP-14)
         changes = []
-        for t in TARGETS:
+        claude = root / CLAUDE.path             # a block an older Pulse wrote there moves to AGENTS.md (#123)
+        moves = claude.is_file() and bool(CLAUDE.block_re(MARKERS).search(claude.read_text(encoding="utf-8")))
+        for t in TARGETS + (() if shared(root) else (CLAUDE,)):
             path = root / t.path
             before = path.read_text(encoding="utf-8") if path.is_file() else ""
-            if not t.block_re(MARKERS).search(before):
+            if not t.block_re(MARKERS).search(before) and not (moves and t == AGENTS):
                 continue
-            after = write_anchor(before, t, known["mode"] or "on")
+            after = claude_import(before) if t == CLAUDE else write_anchor(before, t, known["mode"] or "on")
             if after != before and not args.dry_run:
                 path.write_text(after, encoding="utf-8")
             changes.append({"path": t.path, "status": "unchanged" if after == before else
@@ -348,7 +470,7 @@ def main(args) -> int:
         return 0
     rep = run(root, args.mode or known["mode"] or "on", args.cap or known["cap"],
               args.base_branch or known["base_branch"] or config.default_branch(root),
-              args.files or [], args.labels, args.remove, args.dry_run, args.git_hook,
-              args.parallel, args.agent, args.verify, args.plan_approval)
+              args.files or [], args.labels, args.remove, args.dry_run,
+              args.agent, args.verify)
     print(json.dumps(rep, indent=2))
     return 0

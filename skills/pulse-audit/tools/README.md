@@ -136,7 +136,7 @@ locked; a lockfile without dependencies is read with none), `offline` (no route,
 DNS, refused proxy, timeout) or `error` (HTTP error, unreadable answer),
 each with its reason.
 `meta.offline` follows the real failure, and the report names the blind
-spot. The chain in `pulse audit` counts a pass after `partial`, `offline`
+spot. The audit gate of `pulse go` counts a pass after `partial`, `offline`
 or `error` only when the Coverage line says `SCA unavailable`.
 
 In a diff scope (`branch`, `commit`, ...) an advisory blocks only when

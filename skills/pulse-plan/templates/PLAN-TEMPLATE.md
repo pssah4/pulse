@@ -6,18 +6,21 @@ decisions: []                 # decision records this plan relies on
 files:                        # every file the tasks create or change, the union of the Files column
   - {src/path/file.ext}
   - {tests/path/test_file.ext}
-verify:                       # the commands that prove the item; the builder runs them. The tests gate of pulse go runs verify from .pulse/config.toml instead
+verify:                       # the commands that prove the item; the builder runs them
   - {build command}
   - {test command}
-# needs:                      # holds the PLAN for a person: work that comes first, or a person's OK (a new dependency, a schema, a public interface, a breaking or destructive change); #M holds only while #M is open and no blocker of this item
-#   - {#M or a short description}
+# needs:                      # work that has to be built first; pulse go makes each entry a blocker of this item, a new title a draft item
+#   - '{#M title}', or {a short title}
+# risk:                       # holds the PLAN for a person: a person's OK (a new dependency, a schema, a public interface, a breaking or destructive change)
+#   - {dependency, schema, public-api, or destructive}
 ---
 
 <!-- See skills/pulse-plan/SKILL.md. `pulse go` and the ramp check P1 to
-     P5 (`pulse check` only the waves, as C8): every FR and SC of the spec
+     P5: every FR and SC of the spec
      covered by a task (or "Deferred: SC-nn reason"), one spec test per FR
      in wave 1 (an FR the spec marks `(unchanged)` may keep an existing
-     test), files and a check for every task, tasks of one wave on disjoint
+     test), files and a check for every task (the test files it affects;
+     the full verify is no task's check), tasks of one wave on disjoint
      files, no placeholder left. The PLAN is committed on the item's branch
      and pushed; after the item merges, git keeps it. -->
 
@@ -48,7 +51,7 @@ when nothing crosses a module boundary.}
 | # | Task | Covers | Files | Wave | Diff budget | Check |
 |---|---|---|---|---|---|---|
 | 1 | spec tests, one per FR, named after its id | FR-01, FR-02 | `{tests/path/test_file.ext}` (create) | 1 | ~{n} lines | `{test command}` fails first |
-| 2 | {task} | SC-01 | `{src/path/file.ext}` (modify) | 2 | ~{n} lines | `{command}` |
+| 2 | {task} | SC-01 | `{src/path/file.ext}` (modify) | 2 | ~{n} lines | `{test command} {affected test files}` |
 
 ## Not touched
 
@@ -64,7 +67,8 @@ under verify run them.}
 Stop instead of guessing when the work needs: a file outside `files`, a
 schema or data migration not in this PLAN, a new dependency, or a change to
 a spec test after it was frozen. Ask the user; headless (an agent `pulse go`
-started), write it into DISCOVERED.md at the worktree root.
+started), stop and name it in the summary. Work that has to be built first
+goes under `needs:` in `_devprocess/plans/<n>-needs.md`.
 
 ## Change log
 

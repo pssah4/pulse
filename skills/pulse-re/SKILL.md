@@ -59,16 +59,13 @@ the same one.
    `issue:` (its draft or the issue it adopted): use that one. An
    Item-BA without `issue:` gets the number of the draft you register
    for its item: write it into the BA's frontmatter. A draft an earlier
-   session of yours still holds: `pulse claim --take <n>` on the user's
-   yes.
-3. Keep the heartbeat while you work: `pulse beat <n> spec` when you
-   start an item's spec and after each section you write. After 30
-   minutes without one, the board shows no sign of life. When it exits
-   with 1, the item went to someone else: stop the work on it, push
-   nothing of it, and tell the person.
-4. Write on the docs branch the BA pushed (`docs/<n>-<slug>`, for a
-   Project-BA `docs/<slug>`), else start one from `origin/<base>` after
-   `git fetch origin`.
+   session of yours still holds: tell the person to free it in their own
+   terminal with `pulse release --take <n>` (a `pulse claim --take <n>`
+   there would hold it for that terminal), then claim it here.
+3. Write on the docs branch the BA pushed, else start one from
+   `refs/remotes/origin/<base>` after `git fetch origin`, named as `spec_branch` in
+   `.pulse/config.toml` says with the draft's `{n}`, `{slug}`, and
+   `{type}` (default `docs/{n}-{slug}`; for a Project-BA `docs/<slug>`).
    Push the docs branch after every commit, from the first one: the
    team sees the specs grow, and whoever takes the draft over starts
    from them.
@@ -94,8 +91,8 @@ Every spec carries `issue:`, `parent:` (a relative link to its epic or
 feature spec), and, when a BA exists, `ba-ref:` in its frontmatter.
 Write `parent:` from the template and leave `issue:` to `pulse new`:
 `pulse check` (C9) lets a spec without an issue number name its parent
-before the epic lists it, so the git hook takes the first commit of the
-specs. `pulse new --parent <epic>` then sets `issue:` and `parent:` and
+before the epic lists it, so `pulse check` stays clean on the first
+commit of the specs. `pulse new --parent <epic>` then sets `issue:` and `parent:` and
 lists the item in the epic's `## Items`. The tree is structure, so it
 lives in the repository.
 
@@ -343,17 +340,15 @@ approved item, on the spec as the base branch has it.
 
 ### 6. Register the items
 
-The specs are written and validation passes. Commit them on the docs
-branch, with the parent BA when this run changed it (its promotion
-further down, or its `issue:`), message `docs(re): <epic title>` with
-`Refs: #<epic>`; NFR summary, critical ASRs, open architecture
-questions, constraints, and the forbidden-terms confirmation go into the
-body as short bullets.
-Push the branch (`git push -u origin docs/<n>-<slug>`, for a Project-BA
-`git push -u origin docs/<slug>`): `pulse new` takes a spec only once
-its commit is on origin. Run `pulse number --apply` before that commit,
-so the specs carry their IDs. Then attach each spec to its draft, epic
-first; `pulse new` puts the ID in front of the title:
+The specs are written and validation passes. Run `pulse number --apply`
+so the specs carry their IDs, then commit them on the docs branch, with
+the parent BA when this run changed it (its promotion further down, or
+its `issue:`), message `docs(re): <epic title>` with `Refs: #<epic>`;
+NFR summary, critical ASRs, open architecture questions, constraints,
+and the forbidden-terms confirmation go into the body as short bullets.
+Then attach each spec to its draft, epic first; `pulse new` pushes the
+docs branch and opens its docs PR into the base branch, or uses the open
+one:
 
 ```bash
 pulse new epic "<title>" --spec _devprocess/requirements/epics/EPIC-<nn>-<slug>.md --issue <epic>
@@ -362,26 +357,30 @@ pulse new feat "<title>" --parent <epic> --spec _devprocess/requirements/feature
 pulse new feat "<title>" --parent <epic> --blocked-by <feat> --spec ... --issue <n>
 ```
 
-Each call ends the draft and gives its claim back, and writes `issue:`
-and `parent:` into the spec and a line into the epic's `## Items`.
-Dependencies between items become `--blocked-by`, never prose. Then run
-`pulse check --spec <path> ...` with every spec of this run and fix what
-it reports: `pulse approve` refuses to merge and approve its item for
-the same findings, and the git hook reads them only for approved items.
-Commit what `pulse new` wrote and your fixes, and push again.
+`pulse new` refuses a spec that breaks R2 to R6 and names the findings:
+fix them, commit, and run it again. `pulse go` refuses to merge its docs PR for the same findings. Each call links spec and docs PR
+on the record, sets the label `P0` to `P2` from `priority:`, puts the ID
+in front of the title, ends the draft and gives its claim back, and
+writes `issue:` and `parent:` into the spec and a line into the epic's
+`## Items`. Dependencies between items become `--blocked-by`, never
+prose. Commit what `pulse new` wrote and push again; the docs PR follows.
 
-Its merge belongs to the approval, because agents plan from the
+Its merge follows the approval, because agents plan from the
 spec as the base branch has it (rule R1): when the team wants an item
-built, `pulse approve <n>` records the decision (on their yes, or
-approve spec in the map) and merges this branch into the base branch
-first, without a pull request; nobody merges it on GitHub. It merges
-only a branch that changes nothing outside `_devprocess/`, refuses while
-another branch of origin carries the spec too, and refuses while the
-spec breaks R2 to R6 for a work item. Items still under discussion stay
-unapproved. When `pulse approve` answers that the branch does not merge
-cleanly (another feature of the epic merged first, and both added their
-line at the end of its `## Items`), merge `origin/<base>` into the docs
-branch, keep both lines, commit, push, and approve again.
+built, the person records the decision with `pulse approve <n>` in
+their own terminal, or `a` in the map, which writes the approval only,
+and `pulse go` merges the docs PR into the base branch first, before it
+plans the item; nobody merges it on GitHub. `pulse approve` refuses
+while the spec is neither on the base branch nor in an open pull
+request, and while a spec on the base branch breaks R2 to R6 for a work
+item. `pulse go` merges only a docs PR that changes nothing outside
+`_devprocess/`, whose specs all pass R1 to R6, and whose checks pass,
+and names why it did not. Items
+still under discussion stay unapproved. When `pulse go` says that the
+docs PR does not merge cleanly (another feature of the epic merged
+first, and both added their line at the end of its `## Items`), merge
+`refs/remotes/origin/<base>` into the docs branch, keep both lines, commit, and push;
+the next run merges it.
 
 ## Activation Path format
 
@@ -421,8 +420,7 @@ L is allowed, but its PLAN waits for a person before anything is built.
 Cut features so that each one ends in one pull request whose merge back
 to the base branch a reviewer follows in one reading: one feature, one
 traceable merge, never a monolith. A feature that needs another's code
-names it as its blocker; Pulse stacks it on that branch once the
-blocker's pull request is ready.
+names it as its blocker; Pulse builds it once that blocker is merged.
 
 ## Parent BA status promotion
 
@@ -446,18 +444,16 @@ and report lines: `references/status-promotion-prompt.md`.
    Pulse flow: per spec its goal, scope, success criteria, and open
    questions in a few lines, with the path to read it in full. A
    correction goes into the spec (commit, push) before it counts as
-   approved. On the person's yes, approve with `pulse approve --claim <n>`:
-   it claims a feature, improvement, or fix for planning in this session
-   first, blockers aside, so no live map starts `pulse go` for it, then
-   merges the spec and approves; an epic stays unclaimed. When the claim
-   is refused (another session or person holds the item), nothing is
-   approved: tell the person. Then
-   continue with planning (the pulse-plan skill, which has no command)
-   for the items approved so, in this
-   session, without asking; the others stay unplanned until they are
-   approved. An epic gets no PLAN. Planning hands over as its handoff
-   says, into the build unless something holds the PLAN; an item with an
-   open blocker is planned, then given back (`pulse release <n>`): its
-   build waits for its blockers. For an item
-   approved later, name `/pulse-go`, which plans and builds every
-   approved item, or `/pulse-build <n>` for one.
+   approved. Then tell the person which specs wait and how they approve
+   them: `pulse approve <n>` in their own terminal, or `a` in the map;
+   `pulse go` merges each spec into the base branch first. Once they
+   have, continue with planning (the pulse-plan
+   skill, which has no command) for the approved features,
+   improvements, and fixes, in this session, without asking; the
+   pulse-plan skill claims each, and an item it cannot claim (an open
+   blocker, another holder) stays for `pulse go`, whose planning does not
+   wait for blockers. The others stay unplanned until they are approved.
+   An epic gets no PLAN. Planning hands over as its handoff says: each
+   PLAN, pushed, waits for the person's approval before its build. For an item approved
+   later, tell the person: `pulse go` in their own terminal plans and
+   builds every approved item; or `/pulse-build <n>` for one.

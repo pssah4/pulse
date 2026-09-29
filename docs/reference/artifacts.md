@@ -5,7 +5,7 @@ description: Every file the method writes, where it lives, and how long it may g
 
 # Artifacts
 
-Everything the method writes lives in `_devprocess/` in your repository, next to the code and versioned in git like it: the approval merges a spec into the base branch, and a PLAN travels in the pull request of its build. The state of each item (approved, taken, blocked, done) never goes into these files; it sits in the item's record on the board ([Where things live](../concepts/where-things-live)).
+Everything the method writes lives in `_devprocess/` in your repository, next to the code and versioned in git like it: once a spec is approved, `pulse go` merges it into the base branch, and a PLAN travels in the pull request of its build. The state of each item (approved, taken, blocked, done) never goes into these files; it sits in the item's record on the board ([Where things live](../concepts/where-things-live)).
 
 ## Directory tree
 
@@ -27,13 +27,11 @@ _devprocess/
 │  ├─ README.md                    router: which record to read when              planning
 │  └─ ADR-{nn}-{slug}.md           a decision that constrains later changes       planning
 ├─ temp/testing/                   temporary, ignored, deleted after use          /pulse-build, review
-├─ SYSTEM-MAP.md                   system shape and fast paths (on request)      planning, /pulse-realign
-├─ architecture-map.md             the layers of the architecture map            planning, /pulse-realign
-├─ architecture-map.svg            a drawn picture of those layers (on request)  planning
-└─ arc42.md                        constraints and quality goals (on request)    planning
+├─ SYSTEM-MAP.md                   system shape, quality goals, fast paths       planning, /pulse-build, /pulse-realign
+└─ arc42.md                        all 12 arc42 sections (on request)            planning
 ```
 
-[Planning](../guides/pulse-plan) is a step inside `/pulse-re`, for each feature, improvement, or fix approved in its session (an epic gets no PLAN), and inside `/pulse-build` and `pulse go`; [review](../guides/pulse-review) is a step inside `/pulse-build` and `pulse go`. Settings live in `.pulse/config.toml` ([Configuration](./configuration)). Rules for one area of the code live in a path-local `AGENTS.md` beside that code, where an agent finds them when it reads a file there.
+[Planning](../guides/pulse-plan) is a step inside `/pulse-re`, for each feature, improvement, or fix approved in its session (an epic gets no PLAN), and inside `/pulse-build` and `pulse go`; review and audit are a step inside `/pulse-build` and `pulse go`. Settings live in `.pulse/config.toml` ([Configuration](./configuration)). Rules for one area of the code live in a path-local `AGENTS.md` beside that code, where an agent finds them when it reads a file there.
 
 ## Front matter
 
@@ -49,7 +47,6 @@ subtype: user-facing                       # or library
 priority: P1                               # P0 to P2
 effort: M                                  # XS to L
 risk: []                                   # flags that make a person approve the PLAN
-layer: ui/nav                              # its place on the architecture map; planning writes it
 ---
 ```
 
@@ -91,8 +88,7 @@ Short documents get read. `pulse check` counts lines (an audit report without it
 | PLAN (up to its change log) | 80 |
 | Decision record (up to its implementation notes) | 60 |
 | Audit report | 65 |
-| arc42 constraints | 40 |
-| System map | 120 |
+| System map | 150 |
 
 ## The traceability chain
 
@@ -101,29 +97,6 @@ Every artifact names the one it came from, so any line of code leads back to a b
 ```
 BA  ->  epic  ->  feature  ->  PLAN  ->  decision record  ->  commit (Refs: #n)  ->  pull request (Closes #n)
 ```
-
-## Architecture map
-
-`pulse arch` builds a page of your architecture: each layer with its features and decision records, and a page for every feature, decision, and epic with its spec, its fixes and improvements, and the decisions it names or shares a source file with. `pulse arch --open` opens it in the browser.
-
-The page shows what is merged. Pulse builds it from the base branch into `.git/pulse/architecture-map.html`, one per clone, and never commits it, so parallel pull requests never collide over it. A running live map (`pulse map`) and every round of `pulse go` rebuild it when the base branch moved: they fetch at most every 30 seconds, so after a merge the live map brings it within about that time, and `pulse go` at its next round. `pulse arch` builds it at once. The file keeps its path, so a bookmark keeps working.
-
-The layers come from `_devprocess/architecture-map.md`:
-
-```markdown
-## ui: User interface
-
-What people see and operate.
-
-- nav: Navigation
-- set: Settings
-```
-
-`## <id>: <name>` opens a layer, top to bottom as a request passes through the system; the paragraph says what the layer holds; `- <id>: <name>` names a group in it. A spec or decision record names its place in its front matter: `layer: ui/nav`, or `layer: ui` for the layer alone. Planning writes it when it plans a feature, and a fix or improvement stands with its parent. `pulse check` (C11) reports a layer or group the file lacks, and the map shows a feature or decision without a valid `layer:` under **Not placed**. Every epic is linked from the top of the map; a fix or improvement shows on the page of its feature or epic, and one with neither in a box of its own. Without the file the map groups the features by epic: planning proposes the layers in a session with you, and `/pulse-realign` writes them for an existing codebase.
-
-::: v-pre
-A drawn overview is optional. `_devprocess/architecture-map.svg` stands above the layers; `{{features:<layer>}}` in it becomes that layer's count in words, such as "3 features", and `<a href="#layer-<layer>">` around a box leads to the layer. The page keeps its shapes, text, markers, and links within the page, and leaves out everything else, a style element or attribute too, with a note naming what it left out; `currentColor` follows the page into dark mode.
-:::
 
 ## See also
 

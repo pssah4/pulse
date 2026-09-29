@@ -11,11 +11,38 @@ Coding agents are fast alone and chaotic together. Pulse plans the dependencies 
 
 **Documentation:** [pssah4.github.io/pulse](https://pssah4.github.io/pulse/)
 
-<p align="center">
-  <img src="docs/public/pulse-map.gif" alt="The Pulse map in time-lapse: Sebastian runs five agents, one branch per line with the feature it builds and what its agents do, each with a light (green working, yellow waiting for him, red a failing test); Alice and Bob each work on several items, lit from GitHub (waiting for his review, failing checks); the board counts ready, in progress, in review, and blocked work; the ramp shows the ready work that goes out next." width="640" />
-</p>
+An excerpt of `pulse map`, one morning at a sample project:
 
-Runs in **Claude Code** and **Codex**, in the terminal and in the VS Code extension. Support for GitHub Copilot, Cursor, Gemini CLI, and OpenCode will follow.
+```text
+ ▀▀▀▀▀▀▜▄
+ ▟▛▀▀▀▀▐█▌  pulse  acme/shop                                               09:20
+ ▄█████▛▀   ● 4 working   ● 2 need you   ● 1 failing
+▐█▗█▛▀▘
+▐▛▝▘
+
+WHO IS DOING WHAT ──────────────────────────────────────────────────────────────
+● Sebastian                                   4 of 4 slots busy, 4 agents active
+├ ● #19 fix: token expiry                                               building
+├ ● #11 auth: session refresh                                     review running
+├ ● #17 docs: auth flow                                                fix round
+├ ● #20 api: pagination cursor                                          building
+└ ● #14 fix: typo in login                              PR #114, waits for merge
+● Alice                                                                  2 items
+├ ● #12 api: rate limiting                                             no PR yet
+└ ● #23 api: error envelope                                            no PR yet
+● Bob                                                                     1 item
+└ ● #16 perf: query cache                                PR #116, checks failing
+
+RAMP all open work, in the order it goes out ───────────────────────────────────
+  #13 ui: token banner                                             waits for #11
+  #15 ui: dark mode                                                 not approved
+  #18 ui: settings panel                          locked: token.ts in use by #11
+  #21 ui: empty states                                                    queued
+  #22 db: session index                                                   queued
+  #24 ui: keyboard shortcuts                                        needs a plan
+```
+
+Runs in **Claude Code** and **Codex**, in the terminal and in the VS Code extension. Support for GitHub Copilot will follow.
 
 ## Three parts
 
@@ -27,20 +54,17 @@ Runs in **Claude Code** and **Codex**, in the terminal and in the VS Code extens
 
 ## Where the work lives
 
-You never write tickets on GitHub. Business analyses, epics, features, and plans are Markdown files in `_devprocess/`, written by the agents together with you and versioned in git like code: your approval merges a spec into the base branch, and a plan travels in the pull request of its build. GitHub keeps the board: one small record per item (type, ready, who has it, what it waits for, done), and only the `pulse` command writes it. Agents ask instead of reading: `pulse status --json` answers "what can I start?" from a local cache.
+You never write tickets on GitHub. Business analyses, epics, features, and plans are Markdown files in `_devprocess/`, written by the agents together with you and versioned in git like code: once you approve a spec, `pulse go` merges it into the base branch, and a plan travels in the pull request of its build. GitHub keeps the board: one small record per item (type, ready, who has it, what it waits for, done), and only the `pulse` command writes it. Agents ask instead of reading: `pulse status --json` answers "what can I start?" from a local cache.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `/pulse` | where things stand, what comes next |
+| `/pulse` | where things stand, what comes next; how you set Pulse up, start `pulse go` in your terminal, and work the live map |
 | `/pulse-ba` | business analysis: problem, users, jobs to be done, critical hypotheses |
 | `/pulse-re` | epics and features with success criteria free of technology, registered on the board |
 | `/pulse-build` | test first, smallest change, done only when a user can reach the feature; also tests for existing code |
 | `/pulse-audit` | OWASP Top 10, LLM Top 10, static analysis, dependencies, supply chain |
-| `/pulse-go` | plan and build every approved item in parallel, one worktree and one agent each |
-| `/pulse-map` | the live map in your terminal |
-| `/pulse-setup` | switch Pulse on in a project |
 | `/pulse-realign` | take over existing code, or move a project from the Digital Innovation Agents plugin |
 
 ## Innovation methodology, not just automation
@@ -65,9 +89,9 @@ You need Python 3.9 or newer, the GitHub CLI `gh` 2.94 or newer, and a GitHub re
    codex plugin add pulse@pssah4-skills
    ```
 
-3. The `pulse` command for your terminal, once per machine: `/pulse-setup` offers it, or see [step 5](https://pssah4.github.io/pulse/tutorials/installation#step-by-step).
-4. In Codex, trust the Pulse hooks when it asks at its first start (`/hooks` in the CLI, or one by one on the Hooks page of the IDE extension's settings).
-5. Restart your sessions. Then in each project `/pulse-setup` (in Codex `$pulse:pulse-setup`), and `/pulse` from there on.
+3. The `pulse` command for your terminal, once per machine: `/pulse` offers it, or see [step 5](https://pssah4.github.io/pulse/tutorials/installation#step-by-step).
+4. In Codex, trust the Pulse hooks when it asks at its first start (`/hooks` in the CLI, or one by one on the Hooks page of the IDE extension's settings). Until then, `pulse status`, the map, and `pulse go` say `Codex hooks not trusted: run /hooks in Codex` in a project whose agents include Codex.
+5. Restart your sessions. Then `/pulse` in each project (in Codex `$pulse:pulse`): it sets Pulse up where it is missing and says what comes next.
 
 Or steps 1 to 3 with one command, which asks before it changes your shell profile and removes nothing:
 
@@ -75,7 +99,7 @@ Or steps 1 to 3 with one command, which asks before it changes your shell profil
 curl -fsSL https://pssah4.github.io/pulse/install.py | python3 -
 ```
 
-Every step with a check, and removal: [Installation](https://pssah4.github.io/pulse/tutorials/installation#step-by-step). To update: [Update](https://pssah4.github.io/pulse/tutorials/installation#update).
+Every step with a check, and removal: [Installation](https://pssah4.github.io/pulse/tutorials/installation#step-by-step). To update: [Update](https://pssah4.github.io/pulse/tutorials/installation#update), and from 0.1.6 [Upgrading from 0.1.6](https://pssah4.github.io/pulse/guides/upgrading).
 
 ## Coming from the Digital Innovation Agents plugin
 

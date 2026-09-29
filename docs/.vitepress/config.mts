@@ -16,8 +16,9 @@ const guidesSidebar = [
     text: 'Start',
     items: [
       { text: '/pulse', link: '/guides/pulse' },
-      { text: '/pulse-setup', link: '/guides/pulse-setup' },
+      { text: 'pulse setup', link: '/guides/pulse-setup' },
       { text: '/pulse-realign', link: '/guides/pulse-realign' },
+      { text: 'Upgrading from 0.1.6', link: '/guides/upgrading' },
     ],
   },
   {
@@ -27,15 +28,14 @@ const guidesSidebar = [
       { text: '/pulse-re', link: '/guides/pulse-re' },
       { text: 'Planning', link: '/guides/pulse-plan' },
       { text: '/pulse-build', link: '/guides/pulse-build' },
-      { text: 'Review', link: '/guides/pulse-review' },
       { text: '/pulse-audit', link: '/guides/pulse-audit' },
     ],
   },
   {
     text: 'Collaboration',
     items: [
-      { text: '/pulse-go', link: '/guides/pulse-go' },
-      { text: '/pulse-map', link: '/guides/pulse-map' },
+      { text: 'pulse go', link: '/guides/pulse-go' },
+      { text: 'pulse map', link: '/guides/pulse-map' },
     ],
   },
 ]
@@ -89,7 +89,7 @@ export default defineConfig({
     ['meta', { name: 'theme-color', content: '#007780' }],
     ['meta', { property: 'og:title', content: 'Pulse' }],
     ['meta', { property: 'og:description', content: 'Operating model, live collaboration, and a V-Model method for teams of people and coding agents.' }],
-    ['meta', { name: 'keywords', content: 'Pulse, V-Model, innovation, business analysis, requirements engineering, parallel agents, GitHub issues, ADR, OWASP, Claude Code, Cursor, Codex' }],
+    ['meta', { name: 'keywords', content: 'Pulse, V-Model, innovation, business analysis, requirements engineering, parallel agents, GitHub issues, ADR, OWASP, Claude Code, Codex' }],
   ],
 
   appearance: { initialValue: 'light' },

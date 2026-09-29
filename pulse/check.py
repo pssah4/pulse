@@ -9,11 +9,8 @@
   C6  every feature spec has an Activation Path with Type and Identifier
   C7  every stub marker in the code names an issue, an open one when the
       issue cache is available
-  C8  tasks in one wave of a PLAN touch disjoint files (they run in parallel)
   C9  every spec's parent: link and its epic's Items list agree
   C10 every spec's file name starts with the ID its place in the tree calls for
-  C11 a feature spec's or decision's layer: names a layer (and group) of the architecture map's
-      layer model (pulse/archmap.py); without a model nothing is checked
   R1 to R6  an approved item's spec is one an agent can plan from (pulse/spec.py),
       read from the base branch; without an issue cache the board is loaded,
       without a board a finding says they were skipped; --spec <path> applies them to spec
@@ -23,19 +20,20 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from pulse import archmap, config, ready, spec, state
+from pulse import config, ready, spec, state
 
-SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".vitepress"}
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".vitepress", ".worktrees"}
 GUIDES = {"AGENTS.md", "CLAUDE.md"}
 TEMP = "_devprocess/temp/"          # temporary test files, deleted after use, never committed
 TOLERANCE = 0.10
 CAPS = {"project-ba": 200, "epic-ba": 120, "feature-ba": 60, "mini-ba": 40, "exploration": 70,
         "epic": 40, "feature": 80, "handoff": 60, "adr": 60, "plan": 80, "audit": 65,
-        "arc42": 40, "system-map": 120}
+        "system-map": 150}
 STATE_KEYS = {"status", "phase", "claim", "last-change", "assignee", "owner"}
 CORE = {"context", "kontext", "decision drivers", "begründung", "begruendung",
         "considered options", "betrachtete optionen", "decision", "entscheidung",
@@ -48,7 +46,6 @@ LINK = re.compile(r"\[[^\[\]]*\]\(([^)\s\[]+)(?:\s+\"[^\"]*\")?\)")     # text a
 TICK = re.compile(r"`([^`\s]+)`")
 STUB = re.compile(r"FIXME\(stub\):(.*)")
 COMMENT = re.compile(r"^[ \t]*<!--.*?-->[ \t]*\n?", re.M | re.S)     # template guidance, not content
-TESTISH = re.compile(r"(^|/)(tests?|__tests__)/|(^|/)test_[^/]*$|\.(test|spec)\.[^/]*$")
 
 
 @dataclass(frozen=True)
@@ -95,7 +92,7 @@ def _path_like(token: str) -> str | None:
 
 
 def _exists(root: Path, base: Path, token: str) -> bool:
-    return (root / token).exists() or (base / token).exists()
+    return os.path.exists(root / token) or os.path.exists(base / token)      # False, not OSError, when too long (#93)
 
 
 def check_links(root, path, text):
@@ -104,7 +101,7 @@ def check_links(root, path, text):
             target = m.group(1).split("#", 1)[0]
             if not target or re.match(r"^[a-z]+:", target) or any(c in target for c in "{}<>"):
                 continue
-            if not (path.parent / target).exists():
+            if not os.path.exists(path.parent / target):
                 yield Finding(str(path.relative_to(root)), n, "C1", f"link target does not exist: {target}")
 
 
@@ -133,8 +130,8 @@ def check_decision(root, path, text):
 
 def check_state(root, path, fm):
     for key in sorted(STATE_KEYS & fm.keys()):
-        yield Finding(str(path.relative_to(root)), fm[key][1], "C4",
-                      f"work state '{key}' in frontmatter; it lives in the item's record on the board (pulse show)")
+        yield Finding(str(path.relative_to(root)), fm[key][1], "C4", f"work state '{key}' in frontmatter; "
+                      "it lives in the item's record on the board (pulse status <n>)")
 
 
 def _kind(rel: str, name: str, fm: dict) -> str | None:
@@ -159,7 +156,7 @@ def _kind(rel: str, name: str, fm: dict) -> str | None:
         if rel.startswith(prefix):
             return kind
     return {"_devprocess/requirements/handoff/architect-handoff.md": "handoff",
-            "_devprocess/arc42.md": "arc42", "_devprocess/SYSTEM-MAP.md": "system-map"}.get(rel)
+            "_devprocess/SYSTEM-MAP.md": "system-map"}.get(rel)             # arc42.md: cap-exempt, on request
 
 
 def _uncommented(text: str) -> str:
@@ -207,12 +204,6 @@ def check_activation(root, path, text):
                       "no '## Activation Path' section" if not m else f"Activation Path lacks {', '.join(missing)}")
 
 
-def check_waves(root, path, text):
-    rel = path.relative_to(root).as_posix()
-    for n, msg in ready.wave_clashes(text):
-        yield Finding(rel, n, "C8", msg)
-
-
 def _tracked(root: Path):
     out = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True)
     return [root / f for f in out.stdout.splitlines()] if out.returncode == 0 else []
@@ -227,10 +218,11 @@ def check_stubs(root: Path):
         pass
     for f in _tracked(root):
         rel = f.relative_to(root).as_posix()
-        if f.suffix.lower() in (".md", ".mdx", ".txt", ".rst") or TESTISH.search(rel):
+        if f.suffix.lower() in (".md", ".mdx", ".txt", ".rst") or ready.TESTISH.search(rel):
             continue
         try:
-            if f.stat().st_size > 1_000_000:
+            st = f.lstat()             # a link or a FIFO is no file of the project to read (L-3)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
                 continue
             text = f.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -258,18 +250,21 @@ def check_readiness(root: Path):
     items = [i for i in board if i.get("approved") and i.get("type") in state.WORK and i.get("spec")]
     ref = config.base_ref(root) if items else None
     for i in items:
-        for f in spec.findings(spec.on_base(root, i["spec"], ref), i["type"], i["number"]):
+        text = spec.on_base(root, i["spec"], ref)
+        if text is None and i.get("spec_prs"):          # in its docs PR, which pulse go checks and merges (#115)
+            continue
+        for f in spec.findings(text, i["type"], i["number"]):
             code, msg = f.split(" ", 1)
             yield Finding(i["spec"], 1, code, f"#{i['number']}: {msg}")
 
 
 def check_specs(paths) -> list:
-    """pulse check --spec: what pulse approve refuses once these specs are merged (spec.refusal),
+    """pulse check --spec: what pulse approve and pulse go refuse once these specs are merged (spec.refusal),
     read from the files as they are here."""
     found = []
     for p in map(Path, paths):
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = spec.read(p)
         except OSError as e:
             found.append(Finding(str(p), 0, "R1", f"spec missing: {e.strerror}"))
             continue
@@ -285,19 +280,22 @@ def check_specs(paths) -> list:
     return found
 
 
-def run(root: Path) -> list:
+def run(root: Path, board: bool = True) -> list:
+    """Every finding; board=False leaves R1 to R6 out, which read the board (the tests gate of pulse go)."""
     found = []
     for path in _walk(root):
         rel = path.relative_to(root).as_posix()
-        if path.suffix != ".md" or path.is_symlink():   # a linked guide is checked as its target
-            continue
-        if rel.startswith(TEMP):
+        if path.suffix != ".md" or rel.startswith(TEMP):
             continue
         in_dev = rel.startswith("_devprocess/")
         guide = path.name in GUIDES or rel in ("_devprocess/SYSTEM-MAP.md", "_devprocess/decisions/README.md")
-        if not (in_dev or guide):
+        if not (in_dev or guide) or (not in_dev and path.is_symlink()):   # a linked guide is checked as its target
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = spec.read(path)
+        except OSError as e:            # a link, a FIFO, a device: named, never read (#93)
+            found.append(Finding(rel, 1, "C1", f"{e.strerror}: pulse check does not read it"))
+            continue
         fm = _frontmatter(text)
         found += check_links(root, path, text)
         if guide:
@@ -309,10 +307,8 @@ def run(root: Path) -> list:
             found += check_decision(root, path, text)
         if rel.startswith("_devprocess/requirements/features/"):
             found += check_activation(root, path, text)
-        if rel.startswith("_devprocess/plans/"):
-            found += check_waves(root, path, text)
     found += check_stubs(root)
-    found += check_readiness(root)
+    found += check_readiness(root) if board else []
     found += [Finding(p, 1, "C9", msg) for p, msg in spec.link_problems(root)]
     try:
         found += [Finding(p, 1, "C10", f"{msg}: pulse number --apply fixes it" if new else msg)
@@ -320,7 +316,6 @@ def run(root: Path) -> list:
     except subprocess.CalledProcessError as e:      # no history read is no ID (#85 audit M-1)
         found.append(Finding(spec.REQUIREMENTS, 0, "C10", "git cannot read the history here, so pulse number "
                                                           f"hands out no ID: {ready.git_error(e.stderr or '')}"))
-    found += [Finding(p, 1, "C11", msg) for p, msg in archmap.layer_problems(root)]
     return sorted(found, key=lambda f: (f.path, f.line, f.rule))
 
 
@@ -337,5 +332,5 @@ def main(args) -> int:
     if found:
         print(f"{len(found)} finding{'s' if len(found) != 1 else ''}")
         return 1
-    print("pulse check: C1-C11 clean, R1-R6 not checked" if skipped else "pulse check: clean")
+    print("pulse check: C1-C10 clean, R1-R6 not checked" if skipped else "pulse check: clean")
     return 0
