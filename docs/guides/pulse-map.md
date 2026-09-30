@@ -15,7 +15,7 @@ It reads the board every two seconds and redraws its lights twice a second, unti
 
 The map is as wide as its terminal, from 44 to 160 columns, so it fits a pane beside a chat, and every frame asks the terminal again: resize it, and the next frame fits the new width. Below 60 columns the header leaves out the signet and keeps its words. Without a terminal (`pulse status` or `pulse map` in a pipe, a file, or an agent's shell) the map takes the width in `COLUMNS`, else 80 columns.
 
-The signet is four rows high and at most eight columns wide. The four lines beside it show repository/person/time, activity, warnings, and auto mode, with no blank line above them. Changed rows are cleared before their text is written, so clearing a full-width row does not erase the last letter of `done` or `active`.
+The signet uses a 16 by 16 dot grid in four rows and at most eight columns. Its curves and inner strokes follow the SVG icons. Truecolor terminals show the SVG gradient; 256-color terminals use the nearest colors, 16-color terminals use cyan, and plain output keeps the same dots. When `COLORFGBG` reports a light background (last index 7 or 15), the gradient is petrol; otherwise it is aqua. The four lines beside it show repository/person/time, activity, warnings, and auto mode, with no blank line above them. Changed rows are cleared before their text is written, so clearing a full-width row does not erase the last letter of `done` or `active`.
 
 ## Open it from the chat
 
@@ -56,10 +56,10 @@ review/audit session. It does not start the regular backlog run.
 ## What you see
 
 ```text
-▀▀▀▀▀▜▄   pulse  acme/shop  Sebastian                                      09:28
-▟▀▀▀▀ ▐▌  ● 4 working   ● 3 need you   ● 1 failing
-▐▛▟▀▀▀▘
-▐▌▘       auto you  1 plan off  2 build on  3 merge off
+⠈⢛⣛⣛⣛⡛⢷⡄  pulse  acme/shop  Sebastian                                      09:28
+⠸⢛⣛⣛⣛⣫⣼⠇  ● 4 working   ● 3 need you   ● 1 failing
+⢰⡟⣭⣭⣭⠍⠁
+⢸⠇⠟       auto you  1 plan off  2 build on  3 merge off
 
 auto @alice  3 merge on until 18:00 (their items)
 

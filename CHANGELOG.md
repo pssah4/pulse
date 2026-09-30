@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-30
+
+### Changed
+
+- The four-row terminal signet follows the SVG icons on a finer dot grid, with aqua and petrol gradients in truecolor and 256 colors.
+
 ## [0.2.1] - 2026-09-30
 
 ### Added

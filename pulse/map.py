@@ -46,11 +46,15 @@ UPDATE = ("Pulse {v} is out, this map runs {own}. Claude Code: with auto-update 
 BREATH = (1, .8, .6, .45, .6, .8)   # a working light's brightness per frame: one breath in 3 s (D-38)
 GREEN, DARK = (46, 229, 157), (13, 17, 23)   # that light at full brightness, and what it fades toward
 TRUE = 1 << 24                  # the colors of a truecolor terminal; 256 and 16 for the others
-# the signet beside the header, as docs/public/assets/pulse-icon.ansi draws it in 256 colors
-SIGNET = ('\033[0m\033[38;5;37m▀▀▀▀▀▜▄\033[0m',
-          '\033[0m\033[38;5;37m▟▀▀▀▀ ▐▌\033[0m',
-          '\033[0m\033[38;5;37m▐▛▟▀▀▀▘\033[0m',
-          '\033[0m\033[38;5;37m▐▌▘\033[0m')
+# 16 by 16 dots from the shared P paths in pulse-icon-dunkel.svg and pulse-icon-hell.svg.
+# Each Braille cell holds 2 by 4 dots; colors sample the SVG gradients at its lit dots.
+SIGNET = ('⠈⢛⣛⣛⣛⡛⢷⡄', '⠸⢛⣛⣛⣛⣫⣼⠇', '⢰⡟⣭⣭⣭⠍⠁', '⢸⠇⠟')
+SIGNET_DARK = ('10c1c9 10c1c9 12c1c9 17c3ca 1bc4ca 20c6cb 22c6cc 22c6cb',
+               '07b9c3 06bbc5 06bcc6 08bdc7 0abfc8 0ec0c8 11c1c9 17c3ca',
+               '0eafb9 0cb2bc 0bb3bd 09b5bf 08b7c1 05bbc5 06bec7', '12a9b3 11aab4 0fadb7')
+SIGNET_LIGHT = ('007b84 007c84 007e86 008189 00848b 00878e 008990 00868d',
+                '007079 00737c 00767f 007982 007c85 007c84 007880 007a82',
+                '00636d 006872 006b75 006d76 006d76 006f79 007179', '005b64 005e68 00606a')
 INSET = 10
 HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on every screen (#57)
 # what the map asks of a person, the most urgent first, in the color of its state
@@ -252,14 +256,18 @@ def depth(env=os.environ) -> int:
     return 256 if "256color" in env.get("TERM", "") else 16
 
 
-def glow(level: float, colors: int) -> str:
-    """The SGR color of a working light at this brightness: 24-bit, or the nearest in the 256-color cube."""
-    rgb = [round(d + (g - d) * level) for g, d in zip(GREEN, DARK)]
+def rgbcode(rgb, colors: int) -> str:
+    """An RGB foreground as truecolor or the nearest in the 256-color cube."""
     if colors >= TRUE:
         return "38;2;%d;%d;%d" % tuple(rgb)
     steps = (0, 95, 135, 175, 215, 255)
     r, g, b = (min(range(6), key=lambda k: abs(steps[k] - c)) for c in rgb)
     return f"38;5;{16 + 36 * r + 6 * g + b}"
+
+
+def glow(level: float, colors: int) -> str:
+    """The SGR color of a working light at this brightness."""
+    return rgbcode([round(d + (g - d) * level) for g, d in zip(GREEN, DARK)], colors)
 
 
 class Paint:
@@ -272,6 +280,17 @@ class Paint:
     def link(self, text: str, url) -> str:
         """text as a terminal link to url (OSC 8), with color only: a pipe gets no escapes."""
         return f"\033]8;;{url}\033\\{text}\033]8;;\033\\" if self.color and url else text
+
+
+def signet(colors: int, env=os.environ) -> list:
+    """Four rows, with the light SVG's petrol or the dark SVG's aqua gradient."""
+    paint = Paint(colors)
+    if colors < 256:
+        return [paint(row, "36") for row in SIGNET]
+    # ponytail: COLORFGBG reports the theme; query OSC 11 if unreported light backgrounds need detection.
+    palette = SIGNET_LIGHT if env.get("COLORFGBG", "").rsplit(";", 1)[-1] in ("7", "15") else SIGNET_DARK
+    return ["".join(paint(glyph, rgbcode(bytes.fromhex(hexrgb), colors))
+                    for glyph, hexrgb in zip(row, shades.split())) for row, shades in zip(SIGNET, palette)]
 
 
 def roll(states) -> str:
@@ -588,11 +607,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     head = [lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90") + "  " + vm["person"], p(vm["now"], "1"),
                    w - inset),
             "   ".join(parts), p("! " + warn, "33") if warn else ""]
-    signet = [l if p.color >= 256 else re.sub(r"38;5;\d+", "36", l) if p.color else ANSI.sub("", l) for l in SIGNET]
+    mark = signet(p.color)
     switched = vm.get("auto") or {}
     mode = p(vm["auto_why"], "31") if vm.get("auto_why") else \
         "auto you  " + auto.line(switched.get(vm["me"], {}), sep="  " if inset else " ")    # 44 columns hold it
-    out = [(fit(signet[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
+    out = [(fit(mark[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
     out.append("")
     if item:                              # the item view (D-44), live like the map
         return [fit(l, w) for l in out + inside(item)]
