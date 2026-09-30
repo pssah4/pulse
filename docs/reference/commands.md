@@ -36,6 +36,10 @@ Reads come from a local cache (`--fresh` skips it); `--json` gives machine-reada
 |---|---|
 | `pulse status [<n>]` | where things stand: the map, once, or one open item with its stage, spec, PLAN, claim, and blockers; --json gives its data<br>`--json`<br>`--fresh`: skip the cache |
 | `pulse approve <n>...` | write the approval each item waits for: gate 1 (agents may plan it), gate 2 (its pushed PLAN: agents may build it), or a new try after pulse:failed; pulse go acts on it |
+| `pulse defer <n>` | stop an open item and put its unchanged work in the paused backlog |
+| `pulse resume <n>` | explicitly resume an item deferred to the backlog, retaining its approvals |
+| `pulse discard <n>` | stop an item and close it as not planned, without removing code or specs |
+| `pulse delete <n>` | remove an item's code and specs through a reviewed PR, then delete its issue and comments |
 | `pulse auto [plan\|build\|merge] [on\|off]` | your auto mode per gate: alone it shows every person's switches; &lt;gate&gt; on lets your own pulse go pass that gate for your items without asking you, off takes it back<br>`[plan\|build\|merge]`: plan (gate 1), build (gate 2), merge (gate 3)<br>`--for <8h\|2d>`: with on: for so many hours or days, then off by itself |
 | `pulse go` | plan and build every approved item in parallel, in the foreground of this terminal: worktree + headless agent each, at most cap of them, agents from agent (.pulse/config.toml) |
 | `pulse map` | live map in the terminal: who does what, what goes out next<br>`--ensure`: open a live map where you work unless this clone has one; PULSE_MAP=off turns it off |

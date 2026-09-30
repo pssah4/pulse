@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-30
+
+### Added
+
+- Defer open work to the paused backlog as-is, explicitly resume it, or discard it without removing code. Existing PRs, approvals, notes and work remain preserved.
+- Feature deletion through a confirmed, reviewed removal PR before irreversible issue/comment deletion; no history rewriting or implicit removal of dependent features.
+- Shared manual map ordering with `m`, arrows and Enter; dependencies always precede the work they block.
+
+### Changed
+
+- Epic progress bars share a column below a blank separator. The picker reaches epics, and their details show the full title.
+- The terminal P signet uses at most four rows beside the header text.
+
+### Fixed
+
+- The live map keeps the final character at the right edge of a split terminal.
+- GitHub rate limits pause requests until the retry deadline and show the map's cached data as stale instead of calling the connection offline.
+
 ## [0.2.0] - 2026-09-30
 
 ### Upgrade notes

@@ -8,6 +8,8 @@ PLAN and pull request by that name.
 
 ## Start
 
+Defer, resume, discard, and delete are person's levers. An agent never invokes them or confirms them through the Map. Defer preserves code, specs, PRs, approvals and notes; auto mode does not resume it. An explicitly commissioned removal PR may be prepared by an agent, but merge approval and irreversible issue deletion remain the person's. Never replace these commands with direct record edits, force pushes or history resets.
+
 1. Read the code first: trace the flow, its callers, and its tests.
 2. Read the one decision that applies: `_devprocess/decisions/README.md`
    routes by "Read When". Read the nearest path-specific AGENTS.md

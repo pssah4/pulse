@@ -15,6 +15,8 @@ It reads the board every two seconds and redraws its lights twice a second, unti
 
 The map is as wide as its terminal, from 44 to 160 columns, so it fits a pane beside a chat, and every frame asks the terminal again: resize it, and the next frame fits the new width. Below 60 columns the header leaves out the signet and keeps its words. Without a terminal (`pulse status` or `pulse map` in a pipe, a file, or an agent's shell) the map takes the width in `COLUMNS`, else 80 columns.
 
+The signet is four rows high and at most eight columns wide. The four lines beside it show repository/person/time, activity, warnings, and auto mode, with no blank line above them. Changed rows are cleared before their text is written, so clearing a full-width row does not erase the last letter of `done` or `active`.
+
 ## Open it from the chat
 
 A chat cannot show a live view, so an agent you ask for the map brings you to a terminal, as `/pulse` (in Codex `$pulse:pulse`) says. It runs `pulse map --ensure`, the same call that opens the map when work starts ([below](#when-it-opens-by-itself)): it opens the map where you work unless a map runs there already, and passes on the one line that says what it did. In Herdr that is a pane to the right of the chat's pane, and inside tmux a pane beside the chat; `q` closes it. In any other terminal no window opens, and the line says to run `pulse map` in a second terminal and names the command. In VS Code, with Claude Code or Codex, nothing opens: the line names the task "Pulse map" (Terminal > Run Task) where the project has it, else that `pulse setup` adds it ([pulse setup](./pulse-setup)), and the command for the terminal panel. Codex runs the call outside its sandbox, which cannot open a terminal: with the Codex rules of `pulse setup --codex-rules`, or after you approve it. With the map switched off (`PULSE_MAP=off`), the agent asks you to run `pulse map` in a terminal of your own.
@@ -43,18 +45,21 @@ Outside Herdr, `pulse go` as it starts, `pulse claim`, and `pulse new --draft` o
 
 The agents that `pulse go` starts never open a map. To turn it off, set `PULSE_MAP=off` in the environment.
 
-### It starts nothing
+### Starting work
 
 The map starts no `pulse go`, neither by itself nor on a key. You start `pulse go` in a terminal of your own, where it runs in the foreground and its output stays in sight ([pulse go](./pulse-go#start-a-run)). While approved work waits, [Next](#next) says `pulse go builds it` or `pulse go writes its plan`.
+
+Deleting an item has a separate, explicitly confirmed check step. That step
+uses the same runner to execute the removal's configured tests and a fresh
+review/audit session. It does not start the regular backlog run.
 
 ## What you see
 
 ```text
- ▀▀▀▀▀▀▜▄
- ▟▛▀▀▀▀▐█▌  pulse  acme/shop                                               09:28
- ▄█████▛▀   ● 4 working   ● 3 need you   ● 1 failing
-▐█▗█▛▀▘
-▐▛▝▘        auto you  1 plan off  2 build on  3 merge off
+▀▀▀▀▀▜▄   pulse  acme/shop  Sebastian                                      09:28
+▟▀▀▀▀ ▐▌  ● 4 working   ● 3 need you   ● 1 failing
+▐▛▟▀▀▀▘
+▐▌▘       auto you  1 plan off  2 build on  3 merge off
 
 auto @alice  3 merge on until 18:00 (their items)
 
@@ -64,6 +69,7 @@ BOARD ────────────────────────�
  in review      ██████░░░░░░░░░░░░░░░░░░   3
  blocked        ░░░░░░░░░░░░░░░░░░░░░░░░   0
  not ready yet  ██░░░░░░░░░░░░░░░░░░░░░░   1
+
  #10 sign-in that lasts                                  █░░░░░░░░░ 1 of 14 done
 
 WHO IS DOING WHAT ──────────────────────────────────────────────────────────────
@@ -97,7 +103,13 @@ Each line holds a title on the left and its state on the right. The state takes 
 
 ### Auto mode
 
-The fifth line of the header shows your own auto mode per gate, as `pulse auto` switched it: `auto you  1 plan off  2 build on  3 merge off`, with `on until 18:00` for a switch that runs out and `off (expired 02:10)` for one that ran out. Below the header stands everyone else whose switch is on, one line per login: `auto @alice  3 merge on until 18:00 (their items)`. Their switches act only in their own `pulse go` and only on their own items, never on yours. When two open issues have the label `pulse:auto`, no switch counts for anyone, and the line says so in red: `auto off: two auto issues #12 #40, close one`. `1`, `2`, and `3` switch your own (see [Keys](#keys)).
+The fourth line of the header shows your own auto mode per gate, as `pulse auto` switched it: `auto you  1 plan off  2 build on  3 merge off`, with `on until 18:00` for a switch that runs out and `off (expired 02:10)` for one that ran out. Below the header stands everyone else whose switch is on, one line per login: `auto @alice  3 merge on until 18:00 (their items)`. Their switches act only in their own `pulse go` and only on their own items, never on yours. When two open issues have the label `pulse:auto`, no switch counts for anyone, and the line says so in red: `auto off: two auto issues #12 #40, close one`. `1`, `2`, and `3` switch your own (see [Keys](#keys)).
+
+### GitHub rate limits
+
+`GitHub rate limit (graphql); retry after ... UTC; showing last known state, cache age ...` means GitHub's API allowance is exhausted, not that your coding agent has run out of tokens. The map shows the last cached board with its age; without a usable cache it says `no cached state`. In a narrow pane the full warning wraps in the footer when no action message is displayed.
+
+Pulse waits until the reported retry time, or uses bounded backoff when GitHub supplies no reliable deadline. The warning remains after that time if the refresh fails and clears only after a successful fresh board read. A stale display is not permission to approve or mutate unverified work. Ordinary connection failures still say `offline`.
 
 ### Lights
 
@@ -123,6 +135,8 @@ A working light breathes: its brightness rises and falls in a cycle of about thr
 - **Epics:** one line per open epic with children, how far it is: its children closed as completed or merged, of those and its open children (`1 of 14 done`). A child closed as not planned counts in neither. The map reads the closed children at most every 30 seconds, and only while an epic is open.
 - **Your row:** your slots (items you hold without a pull request, out of `cap` in `.pulse/config.toml`) and the agents `pulse go` runs for you. A teammate's work takes none of your slots.
 
+Exactly one blank line separates the activity bars from the epic progress rows. Epic bars and their count columns align across the board, even when counts have different lengths. Long epic titles end in `…`; their numbers remain visible. Move the picker up into the board and press `Enter` or `→` to read an epic's full title and goal or open its spec. Returning keeps that epic selected. Epics without children have no progress row, and approving an epic does not approve its features.
+
 ### Who is doing what
 
 You come first, with the features you hold and the drafts whose spec you write. Each feature line says where it stands: while `pulse go` runs it, the step of its chain (`planning`, `building`, `RED check running`, `tests running`, `review and audit running` (one session), `review running`, `audit running`, `fix round`); once its pull request exists, `draft PR #n, a gate is red`, `PR #n, waits for merge`, `PR #n from a fork, merged on GitHub`, or what the merge would still need (`PR #n has no passing review and audit of its last commit`); `PR #n targets <branch>` when it goes into another branch than the base, as an older Pulse stacked it. A merged feature leaves the map at once, also when it merged into a branch other than the default one: GitHub closes nothing there, and the next `pulse go` closes the item before it starts anything; until then, an item it blocks still waits for it. A pull request that changes only files under `_devprocess/`, such as the spec, counts for no feature by its branch name, open or merged: the feature shows no "waits for merge" for it, and it stays on the map after that merge. A pull request from a fork counts for a feature only through its `Closes #<n>`, since the fork's owner picks its branch name, and GitHub links `Closes #<n>` only in a pull request into the default branch: merged into another base branch, it closes nothing, and you close the feature on GitHub.
@@ -147,7 +161,7 @@ One line per kind of thing that waits, the most urgent first, each with the step
 |---|---|
 | `failing` | `/pulse-build <n>` takes it on in a session; for a draft pull request with a red gate, `/pulse-build <n>` fixes it in a session, or fix it, then `pulse release <n>`: the next `pulse go` runs its gates |
 | `your review` | review the pull request on GitHub |
-| `waits for merge` | merge the pull request on GitHub: the map merges nothing; one into another branch than the base says `retarget PR #n to <base> on GitHub` |
+| `waits for merge` | approve gate 3 for `pulse go`, or merge the pull request on GitHub; one into another branch than the base says `retarget PR #n to <base> on GitHub` |
 | `plan waits for you` | `pulse approve <n>`, or approve plan in its view; the item's line says `plan changed since plan ok` or `spec changed since plan ok` when the plan or its spec changed after an approval, which then counts no more |
 | `not approved` | `pulse approve <n>`, or approve spec in its view: it writes the approval, and `pulse go` merges the docs PR of a spec not yet on the base branch first |
 | `docs PR changed` | `pulse approve <n>`, or approve spec in its view: the docs PR moved after gate 1, and `pulse go` merges only the commit someone approved |
@@ -171,9 +185,20 @@ Two more states come from the board:
 - `spec in progress`: a draft nobody holds. `/pulse-re` writes its spec; it takes no slot and never starts. Once someone holds it, it moves under them in [Who is doing what](#who-is-doing-what).
 - `last run: <why>`: a run of `pulse go` gave the item back and left a note; its branch holds the work. The note comes after what the item waits for, so `not approved, last run: ...` still shows the approval first.
 
+### Move waiting work
+
+Pick an unclaimed ramp item, press `m`, then use `↑` and `↓` to preview its new position. `Enter` saves the shared order; `Esc` or back cancels without writing. Epics and claimed items cannot be moved. Moving an item changes neither its priority labels nor its dependencies: it must remain behind every open prerequisite.
+
+The map, `pulse status`, and `pulse go` use the same order. Other clones see a saved move on their next full board read. Without a manual order, dependencies, effective priority, and item number determine the order; new items without a manual position follow the manually ordered part, still respecting dependencies. An invalid move, a changed claim or dependency, or a stale preview writes nothing and requires a fresh selection. A resize that loses the target context also cancels the move. The old `pulse rank` command and `Rank:` body lines do not control this order.
+
 ## Keys
 
-The map is a tree: the map itself, an item, and what acts on that item. No key but `?` needs Shift, and the last line lists the main keys of the level you are on, in 44 columns: `↑ ↓ pick  a approve  enter open  q quit` on the map; `?` shows the help all the same. The map writes approvals and your auto switches, and nothing else: the approval to build an item, the approval of its plan, a new try after `pulse:failed`, and `1` `2` `3`; `pulse go` acts on them, and the map merges nothing. It starts no `pulse go`. Claiming by hand, closing, and new items stay with the commands, and merging a pull request with GitHub.
+No key but `?` needs Shift for navigation. The last line lists the main
+keys of the level you are on; `?` shows the full help. Typed confirmations
+use the exact characters of the repository, item number and commit shown.
+It starts no `pulse go`.
+
+The map is a tree: the board and work items, an item's details, and its actions. The footer lists the main keys; `?` shows the help. Navigation only reads. Confirmed actions can write approvals, auto switches, manual order, and lifecycle changes. Deletion has a separate reviewed removal-PR flow and an irreversible final confirmation. The map starts no `pulse go`; you start the runner in your own terminal. Creating items and claiming work by hand remain CLI actions.
 
 The map runs as you, so no agent may press its keys: the [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) refuses text and keys that an agent sends into the map's pane (`herdr pane run`, `send-text`, `send-keys`, `herdr agent send-keys` and `prompt`, `herdr agent start --pane`), and `pulse map` typed into another terminal. It finds the pane locally: a pane that `.git/pulse/map-pane` names, and while a map of yours runs, any pane whose processes hold one, as Herdr (in the session the command names) or tmux and `ps` report them, in whatever tab or repository and after the pane moved. While a map runs, the guard is strict: a pane it cannot resolve counts as a map, and so does a command that names more than four panes or that another machine or a `HERDR_*` setting would answer; tmux passes only reads (`list-*`, `show-*`, `capture-pane`, `display-message`, `has-session`) and `send-keys` or `paste-buffer` into an absolute `%N` pane without a map; no script types keys (`keystroke`, `key code`). With no map running, every pane is open to agents as before and nothing is asked.
 
@@ -183,8 +208,11 @@ In a terminal lower than the map, the header stays on top and the last line keep
 
 | Level | Key | Does |
 |---|---|---|
-| map | `↑` `↓` (or `k` `j`) | pick an item: a feature in the tree or a ramp row; `›` marks it |
+| map | `↑` `↓` (or `k` `j`) | pick a visible board epic, an item in the tree, or a ramp row; `›` marks it |
 | map | `Enter`, `→` | open the picked item |
+| map | `g` | enter an issue number and press `Enter` to open it, including a closed feature, improvement, or fix; `Esc` cancels |
+| map | `m` | preview a move of the picked, unclaimed ramp item |
+| move | `↑` `↓`, `Enter` | change the target position, then save if the preview is still valid |
 | map | `a` | the approval the picked item waits for, after a confirmation that names the gate, what it lets happen, and the account you act as (`approve spec #15 ui: dark mode as Sebastian (@seb): gate 1: agents may plan it`); `Enter` confirms, the map writes it, and `pulse go` acts on it. An item that waits for nobody says why in the last line |
 | map | `1`, `2`, `3` | switch your own auto mode of gate 1 plan, 2 build, or 3 merge, after a short confirmation that names the gate, what then happens without asking you, and your login (`3 merge on: pulse go merges your green PRs, as @seb?`); `Enter` confirms, not within a second of opening, and `esc` cancels. It writes the same comment as `pulse auto <gate> on` or `off`, without an end: `pulse auto <gate> on --for 8h` sets one. In a map an agent started, the keys write nothing |
 | map | `?` | show the help |
@@ -192,6 +220,7 @@ In a terminal lower than the map, the header stays on top and the last line keep
 | item | `↑` `↓` (or `k` `j`) | pick one of the things the item offers |
 | item | `Enter` | do the picked one |
 | item | `a`, `o` | approve (the approval the item waits for), read spec, without picking |
+| item | `PgUp`, `PgDn` | scroll long details; the arrow keys return to action selection |
 | item | `?` | show the help; going back returns to the item |
 | any but the map | `Esc`, `q`, `←`, `Backspace` | go back one level and drop what is not written yet: an approval not confirmed |
 | any | `Ctrl-C` | quit the map |
@@ -216,7 +245,7 @@ In a terminal lower than the map, the header stays on top and the last line keep
  › read spec     open it in a window
 ```
 
-The goal is the first line of its spec on the base branch. The stage says what the map says on the item's line. Approvals names each approval the item got, one per row, with the GitHub account that gave it and when (`gate 1 by @ann, 27.09. 16:40`): the map reads the item's comments once as the view opens, and counts only a comment that `pulse approve` writes, from an account that may push; the name inside a comment counts for nothing. A long list of blockers ends with how many more, as on the ramp. The holder names who holds it, with the phase and age of the last sign of life. The plan line says where the plan is: in your working tree, or `on origin/<branch>` when it lies on a pushed item branch.
+Long titles and goals wrap in the detail view; `PgUp` and `PgDn` let you read them in a low terminal. The goal is the first line of its spec, found on the base branch or through the same lookup as Read spec. The stage says what the map says on the item's line. Approvals names each approval the item got, one per row, with the GitHub account that gave it and when (`gate 1 by @ann, 27.09. 16:40`): the map reads the item's comments once as the view opens, and counts only a comment that `pulse approve` writes, from an account that may push; the name inside a comment counts for nothing. A long list of blockers ends with how many more, as on the ramp. The holder names who holds it, with the phase and age of the last sign of life. The plan line says where the plan is: in your working tree, or `on origin/<branch>` when it lies on a pushed item branch.
 
 Below the facts stands what you can do with the item now, each with what it does. The view opens on a reading entry, so an `Enter` too many opens a window and writes nothing. Only what its stage allows is offered, and when that changes while you look, the cursor stays on the thing it was on:
 
@@ -229,6 +258,43 @@ Below the facts stands what you can do with the item now, each with what it does
 | `read spec` | its spec is on the base branch, on a branch of origin, or in your working tree | opens the spec in a window, as the base branch has it: agents plan from that one. A spec that is not there yet, such as one on its branch of origin, opens as a copy to read from the newest branch on origin that has it, and the status line names that branch. A spec only in your working tree opens there; a spec path that leads out of the repository, or one that is no Markdown file, opens nothing |
 | `read PR` | it has a pull request | opens it in your browser: its diff, the gates, and what departs from the plan |
 
+### Defer, resume, discard, or delete
+
+These are separate item actions for features, improvements, and fixes. They do not cascade through an epic. The preview names your login, the selected repository/item, affected records, and consequences. Cancel before confirmation to write nothing; if the state changes after the preview, inspect and confirm it again. `g` opens a closed item by number without reopening it or adding it to the active-work counts.
+
+| Action | Result |
+|---|---|
+| `defer` | stop open work cooperatively and return it as-is to the open, paused backlog. Code, specs, uncommitted work, branches, PRs, approvals, notes, and evidence remain |
+| `resume` | explicitly resume a completed defer pause. Existing approval/content/SHA checks still apply; unrelated holds remain |
+| `discard` | stop work, then close the issue as not planned. Files, PRs, approval comments, and Git history remain; no code rollback occurs |
+| `delete` | remove the item's code, specs, and active references through a reviewed removal PR, then permanently delete its GitHub issue and all comments after separate confirmation |
+
+Defer keeps the item paused even with auto mode on, across restarts and clones. It blocks new starts, merges, and automatic completion until an explicit resume. The holder must acknowledge stopping and secure the work before a claim can be released. An unreachable holder or work that cannot safely be handed over leaves the operation pending or retains the claim for local resume; Pulse does not steal the claim or delete the worktree. Defer does not reopen completed work or invalidate all earlier approvals. A paused child remains open; discarded and deleted children do not count as completed work.
+
+The same actions are available in your terminal. Choose the command for the action you intend:
+
+```bash
+pulse defer 15
+pulse resume 15
+pulse discard 15
+pulse delete 15
+```
+
+#### Deletion is a staged removal
+
+1. Read the warning and inventory: implementation changes, specs, active references, open work, dependent items, and the permanent loss of every issue comment. Confirm the exact `owner/repo#n` to request the controlled stop and prepare the reviewed removal scope when it is safe.
+2. Review the separate removal PR. Its changes must remove the selected implementation, specs, and active references while preserving unrelated features and later independent work. Ambiguous ownership, conflicts, or dependencies stop the process for clarification. A clean revert or green tests alone do not prove complete removal.
+3. Run `pulse delete <n>` again, or choose delete again in the map, to confirm `check owner/repo#n@<head>`. Pulse runs the removal's own tests, review and audit through its runner. After they pass, give a separate human merge approval bound to that head: `owner/repo#n@<head>`. A changed head requires a new preview and approval. Merging this PR does not delete the issue.
+4. Once removal is integrated and verified, confirm final issue/comment deletion separately with `delete owner/repo#n@<head>`. Until then, the issue remains. Progress and completion are recorded in the removal PR so a failed step can be inspected and resumed after the original issue is gone.
+
+If an independent base change arrives before merge, Pulse offers a confirmed
+rebind followed by fresh gates and approval. A conflicting change stops for
+scope review. If GitHub acknowledges deletion but the completion comment
+fails, the original clone can repair that comment from its protected receipt;
+a missing issue alone never proves successful deletion.
+
+Removal uses new commits. Original branches, worktrees, and Git history remain; there is no force-push, history rewrite, or reset of the whole repository. Issue comments are permanently lost at the final step. An agent may prepare and check an authorized removal PR, but the merge approval and final deletion belong to a person with the required repository permissions.
+
 ### Approvals
 
 `a` never writes on the first press. It shows the approval it writes and what that binds, and `Enter` confirms; any other key cancels. Every confirmation of the map takes no `Enter` within a second of opening: such an `Enter` came before you could read it, so it confirms nothing, the confirmation closes, and the footer says `enter came within a second of opening it`; what you typed before the confirmation showed is dropped. A confirmation shows a goal on one row and opens only when the terminal can show all it confirms; otherwise the map says to make the terminal larger. It stays open only as long: make the terminal smaller until part of it no longer shows, and the map closes it with the same message, and an `Enter` typed as the terminal changed confirms nothing. A resize that still shows all of it draws it anew, and its second starts again.
@@ -237,7 +303,7 @@ Below the facts stands what you can do with the item now, each with what it does
 
 ### Merging
 
-The map offers no merge. A ready pull request says `waits for merge`: approve its merge with `a` (gate 3), and the next `pulse go` merges it, or merge it on GitHub; `read PR` opens it with its diff, its gates, and what departs from the plan. A pull request into another branch than the base gets retargeted on GitHub first. A merged item leaves the map at once.
+For ordinary work, a ready pull request says `waits for merge`: approve its merge with `a` (gate 3), and the next `pulse go` merges it, or merge it on GitHub; `read PR` opens it with its diff, its gates, and what departs from the plan. A pull request into another branch than the base gets retargeted on GitHub first. A merged item leaves the map at once unless a lifecycle pause prevents automatic completion. The separate [deletion flow](#deletion-is-a-staged-removal) requires its own removal-PR head approval and a later final issue-deletion confirmation.
 
 ### Links
 

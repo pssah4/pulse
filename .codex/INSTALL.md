@@ -6,6 +6,8 @@ The plugin serves the Codex CLI and the Codex IDE extension alike: both read `~/
 
 ## Prerequisites
 
+After upgrading, run `pulse setup --codex-rules` in your own terminal to refresh the machine rules. `pulse defer`, `resume`, `discard`, and `delete` are person-only commands, like the approval levers. Agents may prepare an explicitly requested removal PR, but cannot approve its merge or delete its issue.
+
 - Git, Python 3.9 or newer, and the GitHub CLI `gh` 2.94 or newer
 - For the plugin, the Codex CLI, also if you work in the IDE extension. Without it, run this line first: it makes `codex` in this shell the newest binary the extension brings (the extension puts none on your PATH), and the steps below then work as written.
   ```bash

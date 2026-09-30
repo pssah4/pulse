@@ -284,7 +284,19 @@ program as you.
   checked with the project's CI, `setup`, and `verify` before anything
   starts on it
 
-## See also
+## Removing a feature
+
+`pulse delete <n>` is separate from completing the original feature. The
+removal PR must remove its code, specs and active references while keeping
+unrelated behavior. Fresh tests, review and audit bind the removal head;
+old evidence from the feature does not approve its removal.
+
+The person reviews the scope and confirms the exact removal head before
+merge. Only after integration is verified can they confirm permanent
+issue and comment deletion. Ambiguous ownership, dependencies, unpushed
+work or a changed head stop the operation. Git history remains intact.
+
+## Related guides
 
 - [/pulse-build](../guides/pulse-build): the build loop around the gate
 - [The V-Model](./v-model)

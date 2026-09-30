@@ -28,6 +28,8 @@ Every open item nobody works on lines up like pallets at a loading dock, in orde
 
 ## Planning so that more can run at once
 
+Manual order is shared by the map and the runner. Use `m`, arrows, then Enter on an unclaimed work item in the map. Open dependencies always come first. New items without a manual position follow the manually ordered part using the normal priority rules. Claims and dependencies that change during a move invalidate its preview. Esc cancels without writing. Epics can be selected to read, but are not movable work items. Old `Rank:` body lines stay ignored; there is no `pulse rank` command.
+
 - **Contract first.** If item B needs item A only for an interface (a type, an endpoint signature, a schema), that interface becomes its own small item that blocks B. A's implementation no longer blocks B, and B starts as soon as the contract is merged. Nothing builds on a blocker's branch.
 - **Waves.** Inside a PLAN, tasks carry a wave number. Tasks of one wave touch disjoint files and do not need each other's output; the wave's checks pass before the next wave starts. `pulse check` keeps the files of a wave disjoint.
 

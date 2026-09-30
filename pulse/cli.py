@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from pulse import auto, check, config, go, mapstart, merge, migrate, ready, setup, spec, state
+from pulse import auto, check, config, go, lifecycle, mapstart, merge, migrate, ready, setup, spec, state
 from pulse import map as pmap
 
 
@@ -430,6 +430,27 @@ def _other_item(cmd, n):
     return True
 
 
+def cmd_lifecycle(args):
+    if _person_only(args.cmd):
+        return 1
+    root, repo, run = _ctx()
+    if args.cmd == "delete":
+        from pulse import remove
+        return remove.command(root, repo, args.n, run=run)
+    planned = lifecycle.preview(root, repo, args.n, args.cmd, run=run)
+    for line in planned["lines"]:
+        print(ready.printable(line))
+    try:
+        answer = input(f"Type {planned['confirmation']} to confirm, or Enter to cancel: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer != planned["confirmation"]:
+        print("cancelled; nothing changed")
+        return 0
+    print(ready.printable(lifecycle.apply(root, repo, planned, answer, run=run)))
+    return 0
+
+
 def cmd_approve(args):
     """Write the approval each item waits for, and nothing else (#115): gate 1, gate 2 for its PLAN as origin has
     it, gate 3 for the head of its ready PR (#118), or a new try after pulse:failed. pulse go acts on it: it merges
@@ -601,6 +622,14 @@ def parser() -> argparse.ArgumentParser:
                                      "(its pushed PLAN: agents may build it), or a new try after pulse:failed; "
                                      "pulse go acts on it")
     c.add_argument("n", type=int, nargs="+")
+
+    for name, description in (
+            ("defer", "stop an open item and put its unchanged work in the paused backlog"),
+            ("resume", "explicitly resume an item deferred to the backlog, retaining its approvals"),
+            ("discard", "stop an item and close it as not planned, without removing code or specs"),
+            ("delete", "remove an item's code and specs through a reviewed PR, then delete its issue and comments")):
+        command = add(name, cmd_lifecycle, description)
+        command.add_argument("n", type=int)
 
     c = add("auto", cmd_auto, "your auto mode per gate: alone it shows every person's switches; <gate> on lets "
                               "your own pulse go pass that gate for your items without asking you, off takes it back")

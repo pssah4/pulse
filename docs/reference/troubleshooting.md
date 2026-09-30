@@ -45,6 +45,16 @@ With the plugin, in the CLI and the IDE extension alike: `codex plugin list` sho
 
 ## Running Pulse
 
+### GitHub API rate limit
+
+This is GitHub's request budget, not the agent's token allowance. Pulse pauses requests until GitHub's reset or Retry-After deadline, and uses bounded backoff when no deadline is available. The map names the limit and marks its cached board as stale. Its counts may no longer match GitHub. It clears the warning after a successful fresh read; restarting the map does not bypass the shared cooldown.
+
+Do not rotate credentials or remove the cooldown to force retries. Keep only the maps and runners you need open. Requests from other tools can consume the same account's budget. A stale board never authorizes a write; wait for a fresh read before approving work.
+
+### A deferred item does not resume automatically
+
+That is intentional. In your own terminal, `pulse resume <n>` resumes work explicitly. Defer preserves its approvals and PRs; normal content and commit checks still apply. A stop request with an unreachable holder remains pending. If uncommitted work needs its original worktree, use that clone for the handover instead of deleting the worktree or taking its claim blindly.
+
 ### `pulse` says "not inside a git repository" or names several remotes
 
 Pulse needs to know which GitHub repository holds the item records. It takes, in this order, `repo` from `.pulse/config.toml`, the repository set with `gh repo set-default`, or the only GitHub remote. With several remotes it does not guess:

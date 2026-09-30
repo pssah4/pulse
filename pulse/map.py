@@ -24,7 +24,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import auto, config, go, merge, ready, setup, spec, state
+from pulse import auto, config, go, lifecycle, merge, order, ready, remove, setup, spec, state
 
 WIDTH = 80                      # columns without a terminal (D-45)
 TITLE = 60                      # the most of a file name a row keeps (FIX-02-04-03)
@@ -47,12 +47,11 @@ BREATH = (1, .8, .6, .45, .6, .8)   # a working light's brightness per frame: on
 GREEN, DARK = (46, 229, 157), (13, 17, 23)   # that light at full brightness, and what it fades toward
 TRUE = 1 << 24                  # the colors of a truecolor terminal; 256 and 16 for the others
 # the signet beside the header, as docs/public/assets/pulse-icon.ansi draws it in 256 colors
-SIGNET = ('\033[0m \033[38;5;37m▀▀▀▀▀▀▜▄\033[0m',
-          '\033[0m \033[38;5;30m▟\033[38;5;31m▛▀\033[38;5;37m▀▀▀▐█▌\033[0m',
-          '\033[0m \033[38;5;30m▄██\033[38;5;31m███▛▀\033[0m',
-          '\033[0m\033[38;5;30m▐█▗█▛▀▘\033[0m',
-          '\033[0m\033[38;5;24m▐\033[38;5;30m▛▝▘\033[0m')
-INSET = 12                      # the header's first column: the signet, 10 wide, and a gap
+SIGNET = ('\033[0m\033[38;5;37m▀▀▀▀▀▜▄\033[0m',
+          '\033[0m\033[38;5;37m▟▀▀▀▀ ▐▌\033[0m',
+          '\033[0m\033[38;5;37m▐▛▟▀▀▀▘\033[0m',
+          '\033[0m\033[38;5;37m▐▌▘\033[0m')
+INSET = 10
 HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on every screen (#57)
 # what the map asks of a person, the most urgent first, in the color of its state
 NEXT = {"failing": "31", "your review": "33", "waits for merge": "33",
@@ -66,13 +65,22 @@ PHASE = {"plan": "planning", "build": "building", "spec tests": "RED check runni
 # the map every way back drops what is not written yet, q too (#55)
 UP, DOWN, ENTER, RIGHT = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n"), ("\x1b[C",)
 BACK = ("\x1b", "\x1b[D", "\x7f", "\x08", "q")
-KEYS = {"map": "↑ ↓ pick  a approve  enter open  q quit",       # 44 columns: ? shows the help all the same
+KEYS = {"map": "↑↓ pick m move a approve enter open q quit",       # 44 columns: ? shows the help all the same
         "item": "↑ ↓ pick  a approve  enter do it  esc back",
+        "move": "↑ ↓ move  enter save  esc cancel",
         "confirm": "enter confirm  esc cancel",
+        "number": "type issue number  enter open  esc cancel",
         "help": "esc back"}
 HELP = """map      ↑ ↓ or j k pick a line, enter or →
            opens it, a approves what it
            waits for
+         epics in the board are pickable too
+         m move: pick unclaimed ramp work;
+           arrows move it, enter saves,
+           esc cancels
+           dependencies always come first
+         g opens an issue by number,
+           closed too
          ? shows this help, q quits; no key
            but ? needs Shift
 item     its goal, stage, holder, blockers,
@@ -80,6 +88,14 @@ item     its goal, stage, holder, blockers,
            do with it now: ↑ ↓ or j k pick,
            enter does it; it opens on a
            reading one
+         PgUp PgDn scroll long details
+         defer keeps work as-is in the
+           backlog;
+           resume continues it explicitly
+         discard closes without rollback
+         delete removes code, specs and
+           issue
+           through a separately reviewed PR
          a, approve: the approval it waits
            for, and nothing else; pulse go
            acts on it. Gate 1, approve spec:
@@ -116,6 +132,10 @@ OFFER = {"approve": ("approve", "the approval it waits for; pulse go acts on it"
          "read-plan": ("read plan", "open it in a window"),
          "open": ("read spec", "open it in a window"),
          "read-pr": ("read PR", "open it in your browser")}
+OFFER.update({"defer": ("defer", "pause as-is in the backlog"),
+              "resume": ("resume", "continue the preserved work"),
+              "discard": ("discard", "close as not planned; keep code and specs"),
+              "delete": ("delete", "review removal of code, specs, issue and comments")})
 READS = ("read-pr", "read-plan", "open")      # what the item view opens on: nothing that writes (#99 FR-09)
 # the approval a writes at each gate (#115): its words in the item view, and what it lets happen
 GATE = {0: ("try again", "pulse:failed goes, pulse go tries it again"),
@@ -124,6 +144,7 @@ GATE = {0: ("try again", "pulse:failed goes, pulse go tries it again"),
         3: ("approve merge", "gate 3: pulse go merges its PR at this head")}
 # the line an action shows while it runs; the ones not named here only open a window
 DOING = {"approve": "approving #{}…", "auto": "switching {}…"}
+DOING.update({action: action + " #{}…" for action in lifecycle.ACTIONS})
 SMALL = "the terminal is too low or too narrow to show what enter would confirm: make it larger"   # #76, #56
 SOON = 1.0                      # seconds after a confirmation opened in which an Enter came unread (#86, #90)
 VERB = {"Edit": "editing", "MultiEdit": "editing", "Write": "writing", "NotebookEdit": "editing",
@@ -523,6 +544,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             return [p(f"#{seen['number']} is merged or closed", "90")]
         n, pr, beat = i["number"], i.get("pr") or {}, i.get("claimed_beat")
         st, words = gate(i)
+        operation = i.get("lifecycle") or {}
+        if operation and operation.get("phase") != "resumed":
+            words = f"{operation.get('action', 'lifecycle')}: {operation['phase']}"
+        elif i.get("state") == "CLOSED":
+            words = "closed"
         who, phase = i.get("claimed_by") or next(iter(i["assignees"]), ""), phases.get(n) or i.get("claimed_phase")
         held = i.get("claimed_at") or beat
         life = _life(phase or "working", beat) if beat and _run(i) else f"held {_age(held)}" if held and not _run(i) \
@@ -543,23 +569,30 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         choice = [(p(f" › {words:<14}", "1") if k == pick else f"   {words:<14}")
                   + p(note, "33" if note.startswith("not yet") else "90")
                   for k, (_, words, note) in enumerate(menu)] or [p("   nothing to do here now", "90")]
-        return [section(f"{p.link(f'#{n}', i.get('url'))} {i['title']}"), ""] + \
-            [f" {k:<12}{v}" for k, v in facts] + [""] + choice
+        title = wrap(f"#{n} {i['title']}", w)
+        title[0] = title[0].replace(f"#{n}", p.link(f"#{n}", i.get("url")), 1)
+        heading = [section(title[0])] if len(title) == 1 else [p(line, "1;36") for line in title]
+        details = []
+        for label, value in facts:
+            pieces = wrap(value, w - 13) if label == "goal" else [value]
+            details += [f" {label if index == 0 else '':<12}{piece}" for index, piece in enumerate(pieces)]
+        return heading + [""] + details + [""] + choice
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
     if counts["waiting"]:
         parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
     if counts["error"]:
         parts.append(dot("error") + f" {counts['error']} failing")
-    warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"))))
+    warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
+                                  (vm.get("order") or {}).get("why"))))
     inset = INSET if w >= 60 else 0       # beside a session the header keeps its words and leaves out the signet
-    head = ["", lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90") + "  " + vm["person"], p(vm["now"], "1"),
+    head = [lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90") + "  " + vm["person"], p(vm["now"], "1"),
                    w - inset),
             "   ".join(parts), p("! " + warn, "33") if warn else ""]
     signet = [l if p.color >= 256 else re.sub(r"38;5;\d+", "36", l) if p.color else ANSI.sub("", l) for l in SIGNET]
-    switched = vm.get("auto") or {}       # line 5: your auto mode, red when no switch counts (#124)
-    fifth = p(vm["auto_why"], "31") if vm.get("auto_why") else \
+    switched = vm.get("auto") or {}
+    mode = p(vm["auto_why"], "31") if vm.get("auto_why") else \
         "auto you  " + auto.line(switched.get(vm["me"], {}), sep="  " if inset else " ")    # 44 columns hold it
-    out = [fit(mark, inset) + text for mark, text in zip(signet, head + [fifth])]   # 256 colors as drawn, else cyan
+    out = [(fit(signet[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
     out.append("")
     if item:                              # the item view (D-44), live like the map
         return [fit(l, w) for l in out + inside(item)]
@@ -575,13 +608,25 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         n = len(group)
         filled = max(1, round(n * 24 / total)) if n else 0
         out.append(f" {label:<15}" + p("█" * filled, code) + p("░" * (24 - filled), "90") + f"{n:>4}")
-    for e in (i for i in vm["items"] if i["type"] == "epic"):         # how far each epic is (WP-60)
+    epics = []
+    for e in (i for i in vm["items"] if i["type"] == "epic"):
         done = vm.get("closed", {}).get(e["number"], 0)
         total = done + sum(i.get("parent") == e["number"] for i in vm["items"])
         if total:
-            k, ref = round(10 * done / total), p.link(f"#{e['number']}", e.get("url"))
-            out.append(lr(f" {ref} {e['title']}",
-                          p("█" * k, "32") + p("░" * (10 - k), "90") + f" {done} of {total} done", w))
+            epics.append((e, round(10 * done / total), f"{done} of {total} done"))
+    if epics:
+        out.append("")
+    count_width = max((vlen(count) for _, _, count in epics), default=0)
+    title_width = w - 13 - count_width
+    for epic, filled, count in epics:
+        number = epic["number"]
+        if number not in shown:
+            shown.append(number)
+        ref = p.link(f"#{number}", epic.get("url"))
+        title = ("› " if number == selected else " ") + ref + " " + epic["title"]
+        label = fit(short(title, title_width), title_width)
+        out.append((p(label, "1") if number == selected else label) + "  " +
+                   p("█" * filled, "32") + p("░" * (10 - filled), "90") + " " + fit(count, count_width))
     out.append("")
 
     # --- who is doing what ------------------------------------------------
@@ -734,6 +779,15 @@ def offers(vm: dict, seen: dict) -> list:
     pr = i.get("pr") or {}
     out += [(a, *OFFER[a]) for a in ["read-pr"] * bool(pr) + ["read-plan"] * bool(seen.get("plan")) +
             ["open"] * bool(i.get("spec"))]
+    if i.get("state") == "CLOSED" or i.get("hold"):
+        out = [entry for entry in out if entry[0] != "approve"]
+    if i.get("type") in state.WORK:
+        operation = i.get("lifecycle") or {}
+        actions = ["discard", "delete"]
+        if i.get("state", "OPEN") == "OPEN":
+            actions.insert(0, "resume" if operation.get("action") == "defer" and
+                           operation.get("phase") == "paused" else "defer")
+        out += [(action, *OFFER[action]) for action in actions]
     return out
 
 
@@ -743,7 +797,34 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
     Enter confirms, and the level the help began on. picks: the items on the map, top down; acts:
     what the item view offers (offers())."""
     level, n = ui["level"], ui.get("at")
+    if level == "move":
+        if ch in BACK:
+            return {"level": "map", "at": n}, None
+        if ch in UP + DOWN:
+            target = max(0, min(ui["count"] - 1, ui["target"] + (-1 if ch in UP else 1)))
+            return ui, ("move-preview", n, target)
+        return ui, ("move-save", n) if ch in ENTER and not ui.get("invalid") else None
+    if level == "number" or level == "confirm" and "expected" in ui:
+        back = {"level": "map" if level == "number" else ui.get("from", "item"), "at": n}
+        typed = ui.get("typed", "")
+        if ch in ("\x1b", "\x1b[D"):
+            return back, None
+        if ch in ("\x7f", "\x08"):
+            return {**ui, "typed": typed[:-1]}, None
+        if ch in ENTER:
+            if level == "number" and typed and int(typed) > 0:
+                return back, ("lookup", int(typed))
+            if level == "confirm" and typed == ui["expected"]:
+                return back, ui["sure"]
+            return ui, None
+        allowed = ch in "0123456789" if level == "number" else len(ch) == 1 and ch.isprintable()
+        limit = 10 if level == "number" else len(ui["expected"])
+        return ({**ui, "typed": typed + ch} if allowed and len(typed) < limit else ui), None
     if level == "map":
+        if ch == "m" and n in picks:
+            return ui, ("move", n)
+        if ch == "g":
+            return {"level": "number", "at": n, "typed": ""}, None
         if ch in UP + DOWN and picks:
             k = picks.index(n) if n in picks else -1
             return {**ui, "at": picks[max(0, k - 1) if ch in UP else min(len(picks) - 1, k + 1)]}, None
@@ -762,9 +843,13 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
     if ch in BACK:                              # one level up, and what is not written yet is dropped
         return (back if level != "item" else {"level": "map", "at": n}), None
     if level == "item":
+        if ch in ("\x1b[5~", "\x1b[6~"):
+            step = ui.get("page", 1) * (-1 if ch == "\x1b[5~" else 1)
+            return {**ui, "scroll": max(0, ui.get("scroll", 0) + step)}, None
         pick = min(ui.get("pick", 0), len(acts) - 1) if acts else ui.get("pick", 0)   # the offers may have changed
         if ch in UP + DOWN:
-            return ({**ui, "pick": max(0, pick - 1) if ch in UP else min(len(acts) - 1, pick + 1)}
+            return ({**{k: v for k, v in ui.items() if k != "scroll"},
+                     "pick": max(0, pick - 1) if ch in UP else min(len(acts) - 1, pick + 1)}
                     if acts else ui), None
         if ch == "?":
             return {"level": "help", "at": n, "from": "item", "pick": pick}, None
@@ -776,6 +861,44 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
     return ui, None
 
 
+def move(root: Path, vm: dict, ui: dict, action: tuple, size: tuple) -> tuple:
+    """Start from fresh authority; arrows only replace an in-memory proposal."""
+    kind, number = action[:2]
+    if not auto.person(os.environ, True):
+        raise state.StateError("only a person moves items, in their own terminal or map")
+    if kind == "move":
+        candidate = next((record for record in vm["ramp"].get("rows", []) if record["number"] == number), {})
+        if candidate.get("type") not in state.WORK or candidate.get("assignees") or candidate.get("claimed_holder"):
+            raise state.StateError(f"#{number} is not an unclaimed work item on the ramp")
+        if vm.get("error") or (vm.get("order") or {}).get("why"):
+            raise state.StateError(vm.get("error") or vm["order"]["why"])
+        items, seen = order._fresh(vm["repo"], state.gh)
+        positions = seen["positions"]
+        movable = [record["number"] for record in ready.order([
+            dict(record, manual_position=positions.get(record["number"])) for record in items])
+                   if record.get("type") in state.WORK and not record.get("assignees")
+                   and not record.get("claimed_holder")]
+        if number not in movable:
+            raise state.StateError(f"#{number} is no longer an unclaimed work item")
+        ui = {"level": "move", "at": number, "target": movable.index(number), "count": len(movable),
+              "items": items, "order": seen, "size": size, "repo": vm["repo"],
+              "board_binding": order._binding(vm["items"]), "board_revision": (vm.get("order") or {}).get("revision")}
+    if kind == "move-save":
+        if ui.get("invalid") or tuple(terminal_size()) != ui["size"]:
+            raise state.StateError("move cancelled: its target or terminal size changed")
+        result = order.apply(root, ui["repo"], ui["proposal"], run=state.gh)
+        return {"level": "map", "at": number}, result["why"] or f"saved the shared order for #{number}"
+    target = action[2] if kind == "move-preview" else ui["target"]
+    proposal = order.preview(ui["items"], ui["order"], number, target)
+    positions = {identifier: position for position, identifier in enumerate(proposal["items"])}
+    items = [dict(record, manual_position=positions.get(record["number"])) for record in ui["items"]]
+    ramp = ready.view(root, items, config.load(root), vm["me"])
+    preview_vm = {**vm, "ramp": ramp}
+    return {**{key: value for key, value in ui.items() if key != "opened"}, "target": target,
+            "proposal": proposal, "vm": preview_vm, "invalid": False}, \
+        f"move #{number}: position {target + 1} of {ui['count']}; preview only, enter saves"
+
+
 def brief(root: Path, vm: dict, action: tuple) -> tuple:
     """What a person reads before a approves (F6.08): the approval it writes, the goal, what holds it, and for a
     PLAN the blobs the approval binds to, as pulse approve reads them (#115). (lines, the action Enter confirms),
@@ -784,6 +907,10 @@ def brief(root: Path, vm: dict, action: tuple) -> tuple:
     kind, n = action
     if not auto.person(os.environ, True):     # its keys come from a terminal: an agent's marker is what tells
         return ["only a person does this, in their own terminal or map; tell the person which gate waits"], None
+    if kind in lifecycle.ACTIONS:
+        planned = remove.action_preview(root, vm["repo"], n, run=state.gh) if kind == "delete" else \
+            lifecycle.preview(root, vm["repo"], n, kind, run=state.gh)
+        return planned["lines"], (kind, n, planned) if planned.get("confirmation") else None
     if kind == "auto":                        # n: the gate; a short confirmation (#124 FR-09)
         if vm.get("auto_why") or not vm.get("me"):
             return [vm.get("auto_why") or "no GitHub login known: gh auth login"], None
@@ -903,6 +1030,17 @@ def look(root: Path, vm: dict, n: int) -> dict:
             "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else ""}
 
 
+def by_number(root: Path, vm: dict, number: int) -> dict:
+    if type(number) is not int or number <= 0:
+        raise state.StateError("enter a positive issue number")
+    raw = lifecycle._read(vm["repo"], number, state.gh)
+    trusted = lifecycle.trusted(vm["repo"], state.gh)
+    found = state.normalize(raw, lambda entry: trusted(entry) is True, lifecycle_trusted=trusted)
+    if found["type"] not in (*state.WORK, "epic"):
+        raise state.StateError("this issue is not a Pulse item")
+    return {**found, "state": raw.get("state", "OPEN")}
+
+
 def opener(env=os.environ) -> list:
     """The command that shows a file in a window and gives the terminal back at once (D-44):
     PULSE_EDITOR, else the VS Code or Cursor window this terminal belongs to, else the system's
@@ -937,11 +1075,20 @@ def act(root: Path, vm: dict, action: tuple) -> str:
     """Carry out one action from the map; returns a line for the status bar. An approval writes what brief()
     showed, and only while the item still waits for it: the gate and blobs come with the action (#115)."""
     kind, n = action[0], action[1]
+    if kind in DOING and (vm.get("error") or vm.get("rate_limit")):
+        raise state.StateError("the board is not current; wait for a successful fresh read before writing")
     repo = state.repo(root, run=state.gh)
+    if kind in lifecycle.ACTIONS:
+        planned = action[2]
+        apply = remove.apply_action if kind == "delete" else lifecycle.apply
+        return apply(root, repo, planned, planned["confirmation"], run=state.gh)
     if kind == "auto":                          # n: the gate, as brief() showed it
         return auto.toggle(root, repo, n, action[2], run=state.gh)
     if kind == "approve":
-        gate, blobs, why = ready.waiting(root, next((i for i in vm["items"] if i["number"] == n), {"number": n}))
+        current = next((i for i in vm["items"] if i["number"] == n), None)
+        if current is None or current.get("hold") or current.get("state") == "CLOSED":
+            return f"#{n} is held or closed; nothing approved"
+        gate, blobs, why = ready.waiting(root, current)
         if gate is None:
             return ready.printable(why.replace("PLAN", "plan"))
         if tuple(action[2:]) != (gate, blobs):
@@ -1027,13 +1174,14 @@ def failures(root: Path, items=()) -> dict:
 
 
 _merged: dict = {}                      # root -> (read at, the items of the merged PRs)
+_limited: dict = {}
 
 
 def merged(root: Path, repo: str, items: list) -> set:
     """The claimed items whose PR was merged, also into a base GitHub closes nothing on (not the
     default branch): done, though open until pulse status closes them (ADR-06). Read at most every
     state.TTL s."""
-    held = {i["number"] for i in items if i["assignees"] and not i.get("pr")}
+    held = {i["number"] for i in items if i["assignees"] and not i.get("pr") and not i.get("hold")}
     at, done = _merged.get(root, (0.0, set()))
     if held and repo and time.time() - at >= state.TTL:
         try:
@@ -1041,6 +1189,9 @@ def merged(root: Path, repo: str, items: list) -> set:
                                                      "--json", "headRefName,closingIssuesReferences,files,changedFiles,"
                                                                "isCrossRepository"]))
                     for n in state.pr_items(pr)}
+        except state.RateLimitError as error:
+            _limited[root] = error
+            return done & held
         except (state.StateError, ValueError):
             pass                        # offline: the last answer stands
         _merged[root] = (time.time(), done)
@@ -1061,13 +1212,31 @@ def closed(root: Path, repo: str, items: list) -> dict:
             done = Counter((i.get("parent") or {}).get("number") for i in json.loads(state.gh(
                 ["issue", "list", "--repo", repo, "--state", "closed", "--limit", "1000",
                  "--json", "number,parent,stateReason"])) if i.get("stateReason") == "COMPLETED")
+        except state.RateLimitError as error:
+            _limited[root] = error
+            return {epic: done[epic] for epic in epics if done.get(epic)}
         except (state.StateError, ValueError):
             pass                        # offline: the last answer stands
         _closed[root] = (time.time(), done)
     return {e: done[e] for e in epics if done.get(e)}
 
 
-def gather(root: Path, board: bool = True) -> dict:
+def _cache_notice(root: Path) -> str:
+    try:
+        snapshot = json.loads(state.cache_path(root).read_text(encoding="utf-8"))
+        if not isinstance(snapshot.get("items"), list):
+            return "no cached state"
+    except (OSError, ValueError, AttributeError):
+        return "no cached state"
+    try:
+        fetched = float(snapshot.get("fetched_at", "nan"))
+    except (ValueError, TypeError):
+        fetched = math.nan
+    age = _age(fetched) if math.isfinite(fetched) and 0 <= fetched <= time.time() else "unknown"
+    return f"showing last known state, cache age {age}"
+
+
+def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     """The view model of the map; board=False leaves out what only the board section shows, the epics' closed
     children and the merges GitHub closes nothing for: pulse status <n> asks GitHub for neither (#99 fix round 1)."""
     _fetch(root)
@@ -1075,10 +1244,27 @@ def gather(root: Path, board: bool = True) -> dict:
     try:
         repo = state.repo(root, run=state.gh)      # looked up per call so tests can swap gh
         me = state.me(root, run=state.gh)
-        items = state.load(root, repo, run=state.gh)
+        if root in _limited and _limited[root].retry_at > time.time():
+            raise _limited[root]
+        items = state.load(root, repo, run=state.gh, **({"fresh": True} if fresh or root in _limited else {}))
+        _limited.pop(root, None)
     except state.StateError as e:
+        if isinstance(e, state.RateLimitError):
+            _limited[root] = e
         items = state.cached(root)
         error = f"offline, showing the last known state ({e})" if items else str(e)
+    annotated = next((record for record in items if "order_revision" in record), {})
+    order_info = {"issue": annotated.get("order_issue"), "revision": annotated.get("order_revision"),
+                  "positions": {record["number"]: record["manual_position"] for record in items
+                                if record.get("manual_position") is not None},
+                  "why": annotated.get("order_conflict", "")}
+    try:
+        cached = json.loads(state.cache_path(root).read_text(encoding="utf-8"))
+        if (cached.get("repo") == repo and cached.get("format") == state.FORMAT and
+                cached.get("items") == items and isinstance(cached.get("order"), dict)):
+            order_info = cached["order"]
+    except (OSError, ValueError, AttributeError):
+        pass
     done = merged(root, repo, items) if board else set()      # off the map at once, done for its epic (#57)
     finished = Counter(i["parent"] for i in items if i["number"] in done and i.get("parent"))
     items = [i for i in items if i["number"] not in done]
@@ -1090,7 +1276,8 @@ def gather(root: Path, board: bool = True) -> dict:
     vm = {"repo": repo, "now": time.strftime("%H:%M:%S"), "base": base,
             "person": state.who(root, me) or "you", "me": me,      # Klarname (@login), as every surface (#111)
             # no sessions: the live state of agents comes with the Herdr map (phase 2); the map shows claims
-            "items": items, "sessions": [], "error": error, "phases": phases, "failed": failures(root, items),
+            "items": items, "sessions": [], "error": error, "order": order_info,
+            "phases": phases, "failed": failures(root, items),
             "halt": go.halt(root),              # base red, or a hook refused pulse go (#113)
             "closed": dict(Counter(closed(root, repo, items) if board else {}) + finished),
             # no spec, or neither on the base nor in an open pull request: approve refuses it (#115)
@@ -1105,8 +1292,14 @@ def gather(root: Path, board: bool = True) -> dict:
     try:                                        # every person's auto switches (#124): per login in status --json
         seen = auto.read(root, repo, run=state.gh) if repo else {"switches": {}, "why": ""}
     except state.StateError as e:
+        if isinstance(e, state.RateLimitError):
+            _limited[root] = e
         seen = {"switches": {}, "why": f"auto switches not known: {e}"}
     vm.update(auto=seen["switches"], auto_why=seen["why"])
+    vm["rate_limit"] = root in _limited
+    if vm["rate_limit"]:
+        reason = str(_limited[root]).replace("GitHub API rate limit", "GitHub rate limit", 1)
+        vm["error"] = reason + "; " + _cache_notice(root)
     return vm
 
 
@@ -1225,6 +1418,8 @@ def _keys():
         ch = os.read(fd, 1).decode(errors="ignore")
         if ch == "\x1b" and select.select([sys.stdin], [], [], 0.01)[0]:
             ch += os.read(fd, 2).decode(errors="ignore")
+            if ch in ("\x1b[5", "\x1b[6") and select.select([sys.stdin], [], [], 0.01)[0]:
+                ch += os.read(fd, 1).decode(errors="ignore")
         return ch
 
     def restore():
@@ -1248,7 +1443,7 @@ def _windows_keys():
     """The keys of a Windows terminal through msvcrt, which has no termios (#121 FR-09): an arrow comes as two
     characters, and the map gets it as any other terminal sends it."""
     import msvcrt
-    arrows = {"H": UP[0], "P": DOWN[0], "K": "\x1b[D", "M": RIGHT[0]}
+    arrows = {"H": UP[0], "P": DOWN[0], "K": "\x1b[D", "M": RIGHT[0], "I": "\x1b[5~", "Q": "\x1b[6~"}
 
     def read(wait: float):
         end = time.monotonic() + wait
@@ -1266,7 +1461,7 @@ def _windows_keys():
     return read
 
 
-def fitted(lines: list, height: int, keep: int) -> list:
+def fitted(lines: list, height: int, keep: int, offset: int = None) -> list:
     """At most height lines, so a frame taller than the terminal never scrolls it: the header (the
     first HEAD lines, #57) and the last keep lines (status and keys) stay, the rest is cut around
     the picked row, the one that starts with › (a title may hold one too, #56), and one line says
@@ -1277,7 +1472,7 @@ def fitted(lines: list, height: int, keep: int) -> list:
     body, foot = lines[len(head):len(lines) - keep], lines[len(lines) - keep:]
     room = max(1, height - len(head) - len(foot) - 1)
     at = next((i for i, line in enumerate(body) if ANSI.sub("", line).lstrip().startswith("›")), 0)
-    top = max(0, min(at - room // 2, len(body) - room))
+    top = max(0, min(at - room // 2 if offset is None else offset, len(body) - room))
     return head + body[top:top + room] + [f"  … {len(body) - room} more lines; a taller terminal shows them"] + foot
 
 
@@ -1311,6 +1506,7 @@ def main(args) -> int:
     restart, reading, todo = "", None, None          # a newer copy; the read beside the keys; an action to run
     offered = {}                                     # item -> what its view offered on the last frame
     approved = {}                                    # item -> its approvals, once read beside the keys (L-3)
+    detached = None
     # what the read brings, the writes so far, the last look for a newer copy and for a newer release
     box = {"writes": 0, "looked": time.time(), "asked": -math.inf}
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
@@ -1361,11 +1557,23 @@ def main(args) -> int:
             vm["now"] = time.strftime("%H:%M:%S")
             width, size = columns(), tuple(terminal_size())
             height = size[1] or 40                     # a pty nobody sized: 0 rows
-            if ui["level"] == "confirm" and not shows([status], width, height):     # smaller since it opened (#98)
+            if ui["level"] == "move":
+                changed = (order._binding(vm["items"]) != ui["board_binding"] or
+                           (vm.get("order") or {}).get("revision") != ui["board_revision"] or
+                           bool(vm.get("error")) or bool((vm.get("order") or {}).get("why")))
+                if ui["size"] != size or changed or not shows([status], width, height):
+                    ui, status = {"level": "map", "at": ui["at"]}, "move cancelled: board or terminal changed; refresh"
+                    getattr(read, "drop", lambda: None)()
+            confirm_notice = status + ("\n> " + ui["expected"] if "expected" in ui else "")
+            if ui["level"] == "confirm" and not shows([confirm_notice], width, height):
                 ui, status = key(ui, shown, BACK[0])[0], SMALL
             elif ui["level"] == "confirm" and ui["size"] != size:   # resized: drawn whole anew, its second anew
                 ui = {**{k: v for k, v in ui.items() if k != "opened"}, "size": size}
             level, n = ui["level"], ui.get("at")
+            view = vm
+            if detached and detached["number"] == n and level in ("item", "confirm") and \
+                    not any(entry["number"] == n for entry in vm["items"]):
+                view = {**vm, "items": [*vm["items"], detached]}
             frame = int(time.time() / TICK)            # by the clock: all breathe in step
             acts = ()                                  # what the item view offers, as this frame draws it
             if level == "item" or level == "confirm" and ui.get("from") != "map":   # a on the map asks over the map
@@ -1376,9 +1584,9 @@ def main(args) -> int:
                         def approvals_of(n=n, vm=vm):
                             approved[n] = read_approvals(vm, n)
                         _beside(approvals_of)
-                    seen = {**look(root, vm, n), "waiting": waits(root, vm, n)}
+                    seen = {**look(root, view, n), "waiting": waits(root, view, n)}
                 # from the plain copy render() draws them from: Enter runs the row it shows (#56 audit L-3)
-                acts, was = [a for a, *_ in offers(_plain(vm), _plain(seen))], offered.get(n, [])
+                acts, was = [a for a, *_ in offers(_plain(view), _plain(seen))], offered.get(n, [])
                 k = ui.get("pick")
                 if k is None:                          # the view opens on a reading entry (#99 FR-09), whatever
                     ui = {**ui, "pick": next((k for k, a in enumerate(acts) if a in READS), 0)}   # an earlier visit
@@ -1386,15 +1594,28 @@ def main(args) -> int:
                     ui = {**ui, "pick": acts.index(was[k]) if was[k] in acts else 0}   # goes to the top,
                                                            # which never writes without asking first (#55)
                 offered = {n: acts}
-                lines = render(vm, frame=frame, color=color, width=width,
+                lines = render(view, frame=frame, color=color, width=width,
                                item=dict(seen, pick=ui.get("pick", 0), approvals=approved.get(n, READING)))
             elif level == "help":                      # under the header, as every screen (#57)
                 lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + HELP.split("\n")
+            elif level == "move":
+                shown = []
+                lines = render(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown)
             else:
                 shown = []
                 lines = render(vm, frame=frame, color=color, width=width, selected=n, picks=shown)
-            foot = footer(status, KEYS[level], width) if read else []
-            cells = [fit(l, width) for l in fitted(lines + foot, height, len(foot))]
+            notice = status or (vm.get("error", "") if vm.get("rate_limit") else (vm.get("order") or {}).get("why", ""))
+            if level == "number":
+                notice = "Issue number: " + ui.get("typed", "")
+            elif level == "confirm" and "expected" in ui:
+                notice = status + "\n> " + ui.get("typed", "")
+            foot = footer(notice, KEYS[level], width) if read else []
+            if level == "item":
+                ui["page"] = max(1, height - min(HEAD, max(0, height - len(foot) - 2)) - len(foot) - 1)
+                if "scroll" in ui:
+                    ui["scroll"] = min(ui["scroll"], max(0, len(lines) - HEAD - ui["page"]))
+            cells = [fit(l, width) for l in fitted(lines + foot, height, len(foot),
+                                                  ui.get("scroll") if level == "item" else None)]
             clear = (width, height) != drawn_at      # new or resized: cleared, then every row once (#98)
             if clear:
                 drawn = []
@@ -1402,7 +1623,7 @@ def main(args) -> int:
             # changed, and those of an open confirmation on every frame, after the map's: a row of the map written
             # again, wider than the map counts, cannot cover what Enter confirms (#56 M-3)
             bound = len(cells) - len(foot) if level == "confirm" else len(cells)
-            out = "\033[H\033[2J" * clear + "".join(f"\033[{i + 1};1H{c}\033[K" for i, c in enumerate(cells)
+            out = "\033[H\033[2J" * clear + "".join(f"\033[{i + 1};1H\033[K{c}" for i, c in enumerate(cells)
                                                    if i >= len(drawn) or drawn[i] != c or i >= bound)
             out += f"\033[{len(cells) + 1};1H\033[J" if len(cells) < len(drawn) else ""
             drawn, drawn_at = cells, (width, height)
@@ -1411,23 +1632,36 @@ def main(args) -> int:
                 sys.stdout.flush()
             # the frame with a confirmation is written: its second starts now, on a clock no NTP step or wake
             # moves, and what was typed until now confirms nothing (#86 audit L-1, L-2; #90)
-            if ui["level"] == "confirm" and "opened" not in ui:
+            if ui["level"] in ("confirm", "move") and "opened" not in ui:
                 ui = {**ui, "opened": time.monotonic()}
                 getattr(read, "drop", lambda: None)()
             if todo:                                   # its line is on the screen: now it runs (#55)
                 wrote = todo[0] in DOING
-                if wrote and reading:
-                    reading.join()                     # no read from before the write lands after it
                 try:
-                    status = act(root, vm, todo)
+                    if wrote:
+                        if reading:
+                            reading.join()
+                            new, reading = box.pop("new"), None
+                            if isinstance(new, Exception):
+                                raise state.StateError(f"the board could not be refreshed: {new}")
+                            writes, board_, update, restart = new
+                            if writes != box["writes"]:
+                                raise state.StateError("the board changed while confirming; inspect it again")
+                            vm = board_
+                        view = vm = gather(root, fresh=True)
+                    status = act(root, view, todo)
                 except (state.StateError, ValueError) as e:
                     status = f"! {e}"
                 if wrote:
                     box["writes"] += 1
+                    if detached:
+                        ui, detached = {"level": "map", "at": n}, None
                     vm = None                          # the board as the write left it, at once
                 todo = None
                 continue
             ch = read(TICK) if read else time.sleep(TICK)
+            if ui["level"] == "move" and tuple(terminal_size()) != ui["size"]:
+                ui, status, ch = {"level": "map", "at": ui["at"]}, "move cancelled: terminal resized", None
             if ch in ENTER and ui["level"] == "confirm" and tuple(terminal_size()) != ui["size"]:
                 ch = None                              # resized since it was drawn: the next frame decides (#98)
             if ch == "q" and level == "map":
@@ -1437,17 +1671,49 @@ def main(args) -> int:
                 status = "nothing done: enter came within a second of opening it; open it again, read, then enter"
             if ch:
                 ui, action = key(ui, shown, ch, acts)
-                status = ""
+                if level not in ("confirm", "move") or ui["level"] != level:
+                    status = ""
                 if action and action[0] == "say":
                     status, action = action[1], None
-                if action and level in ("map", "item") and action[0] in ("approve", "auto"):
-                    text, sure = brief(root, vm, action)     # what it binds; Enter confirms it
+                if action and action[0] in ("move", "move-preview", "move-save"):
+                    saving = action[0] == "move-save"
+                    if saving and reading:
+                        reading.join()
+                    try:
+                        ui, status = move(root, vm, ui, action, size)
+                    except (state.StateError, ValueError) as error:
+                        status = f"! {error}"
+                        if action[0] == "move-preview":
+                            ui = {**ui, "invalid": True}
+                        else:
+                            ui = {"level": "map", "at": action[1]}
+                    if saving:
+                        box["writes"] += 1
+                        vm = None
+                    action = None
+                if action and action[0] == "lookup":
+                    try:
+                        detached = by_number(root, vm, action[1])
+                        ui, seen = {"level": "item", "at": action[1]}, None
+                    except (state.StateError, ValueError) as error:
+                        status = str(error)
+                    action = None
+                if action and level in ("map", "item") and action[0] in ("approve", "auto", *lifecycle.ACTIONS):
+                    try:
+                        text, sure = brief(root, view, action)
+                    except (state.StateError, ValueError) as error:
+                        text, sure = [str(error)], None
+                    expected = sure[2]["confirmation"] if sure and sure[0] in lifecycle.ACTIONS else ""
+                    if expected:
+                        text = [*text, "Type " + expected + " to confirm."]
                     status, action = "\n".join(text), None
-                    if sure and not shows(text, width, height):  # what Enter runs must all show (#76, #56)
+                    if sure and not shows([*text, *( ["> " + expected] if expected else [])], width, height):
                         status = SMALL
                     elif sure:
                         ui = {"level": "confirm", "at": n, "sure": sure, "pick": ui.get("pick", 0), "from": level,
                               "size": size}
+                        if expected:
+                            ui.update(expected=expected, typed="")
                 if action:                             # the next frame says what runs, then it runs
                     status, todo = DOING.get(action[0], "opening it…").format(action[1]), action
     except KeyboardInterrupt:

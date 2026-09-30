@@ -594,7 +594,8 @@ def plan_files(root: Path, found: dict = None) -> dict:
 
 def order(items: list) -> list:
     """The one order of pulse go and the ramp (#119): no item before an open blocker (Kahn over blocked_by), else by
-    effective priority, the best of the item and all it unblocks, then by number. Items in a cycle come last."""
+    manual position, effective priority (the best of the item and all it unblocks), then by number.
+    Items without a manual position follow positioned items. Items in a cycle come last."""
     by = {i["number"]: i for i in items}
     after = {n: [] for n in by}                # n -> the items that wait for n
     for i in items:
@@ -608,17 +609,22 @@ def order(items: list) -> list:
             best[n] = min([by[n].get("priority", 3)] + [eff(m, seen + (n,)) for m in after[n] if m not in seen])
         return best[n]
     waits = {n: sum(b in by for b in by[n].get("blocked_by") or ()) for n in by}
-    heap = [(eff(n), n) for n in by if not waits[n]]
+    def position(number):
+        value = by[number].get("manual_position")
+        return value if type(value) is int and value >= 0 else float("inf")
+
+    heap = [(position(n), eff(n), n) for n in by if not waits[n]]
     heapq.heapify(heap)
     out = []
     while heap:
-        _, n = heapq.heappop(heap)
+        _, _, n = heapq.heappop(heap)
         out.append(by[n])
         for m in after[n]:
             waits[m] -= 1
             if not waits[m]:
-                heapq.heappush(heap, (eff(m), m))
-    return out + sorted((i for i in items if waits[i["number"]]), key=lambda i: (eff(i["number"]), i["number"]))
+                heapq.heappush(heap, (position(m), eff(m), m))
+    return out + sorted((i for i in items if waits[i["number"]]),
+                        key=lambda i: (position(i["number"]), eff(i["number"]), i["number"]))
 
 
 def _row(i: dict) -> bool:

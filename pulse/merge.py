@@ -10,7 +10,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from pulse import base, config, review, state
+from pulse import base, config, lifecycle, review, state
 
 DEFAULTS = (".pulse/", ".github/", ".husky/")       # what runs or guards the project, whatever the config says
 RUNNERS = re.compile(r"(^|/)(Makefile|tox\.ini|noxfile\.py|pytest\.ini|conftest\.py|setup\.cfg|"
@@ -70,6 +70,8 @@ def covers(root: Path, said: str, head: str, base_ref: str) -> bool:
 def approved(root: Path, item: dict, head: str, base_ref: str, repo: str, run, known: dict) -> str:
     """The login of someone who may push whose `merge ok at <sha>` on the item holds for head (covers); "" when
     nobody's does. known: the answers about logins, as state.writer keeps them."""
+    if item.get("hold"):
+        return ""
     for ok in item.get("merge_oks") or ():
         if covers(root, ok["sha"], head, base_ref) and state.writer(ok, repo, run, known) is True:
             return (ok.get("author") or {}).get("login") or "?"
@@ -99,10 +101,14 @@ def ready(pr: dict) -> str:
 def close(root: Path, repo: str, n: int, run) -> list:
     """Close #n once its PR is merged, then its epic when the board, read afresh, has no open item with that parent
     any more (FR-05): GitHub closes an issue only for a PR into the default branch. The numbers it closed."""
-    parent = (state._view(repo, n, run).get("parent") or {}).get("number")
-    state.done(root, repo, n, run=run, take=True)
+    raw = state._view(repo, n, run)
+    if lifecycle.blocked(raw, lifecycle.trusted(repo, run)):
+        return []
+    parent = (raw.get("parent") or {}).get("number")
+    if not state.done(root, repo, n, run=run, take=True)[0]:
+        return []
     items = state.load(root, repo, run=run, fresh=True)
     if parent and parent in {i["number"] for i in items} and not any(i.get("parent") == parent for i in items):
-        state.done(root, repo, parent, run=run, take=True)
-        return [n, parent]
+        if state.done(root, repo, parent, run=run, take=True)[0]:
+            return [n, parent]
     return [n]

@@ -21,6 +21,8 @@ nothing is done until the evidence says so.
 2. Claim it unless an orchestrator already did: `pulse claim <n>`. The
    claim belongs to this session. Exit code 1 prints why:
    - is closed: pick the next item from `pulse status`.
+   - was held while claiming: stop; the person deferred the item or set a hold while the claim was in flight.
+   - is on hold: keep the work paused; only the person resumes deferred work.
    - is not approved: tell the person the item waits for their
      approval and how they give it: `pulse approve <n>` in their own
      terminal, or `a` in the map (a spec still on its branch of origin is

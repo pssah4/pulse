@@ -326,6 +326,10 @@ In its default mode, Claude Code asks before each file it writes, until you allo
     "deny": [
       "Bash(pulse approve *)",
       "Bash(pulse approve-plan *)",
+      "Bash(pulse defer *)",
+      "Bash(pulse resume *)",
+      "Bash(pulse discard *)",
+      "Bash(pulse delete *)",
       "Bash(pulse go *)",
       "Bash(pulse done *)",
       "Bash(pulse auto *plan*)",

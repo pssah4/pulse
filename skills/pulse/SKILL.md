@@ -137,6 +137,18 @@ guard refuses it. Details:
 
 ## Commands
 
+To pause open work as-is, tell the person to run `pulse defer <n>` in
+their terminal. `pulse resume <n>` explicitly continues it. Approvals,
+notes, code, specs, branches and PRs remain. An unreachable holder keeps
+the stop pending; uncommitted work stays in its worktree.
+`pulse discard <n>` closes without rollback. `pulse delete <n>` instead
+requires a reviewed removal of code, specs and references before deleting
+the issue and comments. It requires typed confirmation and a separate
+removal merge approval. Never run these person-only commands for them.
+
+In the map, `m`, arrow keys and `Enter` save a shared order; prerequisites
+still come first. `Esc` cancels. The picker also reaches epics in the board.
+
 | Command | Does |
 |---|---|
 | `/pulse-ba` | business analysis: problem, users, scope |

@@ -45,6 +45,7 @@ LABELS = {                     # name: (color, description)
     "pulse:failed": ("e99695", "Pulse: pulse go gave up on it; pulse approve lets it try again"),
     "pulse:base": ("0052cc", "Pulse: fixes a red base; pulse go plans and builds it on a red base too"),
     "pulse:auto": ("c5def5", "Pulse: the control issue of the auto mode switches, one per repository"),
+    "pulse:order": ("c5def5", "Pulse: the shared manual order, one control issue per repository"),
     "P0": ("b60205", "Priority: at once"),              # pulse new copies priority: of the spec (#116)
     "P1": ("d93f0b", "Priority: soon"),
     "P2": ("fbca04", "Priority: later"),
@@ -211,6 +212,11 @@ prefix_rule(
 # `pulse -- <command>` too: Python 3.12 reads it as the command itself.
 prefix_rule(
     pattern = ["pulse", ["approve", "approve-plan", "go", "done", "--"]],
+    decision = "forbidden",
+    justification = "A person's lever, in their own terminal.",
+)
+prefix_rule(
+    pattern = ["pulse", ["defer", "resume", "discard", "delete"]],
     decision = "forbidden",
     justification = "A person decides what gets built and when it is done, in their own terminal",
 )

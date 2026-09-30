@@ -24,7 +24,7 @@ import time
 
 REASON = ("Gate levers belong to a person or to their own auto switch. Tell the person which gate waits: "
           "a in the Pulse map, or pulse approve in their terminal.")
-PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|go|done|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
+PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|go|done|defer|resume|discard|delete|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
                    r"claim[ \t]+--take|release[ \t]+--take)(?![\w.])")      # quoted too, in comments and bodies
 RISKY = re.compile(r"\b(?:pulse|gh|herdr|tmux|osascript)\b|\bgit\s+push\b")   # what an unreadable command may not name
 MARKS = re.compile(r"<!-- pulse:|Plan-ok|plan ok at|merge ok at")
@@ -860,7 +860,7 @@ def _pulse(args, ctx, depth):
             if len(name) >= 4 and ("--remove".startswith(name) or "--mode".startswith(name) and
                                    (value if eq else args[k + 1]) == "off"):
                 return True
-    return sub in ("approve", "approve-plan", "go", "done") or sub == "auto" and bool({"on", "off"} & set(args)) or \
+    return sub in ("approve", "approve-plan", "go", "done", "defer", "resume", "discard", "delete") or sub == "auto" and bool({"on", "off"} & set(args)) or \
         (sub, nxt) in (("claim", "--take"), ("release", "--take"))
 
 

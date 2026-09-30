@@ -15,21 +15,26 @@ note for whoever takes the item next.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
+import math
 import os
 import posixpath
 import random
 import re
 import shlex
 import subprocess
+import stat
 import time
+from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from pulse import config
 
 TTL = 30                 # a full reload at least this often: PR checks move without a new tag
 POLL = 2                 # seconds between the free conditional checks for a change
-FORMAT = 16              # of the issue cache, raised when an item gains a field or load attaches differently
+FORMAT = 17              # of the issue cache, raised when an item gains a field or load attaches differently
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
 FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments,author"
@@ -67,6 +72,178 @@ WORKDIR = re.compile(r"""\bworkdir["']?\s*:\s*["']([^"']+)["']""")
 
 class StateError(Exception):
     pass
+
+
+class RateLimitError(StateError):
+    def __init__(self, resource: str, retry_at: float, source="backoff"):
+        self.resource, self.retry_at, self.source = resource, retry_at, source
+        when = time.strftime("%H:%M:%S UTC", time.gmtime(retry_at))
+        super().__init__(f"GitHub API rate limit ({resource}); retry after {when}")
+
+
+def _gh_route(args):
+    host = os.environ.get("GH_HOST") or "github.com"
+    for index, arg in enumerate(args):
+        if arg == "--hostname" and index + 1 < len(args):
+            host = args[index + 1]
+        if arg.startswith("--hostname="):
+            host = arg.split("=", 1)[1]
+        if arg in ("--repo", "-R") and index + 1 < len(args):
+            named = args[index + 1].removeprefix("https://").split("/")
+            if len(named) >= 3:
+                host = named[0]
+    if args[:1] != ["api"]:
+        read = args[:2] in (["issue", "list"], ["issue", "view"], ["pr", "list"], ["pr", "view"])
+        return host.lower(), "graphql", read
+    endpoint, method, fields, known = "", "", False, True
+    values = {"--hostname", "--jq", "-q", "--template", "-t", "--header", "-H", "--cache",
+              "--method", "-X", "--field", "-F", "--raw-field", "-f", "--input"}
+    flags = {"--include", "-i", "--paginate", "--slurp", "--silent"}
+    index = 1
+    while index < len(args):
+        arg, equal, value = args[index].partition("=")
+        if arg in values:
+            if not equal:
+                index += 1
+                value = args[index] if index < len(args) else ""
+            if arg in ("--method", "-X"):
+                method = value.upper()
+            fields |= arg in ("--field", "-F", "--raw-field", "-f", "--input")
+        elif arg in flags:
+            pass
+        elif arg.startswith("-") or endpoint:
+            known = False
+        else:
+            endpoint = args[index]
+        index += 1
+    resource = "graphql" if endpoint == "graphql" else "search" if endpoint.startswith("search/") else "core"
+    read = known and bool(endpoint) and resource != "graphql" and (method == "GET" or not method and not fields)
+    return host.lower(), resource, read
+
+
+def _rate_key(host):
+    conf = Path(os.environ.get("GH_CONFIG_DIR") or
+                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "gh")
+    names = ("GH_TOKEN", "GITHUB_TOKEN") if host == "github.com" or host.endswith(".ghe.com") else \
+        ("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+    token = next((os.environ[name] for name in names if os.environ.get(name)), "")
+    if token:
+        account = "token:" + hashlib.sha256(token.encode()).hexdigest()
+    else:
+        found = subprocess.run(["gh", "config", "get", "user", "--host", host],
+                               capture_output=True, text=True, timeout=5)
+        account = "user:" + found.stdout.strip() if not found.returncode and found.stdout.strip() else str(conf.resolve())
+    return hashlib.sha256(f"{host}\0{account}".encode()).hexdigest()
+
+
+def _private(fd, directory=False):
+    info = os.fstat(fd)
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if not kind(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise StateError("unsafe GitHub rate-limit cache permissions")
+    return fd
+
+
+@contextmanager
+def _rate_cache(key):
+    folder = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    if not folder.is_absolute():
+        raise StateError("GitHub rate-limit cache requires an absolute cache directory")
+    folder.mkdir(parents=True, exist_ok=True)
+    directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    lock = None
+    try:
+        for part in ("pulse", "rate-limits"):
+            try:
+                os.mkdir(part, 0o700, dir_fd=directory)
+            except FileExistsError:
+                pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+            _private(directory, directory=True)
+        try:
+            lock = os.open(key + ".lock", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                           0o600, dir_fd=directory)
+        except FileExistsError:
+            lock = os.open(key + ".lock", os.O_RDWR | os.O_NOFOLLOW, dir_fd=directory)
+        _private(lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            opened = os.open(key + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            data = {}
+        else:
+            with os.fdopen(opened, encoding="utf-8") as saved:
+                _private(saved.fileno())
+                data = json.loads(saved.read(65537))
+            if not isinstance(data, dict) or any(
+                resource not in ("graphql", "core", "search", "all") or not isinstance(entry, dict) or
+                type(entry.get("retry_at")) not in (int, float) or not math.isfinite(entry["retry_at"]) or
+                not 0 < entry["retry_at"] <= time.time() + 7 * 86400 or
+                type(entry.get("attempt")) is not int or not 1 <= entry["attempt"] <= 5 or
+                entry.get("source") not in ("reset", "retry-after", "backoff")
+                for resource, entry in data.items()
+            ):
+                raise StateError("invalid GitHub rate-limit cache")
+        yield directory, data
+    finally:
+        if lock is not None:
+            os.close(lock)
+        os.close(directory)
+
+
+def _save_rate(directory, key, data):
+    temporary = f".{key}.{os.getpid()}.{os.urandom(8).hex()}"
+    opened = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(opened, "w", encoding="utf-8") as saved:
+            json.dump(data, saved)
+        os.replace(temporary, key + ".json", src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+
+
+def _rate_failure(out, host, resource, previous, timeout):
+    message = out.stdout + "\n" + out.stderr
+    headers = dict((name.lower(), value.strip()) for name, value in
+                   re.findall(r"^([\w-]+):[ \t]*(.*?)\r?$", message, re.M))
+    secondary = bool(re.search(r"secondary rate limit|abuse detection|HTTP[^\n]*\b429\b", message, re.I))
+    if not (secondary or re.search(r"rate limit (?:already )?exceeded", message, re.I) or
+            headers.get("x-ratelimit-remaining") == "0" or "retry-after" in headers):
+        return None
+    resource = "all" if secondary else headers.get("x-ratelimit-resource", resource)
+    if resource not in ("graphql", "core", "search", "all"):
+        resource = "all"
+    now, deadline, source = time.time(), 0, "backoff"
+    for header, kind in (("x-ratelimit-reset", "reset"), ("retry-after", "retry-after")):
+        value = headers.get(header, "")
+        try:
+            candidate = float(value) + (now if kind == "retry-after" else 0)
+        except ValueError:
+            try:
+                candidate = parsedate_to_datetime(value).timestamp() if kind == "retry-after" else 0
+            except (ValueError, TypeError, OverflowError):
+                candidate = 0
+        if math.isfinite(candidate) and max(deadline, now) < candidate <= now + 7 * 86400:
+            deadline, source = candidate, kind
+    if not deadline and not secondary:
+        try:
+            probe = subprocess.run(["gh", "api", "rate_limit", "--hostname", host],
+                                   capture_output=True, text=True, timeout=min(timeout, 10))
+            limits = json.loads(probe.stdout).get("resources", {}).get(resource, {}) if not probe.returncode else {}
+            reset = limits.get("reset")
+            if limits.get("remaining") == 0 and type(reset) in (int, float) and math.isfinite(reset) and \
+                    now < reset <= now + 7 * 86400:
+                deadline, source = reset, "reset"
+        except (OSError, ValueError, AttributeError, subprocess.TimeoutExpired):
+            pass
+    attempt = min(previous.get(resource, {}).get("attempt", 0) + 1, 5)
+    return resource, {"retry_at": deadline or now + min(60 * 2 ** (attempt - 1), 900),
+                      "attempt": attempt, "source": source}
 
 
 def item_of(branch):
@@ -112,11 +289,32 @@ def ran_in(payload: dict) -> str:
 
 def gh(args: list, timeout=60) -> str:
     try:
-        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+        if args in (["--version"], ["repo", "set-default", "--view"]):
+            local = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+            if local.returncode:
+                raise StateError(f"gh {' '.join(args[:2])}: {local.stderr.strip() or local.stdout.strip()}")
+            return local.stdout
+        host, resource, read = _gh_route(args)
+        key = _rate_key(host)
+        with _rate_cache(key) as (directory, cooldowns):
+            for limited, entry in cooldowns.items():
+                if not read or limited in (resource, "all") and entry["retry_at"] > time.time():
+                    raise RateLimitError(limited, entry["retry_at"], entry["source"])
+            out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+            if out.returncode != 0:
+                failure = _rate_failure(out, host, resource, cooldowns, timeout)
+                if failure:
+                    limited, entry = failure
+                    _save_rate(directory, key, {**cooldowns, limited: entry})
+                    raise RateLimitError(limited, entry["retry_at"], entry["source"])
+                raise StateError(f"gh {' '.join(args[:2])}: {out.stderr.strip() or out.stdout.strip()}")
+            if read and (resource in cooldowns or "all" in cooldowns):
+                _save_rate(directory, key, {name: entry for name, entry in cooldowns.items()
+                                            if name not in (resource, "all")})
     except subprocess.TimeoutExpired:
         raise StateError(f"gh {' '.join(args[:2])}: no answer within {timeout} s") from None
-    if out.returncode != 0:
-        raise StateError(f"gh {' '.join(args[:2])}: {out.stderr.strip() or out.stdout.strip()}")
+    except (OSError, ValueError) as error:
+        raise StateError(f"GitHub rate-limit cache unavailable: {error}") from None
     return out.stdout
 
 
@@ -174,6 +372,32 @@ def pages(run, path: str) -> list:
     return out
 
 
+def complete_comments(repo, raw, run=gh):
+    """Complete a capped thread and normalize REST/GraphQL authors and edit metadata."""
+    comments = raw.get("comments") or []
+    original = {entry["url"]: entry for entry in comments if entry.get("url")}
+    viewer = next(((entry.get("author") or {}).get("login") for entry in comments
+                   if entry.get("viewerDidAuthor")), None)
+    if len(comments) >= 100 and not raw.get("_comments_complete"):
+        comments = pages(run, f"repos/{repo}/issues/{raw['number']}/comments?per_page=100")
+        if not viewer and any(MARK.match(entry.get("body") or "") for entry in comments):
+            viewer = run(["api", "user", "--jq", ".login"]).strip()
+    normalized = []
+    for entry in comments:
+        url = entry.get("html_url") or entry.get("url")
+        author = entry.get("user") or entry.get("author") or {}
+        created = entry.get("created_at") or entry.get("createdAt")
+        updated = entry.get("updated_at") or entry.get("updatedAt")
+        comment = {**original.get(url, {}), **entry, "url": url, "author": author, "createdAt": created,
+                   "authorAssociation": entry.get("author_association", entry.get("authorAssociation"))}
+        comment["edited"] = bool(comment.get("edited") or comment.get("includesCreatedEdit") or
+                                 comment.get("lastEditedAt") or updated not in (None, created))
+        if viewer:
+            comment["viewerDidAuthor"] = author.get("login") == viewer
+        normalized.append(comment)
+    return {**raw, "comments": normalized, "_comments_complete": True}
+
+
 def labelers(repo_name: str, n: int, run=gh) -> dict:
     """{label: the login that added it last} for every label n carries, from its events, oldest first (#115):
     GitHub keeps who set a label, which the issue itself does not say."""
@@ -189,9 +413,12 @@ def labelers(repo_name: str, n: int, run=gh) -> dict:
 
 def item(repo_name: str, n: int, run=gh) -> dict:
     """Issue n as normalize reads it, from GitHub now."""
-    return normalize(json.loads(run(["issue", "view", str(n), "--repo", repo_name, "--json",
-                                     "number,title,labels,body,comments,assignees,url,author"])),
-                     pushers(repo_name, run))
+    raw = json.loads(run(["issue", "view", str(n), "--repo", repo_name, "--json",
+                         "number,title,labels,body,comments,assignees,url,author"]))
+    known = {}
+    trusted = lambda entry: writer(entry, repo_name, run, known)
+    return normalize(complete_comments(repo_name, raw, run), lambda entry: trusted(entry) is True,
+                     lifecycle_trusted=trusted)
 
 
 def writer(comment: dict, repo_name: str, run, known: dict):
@@ -229,9 +456,11 @@ def _plan_ok(labels: list, body: str):
     return list(m.groups()) if m and (m.group(2) or PLAN_OK in labels) else None
 
 
-def normalize(issue: dict, trusted=_owner) -> dict:
+def normalize(issue: dict, trusted=_owner, lifecycle_trusted=None) -> dict:
     """The record of an issue; trusted(comment) says whether its author may push, for a note (#89)."""
+    from pulse import lifecycle
     labels = [l["name"] for l in issue.get("labels", [])]
+    operation = lifecycle.operation(issue, lifecycle_trusted or trusted)
     kind = next((t for t in TYPES if f"pulse:{t}" in labels), None)
     spec = SPEC.search(issue.get("body") or "")
     assignees = [a["login"] for a in issue.get("assignees", [])]
@@ -239,7 +468,7 @@ def normalize(issue: dict, trusted=_owner) -> dict:
     mark = next((m for m in marks if m["author"] in assignees), None)     # the oldest holds it
     last = max((m["at"] for m in marks), default="")      # a note from before the last claim is that holder's past
     note = next((c for c in reversed(issue.get("comments") or []) if NOTE.match(c.get("body") or "")
-                 and c.get("createdAt", "") > last and (c.get("viewerDidAuthor")
+                 and (c.get("createdAt") or "") > last and (c.get("viewerDidAuthor")
                                                         or (c.get("author") or {}).get("login") in assignees
                                                         or trusted(c))),
                 None)          # a note steers the next holder; the newest first, so few authors are asked
@@ -269,7 +498,8 @@ def normalize(issue: dict, trusted=_owner) -> dict:
         "note": note["body"].partition("\n")[2].strip() if note else "",
         "note_at": note.get("createdAt", "") if note else "",
         "draft": DRAFT in labels,
-        "hold": HOLD in labels,
+        "hold": HOLD in labels or bool(operation and operation.get("phase") != "resumed"),
+        "lifecycle": operation,
         "failed": FAIL in labels,
         "base_fix": BASE in labels,
         "priority": next((k for k in range(3) if f"P{k}" in labels), 3),    # P0 to P2 (#116); none after P2 (#119)
@@ -391,6 +621,8 @@ def changed(repo_name: str, etag: str, run=gh) -> tuple:
         args[2:2] = ["-H", f"If-None-Match: {etag}"]
     try:
         out = run(args)
+    except RateLimitError:
+        raise
     except StateError as e:
         return ("HTTP 304" not in str(e)), etag       # gh exits 1 on a 304
     m = re.search(r"^etag:\s*(.+?)\s*$", out, re.M | re.I)
@@ -407,28 +639,46 @@ def _keep(path: Path, data: dict) -> None:
         pass                   # no cache: the next read asks GitHub again
 
 
-def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = TTL) -> list:
+def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = TTL, *, order_info=None) -> list:
     """All open issues, normalized. Every POLL seconds a free check whether anything moved;
-    a full reload only on a change, or after ttl (a waiting pulse go: 300, #119)."""
+    a full reload only on a change, or after ttl (a waiting pulse go: 300, #119).
+    order_info, when supplied, receives the shared order and conflicts even on an empty board."""
+    from pulse import order
+
+    def loaded(items, seen):
+        if order_info is not None:
+            order_info.clear()
+            order_info.update({**seen, "positions": {int(number): position
+                                                    for number, position in seen["positions"].items()}})
+        return items
+
     path, now = cache_path(root), time.time()
     if not fresh and path.is_file():
         try:
             cached = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cached = {}
-        if cached.get("repo") == repo_name and cached.get("format") == FORMAT:
+        if cached.get("repo") == repo_name and cached.get("format") == FORMAT and "order" in cached:
             if now - max(cached.get("fetched_at", 0), cached.get("checked_at", 0)) < POLL:
-                return cached["items"]
+                return loaded(cached["items"], cached["order"])
             if now - cached.get("fetched_at", 0) < ttl:
                 moved, _ = changed(repo_name, cached.get("etag", ""), run)
                 if not moved:
                     _keep(path, {**cached, "checked_at": now})
-                    return cached["items"]
+                    return loaded(cached["items"], cached["order"])
     _, etag = changed(repo_name, "", run)
     raw = json.loads(run(["issue", "list", "--repo", repo_name, "--state", "open",
                           "--limit", "1000", "--json", FIELDS]))
-    trusted = pushers(repo_name, run)
-    items = [normalize(i, trusted) for i in raw]
+    raw = [complete_comments(repo_name, record, run) for record in raw]
+    known = {}
+    trusted = lambda entry: writer(entry, repo_name, run, known)
+    seen = order.read(raw, trusted)
+    items = [normalize(record, lambda entry: trusted(entry) is True, lifecycle_trusted=trusted) for record in raw
+             if order.LABEL not in [label["name"] for label in record.get("labels", [])]]
+    if seen["issue"] is not None or seen["why"]:
+        for record in items:
+            record.update(manual_position=seen["positions"].get(record["number"]),
+                          order_revision=seen["revision"], order_issue=seen["issue"], order_conflict=seen["why"])
     prs = json.loads(run(["pr", "list", "--repo", repo_name, "--state", "open", "--limit", "200",
                           "--json", "number,headRefName,baseRefName,isDraft,closingIssuesReferences,"      # files:
                                     "statusCheckRollup,reviewRequests,files,changedFiles,isCrossRepository,"
@@ -448,8 +698,9 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
     for i in items:
         i["pr"] = closes.get(i["number"])
         i["spec_prs"] = [c for c in carry if i.get("spec") in c["files"]]      # pulse go merges it (#115)
-    _keep(path, {"repo": repo_name, "format": FORMAT, "fetched_at": now, "checked_at": now, "etag": etag, "items": items})
-    return items
+    _keep(path, {"repo": repo_name, "format": FORMAT, "fetched_at": now, "checked_at": now, "etag": etag,
+                 "items": items, "order": seen})
+    return loaded(items, seen)
 
 
 def pr_items(pr: dict) -> set:
@@ -582,8 +833,9 @@ def approve(root: Path, repo_name: str, n: int, gate: int, blobs=(), run=gh, by=
 
 
 def _view(repo_name, n, run):
-    return json.loads(run(["issue", "view", str(n), "--repo", repo_name,
-                           "--json", "state,labels,assignees,blockedBy,comments,parent"]))
+    raw = json.loads(run(["issue", "view", str(n), "--repo", repo_name,
+                         "--json", "state,labels,assignees,blockedBy,comments,parent"]))
+    return complete_comments(repo_name, {**raw, "number": n}, run)
 
 
 def holder(env=None) -> dict:
@@ -792,6 +1044,9 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
         labels.update(names)
     if v.get("state") != "OPEN":
         return False, f"#{n} is closed"
+    from pulse import lifecycle
+    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
+        return False, f"#{n} is held; complete its stop and explicitly resume it first"
     login, marks = me(root, run=run), _marks(v)
     mine = next((m for m in marks if m["mine"] and m["id"] == who["id"]), None)
     again = mine is not None and marks[0] is mine and login in [a["login"] for a in v.get("assignees", [])]
@@ -834,6 +1089,8 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
     # ponytail: two reads right after two writes; if GitHub serves a stale read, both claimers
     # can lose (safe) or, rarely, both win. A short wait before this read would narrow it.
     v = _view(repo_name, n, run)
+    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
+        return False, f"#{n} was held while claiming; no work may start"
     try:
         drop_cache(root)
     except OSError:
@@ -967,8 +1224,11 @@ def attach(root: Path, repo_name: str, n: int, kind: str, path=None, parent=None
 
 def done(root: Path, repo_name: str, n: int, run=gh, who=None, take=False) -> tuple:
     """Close the item; `take` closes it whoever holds it (a merged pull request, a person's call)."""
+    from pulse import lifecycle
+    v = _view(repo_name, n, run)
+    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
+        return False, f"#{n} is held; automatic completion is disabled"
     if not take:
-        v = _view(repo_name, n, run)
         other = _other_session(v, who or holder())
         whom = _others(v, me(root, run=run)) or (_name(other) if other else "")
         if whom:
