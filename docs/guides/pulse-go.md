@@ -5,7 +5,7 @@ description: Plan and build every approved item in parallel. One worktree and on
 
 # pulse go
 
-`pulse go` is a script that plans and builds everything that can run, in parallel, until the ramp is empty. You start it in your own terminal; an agent never does, and `/pulse` (in Codex `$pulse:pulse`) names the command. The model does not decide how much runs at once, so it cannot forget to parallelize. The rules behind the decision are on [Parallel work](../concepts/parallel-work).
+`pulse go` is a script that plans and builds everything that can run, in parallel, until the ramp is empty. Start it in your terminal, or explicitly ask `/pulse` (in Codex `$pulse:pulse`) to start it from your interactive chat. The skill executes the existing runner in a foreground TTY. The model does not decide how much runs at once, so it cannot forget to parallelize. The rules behind the decision are on [Parallel work](../concepts/parallel-work).
 
 [`/pulse-build`](./pulse-build) is how one item gets built; `pulse go` starts that same discipline for every ready item at once, one headless agent per item in its own worktree, checks itself that the spec tests failed before the code, and runs three gates after each build: tests, review, and security audit. Nobody hands items over by hand: what the ramp has released, `pulse go` picks up in ramp order.
 
@@ -21,7 +21,7 @@ It also checks the agents of the run before it claims anything. An agent that is
 pulse go
 ```
 
-`pulse go` runs in the foreground of the terminal you start it in, and only there: no flag, no [live map](./pulse-map#it-starts-nothing), and no hook starts it anywhere else, and it opens no window. Its first line names `cap` and the agents, its output stays in that terminal, and Ctrl-C stops it (see [One run per clone](#one-run-per-clone)). `cap` in `.pulse/config.toml` limits how many agents run at once, in every phase and across all agents; `agent` there names the agents (see [Two agents at once](#two-agents-at-once)), and no flag changes either for one run. `pulse status` shows beforehand what the next run takes: the rows of the ramp that start next, and the approved items that need a plan. `pulse go` belongs to a person: it refuses an agent session and a start without a terminal ("only a person does this"). An agent gives you the command for your terminal; it does not start the run from the chat.
+`pulse go` runs in the foreground of its terminal or the interactive skill's persistent PTY. No [live map](./pulse-map#it-starts-nothing) or hook starts it automatically, and it opens no window. Its first line names `cap` and the agents, its output stays in that terminal, and Ctrl-C stops it (see [One run per clone](#one-run-per-clone)). In a chat you can ask the skill to stop its retained process session. `cap` in `.pulse/config.toml` limits how many agents run at once, in every phase and across all agents; `agent` there names the agents (see [Two agents at once](#two-agents-at-once)), and no flag changes either for one run. `pulse status` shows beforehand what the next run takes: the rows of the ramp that start next, and the approved items that need a plan. An explicit skill start keeps the session markers and changes no approvals or auto switches. Runner agents, child sessions, and starts without a TTY are refused before project access.
 
 ## What a run does
 
@@ -113,7 +113,7 @@ The output names each start (`planning #n`, `building #n`, `merging the base int
 | Code | Meaning |
 |---|---|
 | `0` | the run ended, or you pressed `q` while it waited, and nothing failed |
-| `1` | an item failed, a PLAN fails P1 to P6 and waits for a person, the base is red or not known yet, a project hook refused a commit or push, or `pulse go` refused an agent session or a start without a terminal |
+| `1` | an item failed, a PLAN fails P1 to P6 and waits for a person, the base is red or not known yet, a project hook refused a commit or push, or `pulse go` refused a nested runner or a start without a TTY |
 | `2` | the run did not start, and the message says why: no `verify` on the base branch, a base branch that could not be fetched, a run already in this clone, an agent missing from `[agents]`, no installed agent to build or review with, or the board could not be read |
 | `128` + signal | the run was stopped: `130` for Ctrl-C, `143` for SIGTERM, `129` for a closed terminal |
 

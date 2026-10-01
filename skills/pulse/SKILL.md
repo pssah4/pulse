@@ -3,7 +3,8 @@ name: pulse
 description: >
   Pulse entry point: where the work stands, what comes next, and which
   Pulse command fits, and how a person sets Pulse up, starts pulse go,
-  and works the live map. Use when the user types /pulse, asks "where do
+  and works the live map. Execute an explicitly requested pulse go start.
+  Use when the user types /pulse, asks "where do
   I start", "what's next", "who is working on what", "activate Pulse",
   "build everything that is ready", "show the map", or starts new work
   without saying what kind it is.
@@ -13,7 +14,9 @@ description: >
 
 Pulse runs the V-Model method (the Digital Innovation Agents), keeps
 the specs in the repository and a record per item on the board, and
-spreads agents over everything that is ready. This command reads the situation and recommends one next step.
+spreads agents over everything that is ready. This command reads the situation
+and recommends one next step, or executes an explicitly requested runner start
+as [Start pulse go](#start-pulse-go) says.
 The user decides.
 
 ## Where things stand
@@ -38,10 +41,10 @@ Take the first row that applies. In Codex, name each command as
 | A new epic or feature is wanted | `/pulse-ba` for its Item-BA |
 | A validated Project-BA or an Item-BA exists, no epics or features registered yet | `/pulse-re` |
 | Specs wait for approval (`pulse status`: "not approved") | show each spec's goal, scope, and success criteria, then tell the person how they approve it, which means build it: `pulse approve <n>` in their own terminal, or `a` in the map; it writes the approval and nothing else, and `pulse go` merges a spec not yet on the base branch there first: the docs PR that `pulse new` opened, once every spec in it passes R1 to R6, it changes only `_devprocess/`, and its checks pass. It refuses a spec neither on the base branch nor in an open pull request (R1: `/pulse-re` pushes it) and, for a feature, improvement, or fix, a spec on the base branch that breaks R2 to R6: then `/pulse-re` on that spec (an epic needs R1 only) |
-| An approved spec waits for `pulse go` (`pulse status`: "spec in PR #m: pulse go merges it") | tell the person: `pulse go` in their own terminal merges the docs PR, then plans; when the run names why it did not merge it (a spec that breaks a rule, a file outside `_devprocess/`, checks that have not passed), fix that on the docs branch and push |
+| An approved spec waits for `pulse go` (`pulse status`: "spec in PR #m: pulse go merges it") | offer to start `pulse go`; on an explicit start request, execute [Start pulse go](#start-pulse-go). The run merges the docs PR, then plans; when it names why it did not merge it (a spec that breaks a rule, a file outside `_devprocess/`, checks that have not passed), fix that on the docs branch and push |
 | Items are approved but their spec does not pass R1 to R6 (`pulse check`) | `/pulse-re` on that spec |
 | A PLAN waits for a person (`pulse status`: "plan waits for you", or "plan changed since plan ok", "spec changed since plan ok") | show its goal, decisions, and risks, and tell the person how they approve it: `pulse approve <n>` in their own terminal, which binds the PLAN as origin has it and the spec on the base |
-| Approved items with a ready spec, or ready items, and free slots | tell the person: `pulse go` in their own terminal plans what has no PLAN, then builds all in parallel ([Start pulse go](#start-pulse-go)); or `/pulse-build <n>` for one in this session (it plans first when there is no PLAN) |
+| Approved items with a ready spec, or ready items, and free slots | offer `pulse go` to plan and build all ready items; on an explicit start request, execute [Start pulse go](#start-pulse-go). `/pulse-build <n>` builds one in this session (it plans first when there is no PLAN) |
 | A feature PR is ready (tests, review, and audit passed) | name it: it waits for the person's `pulse approve <n>`, or `a` in the map, which approves its merge at its head (gate 3); the next `pulse go` merges it and closes the item |
 | A draft feature PR names a red gate | fix the findings on its branch test-first, push them, and give the item back with `pulse release <n>`; the next `pulse go` runs the gates on it and marks it ready once all three pass |
 | A PR whose last commit has no review or no audit | run the missing gates on a yes, in a fresh subagent, as in Done of `/pulse-build`, and put the reports into the PR |
@@ -101,17 +104,23 @@ their own terminal. Details:
 
 ## Start pulse go
 
-`pulse go` is the person's: it refuses an agent session and a start
-without a terminal, so never start `pulse go` yourself; tell the person
-to type `pulse go` in their own terminal, where it runs in the
-foreground. It plans and builds every
-approved item in parallel, a worktree and a headless agent each (an
-item without a PLAN is planned first), runs the RED check and three
-gates (tests, review, audit), and opens a pull request per feature:
-ready when all three passed, else a draft that names what is open, for
-the person to merge. It needs `verify` and ends when
-the ramp is empty or on Ctrl-C; `.git/pulse/go/report.json` holds each
-item's result. Details: <https://pssah4.github.io/pulse/guides/pulse-go>.
+When the person explicitly asks to start `pulse go`, execute it from this
+interactive session in a persistent foreground TTY. In Codex use
+`exec_command` with `tty: true` and retain the returned session id; read
+its startup output, report its actual state, and use that session to stop
+it when the person asks. Run outside the sandbox when network access or
+shared Git writes require it. Keep all session markers. Never start
+`pulse go` automatically, from a runner agent or child session, through
+another terminal's keys, or with a detached shell. A person can also run
+it in their own terminal. It plans and builds every approved item in
+parallel with the configured cap (planned first when it has no PLAN),
+runs the RED check and tests, review,
+and audit, and opens a PR per item. Starting it grants no approval and
+changes no auto switch. It needs `verify` and `[spec_tests]` on the base
+branch as origin has it; report missing configuration with the base and
+prepare the required config change. It ends when the ramp is empty or
+on Ctrl-C; `.git/pulse/go/report.json` holds the results. Details:
+<https://pssah4.github.io/pulse/guides/pulse-go>.
 
 ## Work the map
 

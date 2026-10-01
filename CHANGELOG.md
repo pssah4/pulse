@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-01
+
+### Fixed
+
+- The Pulse skill executes an explicitly requested `pulse go` in an interactive foreground TTY. Direct starts from Claude and Codex pass the guard and updated machine rules; nested runners and person-only approval levers remain blocked. Refresh Codex rules with `pulse setup --codex-rules` after updating.
+
 ## [0.2.3] - 2026-10-01
 
 ### Fixed

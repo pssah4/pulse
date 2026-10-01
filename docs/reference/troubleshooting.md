@@ -118,7 +118,7 @@ The run's report names why, and the ramp keeps `spec in PR #m: pulse go merges i
 
 ### The map does not start `pulse go`
 
-It never does. Start `pulse go` in a terminal of your own: it runs in the foreground there, and Ctrl-C stops it ([pulse go](../guides/pulse-go#start-a-run)).
+It never does. Start `pulse go` in your own terminal or explicitly ask the Pulse skill to start it in a foreground TTY. Ctrl-C stops a terminal run; ask the skill to stop its run ([pulse go](../guides/pulse-go#start-a-run)).
 
 ### The map shows "no agent active" although an agent works
 
@@ -179,7 +179,7 @@ A `pulse go` run gave the item back and left a note on it: why it stopped (a fai
 
 ### A command says "only a person does this"
 
-`approve`, `go`, `auto` with `on` or `off`, `claim --take`, and `release --take` refuse to run in an agent session, which carries `PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, or `CODEX_THREAD_ID`, and when stdin is not a terminal. These decisions belong to a person: run the command in your own terminal. So do `setup --remove` and `setup --mode off`, which would switch the guard off. `CLAUDECODE` alone does not count, since IDE extensions set it in their terminals too. Such an agent also claims and gives back only the item it was started for (`PULSE_ITEM`); `pulse claim` or `pulse release` of another item ends with "claims and releases only its own item".
+`approve`, `auto` with `on` or `off`, `claim --take`, and `release --take` refuse to run in an agent session, which carries `PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, or `CODEX_THREAD_ID`, and when stdin is not a terminal. These decisions belong to a person: run the command in your own terminal. An explicit `pulse go` request can run through the interactive Pulse skill with a persistent TTY; nested runners and starts without a TTY are refused. So do `setup --remove` and `setup --mode off`, which would switch the guard off. `CLAUDECODE` alone does not count, since IDE extensions set it in their terminals too. Such an agent also claims and gives back only the item it was started for (`PULSE_ITEM`); `pulse claim` or `pulse release` of another item ends with "claims and releases only its own item".
 
 ### An agent's command is denied: "Gate levers belong to a person"
 

@@ -211,7 +211,7 @@ prefix_rule(
 )
 # `pulse -- <command>` too: Python 3.12 reads it as the command itself.
 prefix_rule(
-    pattern = ["pulse", ["approve", "approve-plan", "go", "done", "--"]],
+    pattern = ["pulse", ["approve", "approve-plan", "done", "--"]],
     decision = "forbidden",
     justification = "A person's lever, in their own terminal.",
 )

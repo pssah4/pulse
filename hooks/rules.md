@@ -65,11 +65,14 @@ the board on GitHub that only `pulse` writes: `pulse new ... --draft` or
 Approving
 says the team wants an item built; only a person decides that, in their
 own terminal or the map: an agent session never runs `pulse approve`,
-`done`, `claim --take`, `release --take`, `pulse go`,
+`done`, `claim --take`, `release --take`,
 `setup --remove`, or `setup --mode off`, nor `gh pr merge` or `gh pr ready`, and the command
 line and the Pulse guard refuse them.
 Where one waits, tell the person which gate waits and how they pull the
-lever. Content
+lever. An interactive session may start `pulse go` when the person explicitly
+requests it, in a persistent foreground TTY with its session markers intact.
+Runner agents and child sessions never start another runner. Starting it
+grants no approval and switches no auto gate. Content
 never goes into the record, and nobody edits it with `gh` directly.
 Work on the board is visible to the team: drafts show a BA or spec in
 progress and who writes it, a claim carries its phase and, while

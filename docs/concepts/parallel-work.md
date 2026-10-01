@@ -57,15 +57,15 @@ A claim belongs to one session: a Claude Code session, a Codex thread, a `pulse 
 
 ## Levers belong to a person
 
-Approving a spec or a PLAN, taking over a claim, starting `pulse go`, closing an item, and marking a pull request ready or merging it are a person's decisions. Agents never pull these levers, and three layers stop an agent that pulls one in the open:
+Approving a spec or a PLAN, taking over a claim, closing an item, and marking a pull request ready or merging it are a person's decisions. Agents never pull these levers, and three layers stop an agent that pulls one in the open:
 
-- **The command line.** `pulse approve`, `go`, `auto` with `on` or `off`, `claim --take`, and `release --take` refuse to run when an agent marker is set (`PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`) or stdin is not a terminal, and so do `setup --remove` and `setup --mode off`, which would switch the guard off. Run them in your own terminal, or use the map.
+- **The command line.** `pulse approve`, `auto` with `on` or `off`, `claim --take`, and `release --take` refuse to run when an agent marker is set (`PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CODEX_THREAD_ID`) or stdin is not a terminal, and so do `setup --remove` and `setup --mode off`, which would switch the guard off. Run them in your own terminal, or use the map.
 - **The Pulse guard.** A hook checks every shell, Monitor, and MCP call of a Claude Code or Codex session and its subagents before it runs, and denies it with "Gate levers belong to a person or to their own auto switch". It acts in a session whose working directory lies in a project where Pulse is on, or whose project Claude Code names in `CLAUDE_PROJECT_DIR`: it reads that project's `.pulse/config.toml`, and a session outside such a project has no guard. It reads through `env`, `command`, full paths, the program name in any case, the `-c` of `bash`, `sh`, `zsh`, `dash`, `ksh`, and `fish` (with any options before it), `pwsh -Command`, a shell that reads its commands from stdin, `$(...)` and backticks outside single quotes, `$'...'`, line continuations, comments, redirections, chains with `;`, `&&`, `||`, `|`, and `-R` or `--repo` anywhere.
 - **The Codex rules.** With `pulse setup --codex-rules`, Codex refuses the same levers in every mode ("blocked by policy"). A prefix rule sees only how a command starts, so `gh -R o/r pr merge 5`, `env gh pr merge 5`, or a full path pass it; there the guard holds.
 
 The guard denies:
 
-- `pulse approve`, `go`, `auto` with `on` or `off` (`pulse auto build on`, `pulse auto --for 8h merge on`), `claim --take`, `release --take`, `setup --remove`, and `setup --mode off`, also as quoted text anywhere in the command
+- `pulse approve`, `auto` with `on` or `off` (`pulse auto build on`, `pulse auto --for 8h merge on`), `claim --take`, `release --take`, `setup --remove`, and `setup --mode off`, also as quoted text anywhere in the command
 - `gh pr merge`, `gh pr ready`, `gh pr review --approve`, and `gh pr create` without `--draft`
 - `gh issue close`, `reopen`, `edit`, `pin`, `unpin`, `delete`, `transfer`, and `lock`; `gh label create`, `edit`, and `delete`; `gh repo edit`; `gh issue create` with a `pulse:` label or the title "Pulse auto mode"
 - a `gh` command that writes while its line holds `<!-- pulse:`, `Plan-ok`, `plan ok at`, or `merge ok at`, also in a heredoc, a here-string, or a pipe; a comment, issue, or pull request whose `--body-file` holds one, is no regular file the guard can read (the first 64 KB), or is named twice in the line; a body from stdin that no heredoc, here-string, `echo`, or `printf` of the line feeds; and `$(...)` or backticks in `--body` or `--body-file`
@@ -80,7 +80,7 @@ Text that goes into another terminal gets the same check: `herdr pane run`, `sen
 
 A heredoc body is data, a commit message or a pull request text through `cat` too, unless a shell, `eval`, `osascript`, or `tmux load-buffer` reads it, or `$(cat <<EOF ...)` hands it to a pane, a shell's `-c`, or `eval`. The pulse lever text rule reads every body. The quoted-text rule is strict on purpose: an agent that searches for the phrase, such as `grep -r "pulse approve" docs/`, is denied too. It can search for `pulse.approve` instead.
 
-In Codex the guard works only after you trust the Pulse hooks (`/hooks` in the CLI, the Hooks page in the settings of the IDE extension); until then the command line and the Codex rules hold. No layer stops a script file, a program of the agent's own, or a token read out of `gh`: the layers stop a lever pulled in the open, not an agent that looks for a way around them. `pulse go` runs only in a terminal of your own; nothing starts it elsewhere.
+In Codex the guard works only after you trust the Pulse hooks (`/hooks` in the CLI, the Hooks page in the settings of the IDE extension); until then the command line and the Codex rules hold. No layer stops a script file, a program of the agent's own, or a token read out of `gh`: the layers stop a lever pulled in the open, not an agent that looks for a way around them. An interactive Pulse skill may execute an explicitly requested `pulse go` in its persistent foreground TTY, retaining all session markers. Runner agents and child sessions cannot start another runner. Starting one writes no approval and changes no auto switch.
 
 ## What others see
 

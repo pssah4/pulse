@@ -126,8 +126,12 @@ def _item(args):
 
 
 def cmd_go(args):
-    """pulse go in the foreground of this terminal: its output is the person's, Ctrl-C stops it."""
-    if _person_only("go"):
+    """An explicitly requested foreground runner, also from an interactive skill's PTY."""
+    if os.environ.get("PULSE_HOLDER") or os.environ.get("CLAUDE_CODE_CHILD_SESSION"):
+        print("pulse go: no nested runner from a runner agent or child session")
+        return 1
+    if not _tty():
+        print("pulse go: a foreground TTY is required; allocate a PTY in the skill or use your own terminal")
         return 1
     root = _root()
     cfg = config.load(root)
@@ -415,8 +419,7 @@ def _person_only(lever):
     calls only; the lever guard checks what goes into a pane."""
     if auto.person(os.environ, _tty()):
         return False
-    print("pulse go: only a person does this: start it in your own terminal" if lever == "go" else
-          f"pulse {lever}: only a person does this, in their own terminal or the Pulse map; tell the person "
+    print(f"pulse {lever}: only a person does this, in their own terminal or the Pulse map; tell the person "
           "which gate waits")
     return True
 
@@ -667,7 +670,7 @@ def parser() -> argparse.ArgumentParser:
                         "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
                    help="Codex runs pulse without asking and never a person's lever: approve, auto <gate>, "
-                        "go, done, claim --take, release --take, pulse -- <command>, "
+                        "done, claim --take, release --take, pulse -- <command>, "
                         "gh pr merge and ready, gh issue edit, close, and reopen")
     s.add_argument("--dry-run", action="store_true")
 
