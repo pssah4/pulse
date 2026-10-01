@@ -125,19 +125,30 @@ script, so no agent can skip a step or declare one passed; `/pulse-build`
 follows the same order in your session ([/pulse-build](../guides/pulse-build#done)).
 `pulse go` does not start without a `verify` command in
 `.pulse/config.toml`: the RED check and the tests gate need it.
+During the build its agents run targeted tests and additional PLAN
+checks outside `verify`. The supervisor runs the full command once on
+the completed result; a relevant later change requires fresh evidence.
 
-1. **Plan gate.** An item without a PLAN gets a planning agent first. The
+1. **Plan gate.** An item without a PLAN gets a planning agent first. A
+   structurally invalid PLAN with no previous approval returns to the
+   planner at its existing path, preserving its risks. The
    PLAN must pass P1 to P6: the frontmatter names issue, spec, files, and
    verify; every requirement and success criterion has a task, and every
    requirement its spec test in the first wave; every task names its
    files and a check; the tasks of one wave touch different files; no
    placeholder is left; every spec test file of the first wave matches a
-   pattern in `[spec_tests]` of the config on the base branch. A PLAN that fails goes back to the planner with
+   pattern in `[spec_tests]` of the config on the base branch. Before publication,
+   `pulse check --plan <path>` reports all six rules' findings together,
+   using the current local base without a network request or test suite.
+   A PLAN that fails goes back to the planner with
    the findings, for up to two fix rounds; after that the item fails and
-   the PLAN waits on its branch for a person. A PLAN that passes waits
-   for a person's approval, `pulse approve <n>`, which binds the PLAN and
-   its spec as origin has them; `risk:` in the spec or the PLAN asks for
-   a closer look. Then it goes on to the build.
+   the PLAN waits on its branch for a person, with all findings and a
+   next action. A previously approved PLAN is preserved for a person's
+   decision. Spec approval for planning is automatic by default; a valid
+   PLAN waits for manual build approval with `pulse approve <n>`, which
+   binds the PLAN and spec blobs. Explicit build delegation may permit
+   that handoff automatically; an explicit off, expired delegation,
+   `risk:` or open prerequisites keeps its existing hold.
 2. **Spec tests, frozen.** The builder writes the spec tests of the
    PLAN's first wave, one per requirement, and commits them alone as
    `test: spec tests for #<n>`. From that commit on they are frozen.
@@ -281,8 +292,9 @@ program as you.
 - **`/pulse-audit` fix-loop**: each iteration re-runs the audit
   phase for the affected category, with fresh output
 - **The base check of `pulse go`**: each new commit of the base branch
-  checked with the project's CI, `setup`, and `verify` before anything
-  starts on it
+  is fetched and evaluated from current project CI and saved evidence.
+  No full local suite runs before planning. Pending CI permits planning
+  and holds ordinary builds; a current red base allows only repair items
 
 ## Removing a feature
 

@@ -8,7 +8,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from pulse import config, state
+from pulse import config, ready, state
 
 MARK = re.compile(r"^<!-- pulse:lifecycle (\{[^\n]*\}) -->")
 ACTIONS = {"defer", "resume", "discard", "delete"}
@@ -97,7 +97,8 @@ def _hold_event(repo, number, run):
 
 def _git(root, *args):
     try:
-        result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
+        result = ready.net_git(root, *args) if args[0] == "ls-remote" else \
+            subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         raise state.StateError("cannot verify preserved work: git did not answer") from None
     if result.returncode:

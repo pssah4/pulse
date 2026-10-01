@@ -94,9 +94,10 @@ def _unfetched(root) -> tuple:
     if got is None:
         return "no fetch: .git is read-only here", None
     said = "" if got else ready.fetch_said(root)
-    behind = ready.behind(root) if got or said else None
+    timed_out = said.startswith("no answer within ")
+    behind = ready.behind(root) if got or said and not timed_out else None
     if behind is None:
-        return "origin did not answer", None
+        return "origin did not answer" + (f" ({said})" if said else ""), None
     twin, rest = ready.conflict(behind), [b for b in behind if b not in ready.twins(behind)]     # #97
     if said:
         return "; ".join(filter(None, (f"git fetch said: {said}", twin))), behind
@@ -116,7 +117,8 @@ def _item(args):
     stages = {}                # the stage in the words of the map (#99 FR-14), without the board lines it never prints
     pmap.render(pmap.gather(root, board=False), color=0, stages=stages)
     p = ready.plans(root).get(args.n) or {}
-    i = {**i, "stage": stages.get(args.n, ""), "plan": p.get("path"), "plan_ref": p.get("ref")}
+    i = {**i, "stage": stages.get(args.n, ""), "plan": p.get("path"), "plan_ref": p.get("ref"),
+         "plan_blob": p.get("blob"), "plan_findings": ready.plan_validation(root, p["text"], i.get("spec")) if p else []}
     # a title or note is foreign text (#56): each line of a value through printable, as on the board, and its
     # later lines indented, so none reads as a field
     text = "\n".join("  " * (j > 0) + ready.printable(line)
@@ -175,6 +177,10 @@ def cmd_go(args):
         print(ready.printable(f"  kept the worktree of closed #{u['number']}, it has changes: {u['worktree']}"))
     if rep.get("halt"):
         print(ready.printable(f"  held: {rep['halt']}"))     # a hook's name and git's words (L-4)
+        detail = rep.get("base") or {}
+        for key, label in (("cause", "Cause"), ("next", "Next"), ("url", "Details")):
+            if detail.get(key):
+                print(ready.printable(f"  {label}: {str(detail[key])[:512]}"))
     if stopped:
         print(f"pulse go: stopped by {'Ctrl-C' if stopped == 'SIGINT' else stopped}; the report so far is above")
     if rep.get("report"):
@@ -522,19 +528,29 @@ def _said(result):
 
 def cmd_claim(args):
     """The claim carries the files of the PLAN this clone has, so every ramp holds them without a fetch
-    (WP-56). A file another running item holds refuses it, as the ramp locks it (#46)."""
+    (WP-56). Running work and the ramp's next-item reservations refuse a conflicting claim (#46, #102)."""
     if args.take and _person_only("claim --take") or _other_item("claim", args.n):
         return 1
     root, repo, run = _ctx()
-    plans = ready.plan_files(root)
+    found = ready.plans(root)
+    plans = ready.plan_files(root, found)
     files = plans.get(args.n)
     if files:
         # ponytail: read, then claim; two claims on different items that share a file in the same
         # seconds can both win, and the ramp shows both. A read after the claim would close it.
-        others = [i for i in state.load(root, repo, run=run, fresh=True) if i["number"] != args.n]
+        items = state.load(root, repo, run=run, fresh=True)
+        others = [i for i in items if i["number"] != args.n]
         hit = ready.clash([posixpath.normpath(f) for f in files], ready.held(others, plans))
         if hit:
             return _said((False, f"#{args.n}: {hit[0]} is in use by #{hit[1]}; start #{args.n} once #{hit[1]} is done"))
+        cfg = config.load(root)
+        gates = ready.gates(root, [dict(i, assignees=[]) for i in items],
+                            config.load(root, config.base_ref(root)), found)
+        ramp = ready.ramp(items, plans, cfg["cap"], state.me(root, run=run), gates=gates)
+        reserved = next((i for i in ramp["locked"] if i["number"] == args.n and i["reserved"]), None)
+        if reserved:
+            stage = next(i["stage"] for i in ramp["rows"] if i["number"] == args.n)
+            return _said((False, f"#{args.n}: {stage}; start #{reserved['holder']} first"))
     labels = set()             # as the claim read them: a draft starts on its docs branch (#99 FR-05)
     rc = _said(state.claim(root, repo, args.n, run=run, take=args.take, files=files, labels=labels))
     if rc == 0:
@@ -702,8 +718,11 @@ def parser() -> argparse.ArgumentParser:
                         "with --spec it links the spec and takes <title> as its title, "
                         "with --draft it becomes the draft")
     c = add("check", check.main, "drift a script can see: links, paths, state, caps, stubs", plumb=True)
-    c.add_argument("--spec", nargs="+", action="extend", metavar="PATH", help="only R1 to R6, on these spec "
+    only = c.add_mutually_exclusive_group()
+    only.add_argument("--spec", nargs="+", action="extend", metavar="PATH", help="only R1 to R6, on these spec "
                    "files as they are here: what pulse go refuses before it merges them; asks GitHub nothing")
+    only.add_argument("--plan", nargs="+", action="extend", metavar="PATH", help="all P1 to P6 on local PLANs "
+                      "against the available base spec and config; offline, runs no tests and grants no approval")
     c = add("number", cmd_number, "start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them")
     c.add_argument("--apply", action="store_true", help="rename them, rewrite the paths to them, "
                                                         "and move their records along")

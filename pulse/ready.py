@@ -35,7 +35,8 @@ from pulse import config, spec, state
 
 FETCH_EVERY = 30                     # seconds between two fetches of one clone, whoever asks
 GIT_TIMEOUT = 60                     # seconds for git over the network, as for gh
-NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": ""}   # a password prompt fails at once
+NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": "",
+             "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "0"}   # no inherited GUI/TTY auth prompt
 PLANS = "_devprocess/plans"
 IDS = re.compile(r"\b(?:FR|SC)-\d+\b")
 TICK = re.compile(r"`([^`\s]+)`")
@@ -46,7 +47,7 @@ MOVED = "docs PR changed since approval"      # gate 1 waits again: no approval 
 SAID = re.compile(r"^(?=(?:error|fatal|warning|hint):)", re.M)     # where each message of git starts
 HEADS = re.compile(r"^([0-9a-f]{40}(?:[0-9a-f]{24})?)\trefs/heads/(.+)$", re.M)   # a line git ls-remote writes
 NO_ANSWER = "origin did not answer"
-_memo: dict = {}                     # (branch sha, base ref) -> its PLAN; git history never changes
+_memo: dict = {}                     # (repository, base sha, branch sha, ref) -> its PLANs
 _specs: dict = {}                    # (base sha, path) -> the spec text there, or None
 
 
@@ -93,7 +94,7 @@ def fetch(root: Path, now=False):
         return None            # no fetch rather than one per call
     got = net_git(root, "fetch", "-q", "--prune", "origin")
     answered = got.returncode == 0
-    said = git_error(got.stderr) if got.returncode > 0 else ""    # killed at the time limit: git said nothing
+    said = git_error(got.stderr) if got.returncode else ""    # retain the helper's timeout cause too
     try:
         stamp.write_text("" if answered else f"offline\n{said}", encoding="utf-8")
         if now:                # a fetch of its own: the map and the others keep their pace (#78 E2E m1)
@@ -111,8 +112,7 @@ def git_error(text: str) -> str:
 
 
 def fetch_said(root) -> str:
-    """What git said at the last fetch of this clone, as its stamp keeps it for every command: "" after
-    a fetch that went through, or one the time limit ended, where git said nothing (#85)."""
+    """What git or the time limit said at the last fetch, kept for every command; "" after success."""
     try:
         return (config.pulse_dir(root) / "fetched").read_text(encoding="utf-8").partition("\n")[2]
     except (OSError, state.StateError):
@@ -197,47 +197,61 @@ def _issue(text: str):
     return int(n) if n.isdigit() else None
 
 
-def _branch_plan(root: Path, base: str, ref: str, n: int):
+def _branch_plan(root: Path, base: str, ref: str, n: int, sha: str):
     """The PLAN of #n on its pushed branch: a Markdown file in the plans folder itself, as in the
     working tree; the map opens it with the system's app (audit of #55)."""
-    for path in _git(root, "diff", "-z", "--name-only", "--diff-filter=AM", f"{base}...{ref}", "--",
+    for path in _git(root, "diff", "-z", "--name-only", "--diff-filter=AM", f"{base}...{sha}", "--",
                      f":(glob){PLANS}/*.md").split("\0"):
         if Path(path).parent.as_posix() != PLANS or not path.endswith(".md"):   # a space splits nothing now
             continue
-        text = _git(root, "show", f"{ref}:{path}")
+        text = _git(root, "show", f"{sha}:{path}")
         if _issue(text) == n:
-            return {"path": path, "ref": ref, "text": text, "blob": _git(root, "rev-parse", f"{ref}:{path}").strip()}
+            return {"path": path, "ref": ref, "text": text, "blob": _git(root, "rev-parse", f"{sha}:{path}").strip()}
     return None
 
 
 def plans(root: Path, base: str = None) -> dict:
-    """{issue: {"path", "ref", "text", "blob"}}: pushed item branches, then the working tree, which wins
-    unless the item's branch on origin moved past it: the copy here is committed as it is, and
-    that branch holds this commit and a different PLAN. blob is the PLAN at that path as origin has it, on the
-    item's branch, else on the base: what a Plan-ok binds, the same for every clone (#115); "" where origin has
-    none."""
+    """PLANs on the concrete base, then pushed item branches, then local previews. A clean local copy
+    behind its published source yields to that source. A local preview has an approval blob only when its
+    path and text exactly match the published PLAN; an unpushed edit never borrows another version's blob."""
     base = base or config.base_ref(root)
-    out = {}
-    tree = {e.partition("\t")[2]: e.split()[2] for e in _git(root, "ls-tree", "-z", base, "--", f"{PLANS}/")
-            .split("\0") if "\t" in e}
+    base_sha = _git(root, "rev-parse", "--verify", "-q", f"{base}^{{commit}}").strip()
+    repo, key = str(root.resolve()), (str(root.resolve()), base_sha, base_sha, base)
+    if key not in _memo:
+        selected = {}
+        for entry in _git(root, "ls-tree", "-z", base_sha or base, "--", f"{PLANS}/").split("\0"):
+            meta, _, path = entry.partition("\t")
+            if Path(path).parent.as_posix() != PLANS or not path.endswith(".md") or " blob " not in meta:
+                continue
+            blob = meta.split()[2]
+            text = _git(root, "cat-file", "blob", blob)
+            n = _issue(text)
+            if n:
+                selected[n] = {"path": path, "ref": base, "text": text, "blob": blob}
+        _memo[key] = selected
+    out = dict(_memo[key])
     for line in _git(root, "for-each-ref", "--format=%(objectname) %(refname:short)",
                      "refs/remotes/origin").splitlines():
         sha, _, ref = line.partition(" ")
         n = state.item_of(ref.removeprefix("origin/"))
-        if n:
-            key = (sha, base)
+        if n and ref != base:
+            key = (repo, base_sha, sha, ref)
             if key not in _memo:
-                _memo[key] = _branch_plan(root, base, ref, n)
-            if _memo[key]:
-                out[n] = _memo[key]
+                p = _branch_plan(root, base_sha or base, ref, n, sha)
+                _memo[key] = {n: p} if p else {}
+            out.update(_memo[key])
     for path, text in spec.readable(sorted((root / PLANS).glob("*.md"))).items():
         n, rel = _issue(text), path.relative_to(root).as_posix()
         p = out.get(n)
-        behind = p and p["ref"] and p["text"] != text and not _git(root, "status", "--porcelain", "--", rel) \
-            and _git(root, "rev-list", "--count", f"{p['ref']}..HEAD").strip() == "0"
+        behind = False
+        if p and p["ref"] and p["path"] == rel and p["text"] != text and \
+                not _git(root, "status", "--porcelain", "--", rel):
+            common = _git(root, "merge-base", "HEAD", p["ref"]).strip()
+            # Unrelated local commits do not turn an unchanged PLAN into a local preview.
+            behind = bool(common) and _git(root, "show", f"{common}:{rel}") == text
         if n and not behind:   # behind: a teammate pushed a newer PLAN on the item's branch
             out[n] = {"path": rel, "ref": None, "text": text,
-                      "blob": p["blob"] if p and p["path"] == rel else tree.get(rel, "")}
+                      "blob": p["blob"] if p and p["path"] == rel and p["text"] == text else ""}
     return out
 
 
@@ -346,6 +360,25 @@ def plan_findings(text: str, spec_text, spec_tests=None) -> list:
         if bare:
             out.append(f"P6 no pattern in [spec_tests] for: {', '.join(bare)}")
     return out
+
+
+def plan_validation(root: Path, text: str, spec_path: str = None) -> list:
+    """All structural findings against one locally available base commit, without checking or granting
+    approval. The board owns approval; this offline read uses only the base spec and trusted test runners."""
+    base = config.base_ref(root)
+    sha = _git(root, "rev-parse", "--verify", "-q", f"{base}^{{commit}}").strip() or base
+    path = spec_path or spec.front(text).get("spec")
+    given = spec.on_base(root, path, sha) if isinstance(path, str) and path else None
+    return plan_findings(text, given, config.load(root, sha).get("spec_tests") or {})
+
+
+def repairable(item: dict, gate: str) -> bool:
+    """Only a structurally invalid PLAN with an approved spec and no prior PLAN approval may be repaired.
+    Open prerequisites can still be planned; claims, pauses and existing approvals remain with their owner."""
+    return bool(gate.startswith("plan: ") and item.get("approved") and
+                not any(item.get(k) for k in ("plan_ok", "plan_oks", "hold", "failed", "draft", "assignees",
+                                              "claimed_holder", "pr")) and
+                (not item.get("lifecycle") or item["lifecycle"].get("phase") == "resumed"))
 
 
 def hold(spec_text: str, plan_text: str) -> str:
@@ -474,7 +507,7 @@ def waiting(root: Path, item: dict) -> tuple:
         return None, (), f"#{n} is approved already; pulse go writes its PLAN"
     if not p["blob"]:
         return None, (), no + f"its PLAN {p['path']} is not on origin: push it"
-    wrong = plan_findings(_git(root, "cat-file", "blob", p["blob"]), text, config.load(root).get("spec_tests"))
+    wrong = plan_findings(_git(root, "cat-file", "blob", p["blob"]), text, config.load(root, base).get("spec_tests"))
     if wrong:
         return None, (), no + f"plan: {wrong[0]}"
     blobs = (p["blob"], _git(root, "rev-parse", f"{base}:{path}").strip())
@@ -638,7 +671,7 @@ def view(root: Path, items: list, cfg: dict, me: str, cap: int = None) -> dict:
     so claimed items get their gate too (plan_waits)."""
     found = plans(root)
     return ramp(items, plan_files(root, found), cap or cfg["cap"], me,
-                gates=gates(root, [dict(i, assignees=[]) for i in items], cfg, found))
+                gates=gates(root, [dict(i, assignees=[]) for i in items], config.load(root, config.base_ref(root)), found))
 
 
 def held(items: list, files: dict) -> dict:
@@ -659,6 +692,7 @@ def ramp(items: list, files: dict, cap: int, me: str, gates=None) -> dict:
     """gates: {issue: why it waits} from gates(); a gated item never goes out. A draft nobody
     holds (its spec is to be written, D-43) is a row, never goes out, and takes no bay."""
     running = [i for i in items if i["type"] in state.WORK and i["assignees"] and not i.get("draft")]
+    holders = {i["number"] for i in running}
     taken = held(items, files)
     busy = [i for i in running if me in i["assignees"] and not i.get("pr")]   # in review: no slot
     free = max(0, cap - len(busy))
@@ -671,7 +705,7 @@ def ramp(items: list, files: dict, cap: int, me: str, gates=None) -> dict:
         mine = files.get(i["number"], [])
         hit = clash(mine, taken)
         if hit:
-            locked.append({**i, "file": hit[0], "holder": hit[1]})
+            locked.append({**i, "file": hit[0], "holder": hit[1], "reserved": hit[1] not in holders})
         elif len(nxt) < free:
             nxt.append(i)
             taken.update({f: i["number"] for f in mine})
@@ -680,7 +714,8 @@ def ramp(items: list, files: dict, cap: int, me: str, gates=None) -> dict:
     pooled = {i["number"] for i in pool}
     stage = {i["number"]: "starts next" for i in nxt}
     stage.update({i["number"]: "queued" for i in wait})
-    stage.update({i["number"]: f"locked: {Path(i['file']).name} in use by #{i['holder']}" for i in locked})
+    stage.update({i["number"]: (f"reserved: {Path(i['file']).name} for #{i['holder']} (starts next)" if i["reserved"]
+                               else f"locked: {Path(i['file']).name} in use by #{i['holder']}") for i in locked})
     rows = []
     for i in order(items):
         if not _row(i):

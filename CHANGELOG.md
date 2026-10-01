@@ -5,7 +5,26 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.6] - 2026-10-01
+
+### Added
+
+- The map shows local activity from interactive Claude Code and Codex sessions alongside runner jobs, including tool names, edit paths, subagents and permission waits. Both harnesses can work in the same clone. Capture stores bounded metadata only and respects project mode `off` and `PULSE_PRESENCE=off`.
+
+### Upgrade notes
+
+The added activity hooks require the normal hook review in Codex after updating. Start a new session in both harnesses to load the updated plugin.
+
+### Fixed
+
+- Spec approval for planning is automatic by default; the completed PLAN waits for manual approval before implementation. Explicit switches and expiry remain authoritative for both Claude Code and Codex.
+- A structurally invalid PLAN with no previous approval returns to the planner within the existing attempt limit, preserving its risks. Previously approved PLANs wait for a person before rewriting.
+- `pulse check --plan <path>` reports all P1 to P6 findings offline before publication. Runner and map refresh PLAN selection and its source after a spec merge.
+- Planning reads the current base and CI results without a local baseline test suite. Current project CI takes precedence over older Pulse results; full verification runs on the implemented change.
+- Proven GitHub Dependabot update jobs no longer block the base. App, workflow, actor, commit and suite must match; real CI still gates. Matching old local startup failures are reassessed without recreating a startup scratch checkout or inventing a passing status.
+- Remote Git operations share the existing timeout and noninteractive credential handling. Timeout reasons remain visible without a second remote probe.
+- The ramp distinguishes queued file reservations from files held by a running item. Direct claims respect the same reservations and team order.
+- The map shows runner preparation and checks under Who is doing what, with a readable next step and bounded failure details. Startup no longer scans historical local branches for cleanup.
 
 ## [0.2.5] - 2026-10-01
 

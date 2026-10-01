@@ -1,15 +1,9 @@
-"""What pulse go runs of the project itself, outside every agent sandbox: setup in each worktree, and the
-base check (IMP-03-08).
+"""Project commands and base evidence for pulse go (IMP-03-08, #149, #151).
 
-The base check says whether the base branch is green at a commit, once per base SHA and clone; the commit
-status pulse/base shares the answer with every other clone. In this order: a pulse/base status on the SHA
-counts. A tree that equals the tree of a head whose tests gate passed here is green without a run ("same
-tree as #n head"; after a merge of pulse go that is the rule). Else the project's CI at the SHA (its
-statuses and check runs, never pulse/*) and a run of setup and verify in a scratch worktree on the SHA
-decide: red as soon as one is red, green when both are, and a SHA without CI counts as green. While the CI
-still runs and setup and verify passed, the last known state of the base holds, as a provisional answer go
-asks again; pulse/base goes on the SHA with the final result only. A fault of the tools here (git cannot make
-the scratch worktree) leaves the state unknown and publishes nothing.
+The current SHA's project CI takes precedence over saved pulse/base statuses. Without CI, an existing
+verdict or a locally verified equal tree counts; without either, work can start and the result's tests
+gate supplies the verification before integration. Proven Dependabot maintenance and matching records of
+old local startup failures cannot block that work. Assessing the base runs no setup or local tests.
 """
 from __future__ import annotations
 
@@ -161,64 +155,128 @@ def _mark(root: Path, repo: str, sha: str, ok: bool, why: str, gh_run) -> tuple:
     return ok, why
 
 
+def _updaters(checks: list, repo: str, sha: str, gh_run) -> set:
+    """Suites proven to be GitHub's automatic Dependabot update search (#151).
+    Names alone never exempt a check. Missing metadata leaves it gating; API faults propagate."""
+    candidates = {(c.get("check_suite") or {}).get("id") for c in checks
+                  if c.get("name") == "Dependabot" and (c.get("app") or {}).get("slug") == "github-actions"}
+    candidates = {n for n in candidates if type(n) is int and n > 0}
+    if not candidates:
+        return set()
+    runs = json.loads(gh_run(["api", f"repos/{repo}/actions/runs?event=dynamic&head_sha={sha}&per_page=100"]) or "{}")
+    return {r.get("check_suite_id") for r in runs.get("workflow_runs") or []
+            if r.get("path") == "dynamic/dependabot/dependabot-updates" and r.get("event") == "dynamic"
+            and (r.get("actor") or {}).get("login") == "dependabot[bot]" and r.get("head_sha") == sha
+            and type(r.get("check_suite_id")) is int and r.get("check_suite_id") in candidates}
+
+
 def _ci(combined: dict, repo: str, sha: str, gh_run) -> tuple:
-    """("fail", the check), ("pending", ""), or ("pass", "") for the project's CI at sha: its statuses and check
-    runs, never pulse/*; no CI at all passes."""
+    """Project CI verdict, first blocking check and proven maintenance suites. pulse/* never counts."""
     runs = json.loads(gh_run(["api", f"repos/{repo}/commits/{sha}/check-runs?per_page=100"]) or "{}")
-    seen = [(s.get("context") or "", (s.get("state") or "").upper()) for s in combined.get("statuses") or []] + \
-        [(c.get("name") or "", (c.get("conclusion") or "").upper() if c.get("status") == "completed" else "PENDING")
-         for c in runs.get("check_runs") or []]
-    seen = [(name, st) for name, st in seen if not name.startswith("pulse/")]
-    red = [name for name, st in seen if st in state.FAILED]
-    return ("fail", red[0]) if red else ("pending" if any(st == "PENDING" for _, st in seen) else "pass", "")
+    statuses, checks = combined.get("statuses") or [], runs.get("check_runs") or []
+    updaters = _updaters(checks, repo, sha, gh_run)
+    seen = [(s, (s.get("state") or "").upper()) for s in statuses] + \
+        [(c, (c.get("conclusion") or "").upper() if c.get("status") == "completed" else "PENDING") for c in checks
+         if not (c.get("name") == "Dependabot" and (c.get("app") or {}).get("slug") == "github-actions"
+                 and (c.get("check_suite") or {}).get("id") in updaters)]
+    seen = [(c, st) for c, st in seen if not (c.get("context") or c.get("name") or "").startswith("pulse/")]
+    for outcome, matches in (("fail", state.FAILED), ("pending", {"PENDING", ""})):
+        found = next((c for c, st in seen if st in matches), None)
+        if found is not None:
+            return outcome, found, updaters
+    if runs.get("total_count", len(checks)) > len(checks) or combined.get("total_count", len(statuses)) > len(statuses):
+        raise ValueError("incomplete CI response")
+    return ("pass" if seen else "absent"), {}, updaters
 
 
-def _scratch(root: Path, cfg: dict, sha: str, unit: float) -> tuple:
-    """setup and verify in a scratch worktree on sha, once per SHA and clone: ("", False) when both passed,
-    (why, False) when one failed, (why, True) when git here could not make the worktree, which says nothing
-    about the base (N2)."""
-    noted = _noted(root).get("ran")
-    if noted and noted[0] == sha:
-        return noted[1], False
-    scratch, log = config.pulse_dir(root) / "base", config.pulse_dir(root) / "go" / "base.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    drop(root, scratch)                # one a stopped run left
-    add = _git(root, "worktree", "add", "--detach", str(scratch), sha)
-    if add.returncode:
-        return f"no scratch worktree on {sha[:7]}: {add.stderr.strip()}", True
-    try:
-        why = (cfg["setup"] and run(cfg["setup"], scratch, cfg["setup_timeout"] * unit, log)) or \
-            run(cfg["verify"], scratch, cfg["agent_timeout"] * unit, log)
-    finally:
-        drop(root, scratch)
-    _note(root, ran=[sha, why])
-    return why, False
+def _label(value: object, fallback: str = "project CI") -> str:
+    """Only short check labels, never output bodies, credentials, or terminal controls."""
+    if not isinstance(value, str):
+        return fallback
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value[:512]).strip()
+    return value if re.fullmatch(r"[A-Za-z0-9#][A-Za-z0-9 _./():+\-]{0,79}", value) else fallback
 
 
-def check(root: Path, cfg: dict, sha: str, repo: str, gh_run, unit: float = 60) -> tuple:
-    """(ok, why, final) for the base at sha: ok True when green, False when red, None while nothing is known
-    (its CI runs and no state is known here, GitHub does not answer, git here fails). Not final while the CI
-    runs: go asks again each round (B5). unit: seconds per minute of setup_timeout and agent_timeout."""
+def _check_url(check: dict, repo: str, sha: str) -> str:
+    home = f"https://github.com/{repo}"
+    url = check.get("html_url") or check.get("target_url") or ""
+    route = r"(?:actions/runs/\d+(?:/(?:job|attempts)/\d+)?|runs/\d+)(?:\?check_suite_focus=true)?"
+    route += r"|commit/[0-9a-f]{40,64}/checks(?:\?check_run_id=\d+)?"
+    return url if isinstance(url, str) and len(url) < 512 and re.fullmatch(re.escape(home) + "/(?:" + route + ")", url) \
+        else f"{home}/commit/{sha}/checks"
+
+
+def _diagnostic(check: dict, repo: str, sha: str, cached: bool = False) -> dict:
+    """Derive an allowlisted action from bounded metadata. Raw summaries, logs and errors never leave here."""
+    name = _label(check.get("context") or check.get("name") or check.get("description"))
+    detail = {"state": "failure", "check": name, "cached": cached,
+              "cause": "saved pulse/base failure still blocks builds" if cached else "check failed; cause unavailable",
+              "next": "fix the check and rerun project CI at this commit" if cached else "inspect the failed check",
+              "url": _check_url(check, repo, sha)}
+    output = check.get("output") or {}
+    if "dependabot" in name.lower() and isinstance(output, dict):
+        text = " ".join(s[:4096] for key in ("title", "summary", "text") if isinstance(s := output.get(key), str))
+        patterns = [r"\b[Ss]ecret\s+[`'\"]?([A-Z_][A-Z0-9_]{0,63})[`'\"]?\s+(?:(?:was|is)\s+)?"
+                    r"(?:not found|missing|not available|not set|could not be found)\b",
+                    r"\b[Mm]issing\s+secret\s+[`'\"]?([A-Z_][A-Z0-9_]{0,63})\b"]
+        secret = next((m.group(1) for pattern in patterns if (m := re.search(pattern, text))), "")
+        if secret:
+            detail.update(cause=f"missing secret {secret}",
+                          next=f"add {secret} in Settings > Secrets and variables > Dependabot",
+                          url=f"https://github.com/{repo}/settings/secrets/dependabot")
+    return detail
+
+
+def check(root: Path, cfg: dict, sha: str, repo: str, gh_run, unit: float = 60, detail: dict | None = None) -> tuple:
+    """(ok, why, final) from existing evidence only. Pending or unreadable CI is unknown and provisional.
+    An optional detail dict receives safe fields for the runner report. cfg and unit remain API-compatible;
+    setup and verification run in item worktrees, after this assessment."""
+    if detail is None:
+        detail = {}
+    detail.clear()
     try:
         combined = json.loads(gh_run(["api", f"repos/{repo}/commits/{sha}/status"]) or "{}")
         own = next((s for s in combined.get("statuses") or [] if s.get("context") == CONTEXT), None)
-        if own and own.get("state") in ("success", "failure", "error"):
-            return own["state"] == "success", own.get("description") or "", True
-        tree = _git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
-        by = _green(root, tree)
-        if by:
-            return (*_mark(root, repo, sha, True, f"same tree as {by}", gh_run), True)
-        ci, name = _ci(combined, repo, sha, gh_run)
-    except (state.StateError, ValueError, AttributeError) as e:
-        return None, f"GitHub gave no CI state for {sha[:7]}: {e}", False
-    if ci == "fail":
-        return (*_mark(root, repo, sha, False, name, gh_run), True)
-    why, local = _scratch(root, cfg, sha, unit)
-    if local:
+        ci, failed, updaters = _ci(combined, repo, sha, gh_run)
+    except (state.StateError, ValueError, AttributeError, TypeError):
+        why = f"GitHub gave no complete CI state for {sha[:7]}"
+        detail.update(state="unknown", cause=why, next="inspect project CI and retry the base assessment",
+                      url=_check_url({}, repo, sha))
         return None, why, False
-    if why:
-        return (*_mark(root, repo, sha, False, why, gh_run), True)
-    if ci == "pending":        # the last known state holds meanwhile, so no foreign merge stops every start
-        known = _noted(root).get("known")
-        return (*known, False) if known else (None, f"the CI at {sha[:7]} still runs", False)
-    return (*_mark(root, repo, sha, True, "setup and verify passed", gh_run), True)
+    if ci == "fail":
+        detail.update(_diagnostic(failed, repo, sha))
+        if own and own.get("state") == "failure" and own.get("description") == detail["check"]:
+            return False, detail["check"], True
+        return (*_mark(root, repo, sha, False, detail["check"], gh_run), True)
+    if ci == "pending":
+        why = f"the CI at {sha[:7]} still runs"
+        detail.update(state="pending", check=_label(failed.get("context") or failed.get("name")),
+                      cause=why, next="wait for project CI before building", url=_check_url(failed, repo, sha))
+        return None, why, False
+    ran = _noted(root).get("ran")
+    negative = own and own.get("state") in ("failure", "error")
+    local_failure = negative and ran and ran[0] == sha and ran[1] and own.get("description") == ran[1][:140]
+    maintenance = negative and own.get("description") == "Dependabot" and updaters
+    recheck = local_failure or maintenance
+    if recheck:
+        detail["rechecked"] = "saved local startup failure" if local_failure else "saved Dependabot maintenance failure"
+    if ci == "pass":
+        why = "project CI passed"
+    elif own and own.get("state") in ("success", "failure", "error") and not recheck:
+        if own["state"] != "success":
+            detail.update(_diagnostic({"name": own.get("description")}, repo, sha, cached=True))
+            return False, detail["check"], True
+        why = _label(own.get("description"), "saved pulse/base success")
+        detail.update(state="success", cause=why, cached=True)
+        return True, why, True
+    else:
+        by = "" if recheck else _green(root, _git(root, "rev-parse", f"{sha}^{{tree}}").stdout.strip())
+        if not by:
+            why = "no project CI; verify the built result before integration"
+            detail.update(state="absent", cause=why, next="build, then verify the result before integration")
+            return True, why, True
+        why = f"same tree as {_label(by, 'a verified head')}"
+    detail.update(state="success", cause=why)
+    if own and own.get("state") == "success" and own.get("description") == why:
+        return True, why, True
+    return (*_mark(root, repo, sha, True, why, gh_run), True)

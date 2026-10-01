@@ -22,6 +22,7 @@ Every open item nobody works on lines up like pallets at a loading dock, in orde
 - **What each line waits for:** `not approved`, `spec: <rule>`, `needs a plan`, `plan: <rule>`, `plan waits for you`, `waits for #n`, `locked: <file> in use by #n`, then `queued` and `starts next`. `pulse go` plans what needs a plan and builds from the top.
 - **Slots:** `cap` in `.pulse/config.toml` sets how many items run at once for you. Your own running items take slots; a teammate's running item takes none of yours, but its files are held for everyone. When Alice works on #12, Sebastian keeps all four of his slots, and the files of #12 stay off limits for his agents until Alice is done.
 - **Locked:** a ready item whose files another running item holds waits, and the ramp names the file and the holder: `#18 ui: settings panel   locked: token.ts in use by #11`. `pulse claim` refuses such an item with the same file and holder, so a build started by hand waits too.
+- **Reserved:** an item selected to start next reserves its files before its agent starts. A conflicting row says `reserved: test_text.py for #3 (starts next)`. A direct `pulse claim` gives the same reason and asks you to start #3 first. Only items selected for a free slot reserve files; a gated or merely queued item creates no reservation.
 - **Waits:** an item with an open blocker waits until the blocker is done: `#13 ui: token banner   waits for #11`.
 
 `pulse status` prints it once; the [map](../guides/pulse-map) draws it live.

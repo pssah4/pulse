@@ -366,8 +366,9 @@ writes `issue:` and `parent:` into the spec and a line into the epic's
 prose. Commit what `pulse new` wrote and push again; the docs PR follows.
 
 Its merge follows the approval, because agents plan from the
-spec as the base branch has it (rule R1): when the team wants an item
-built, the person records the decision with `pulse approve <n>` in
+spec as the base branch has it (rule R1). The runner grants spec approval
+for planning automatically by default. With an explicit manual spec
+setting, the person records the decision with `pulse approve <n>` in
 their own terminal, or `a` in the map, which writes the approval only,
 and `pulse go` merges the docs PR into the base branch first, before it
 plans the item; nobody merges it on GitHub. `pulse approve` refuses
@@ -415,7 +416,8 @@ against this path before an item may close.
 | XL | over one week | epic scope; split into features first |
 
 XL is a smell at feature scope. Split it before implementation starts.
-L is allowed, but its PLAN waits for a person before anything is built.
+L is allowed; effort alone adds no manual PLAN stop. Explicit manual
+build approval or `risk:` still requires a person's decision.
 
 Cut features so that each one ends in one pull request whose merge back
 to the base branch a reviewer follows in one reading: one feature, one
@@ -440,20 +442,23 @@ and report lines: `references/status-promotion-prompt.md`.
 
 1. Report what you produced: epic, features, architect handoff, issue
    numbers, ASR counts, one Parent-BA status line, and the pushed branch.
-2. Put each epic and feature up for approval, the second stop of the
-   Pulse flow: per spec its goal, scope, success criteria, and open
+2. Present each epic and feature: per spec its goal, scope, success criteria, and open
    questions in a few lines, with the path to read it in full. A
    correction goes into the spec (commit, push) before it counts as
-   approved. Then tell the person which specs wait and how they approve
-   them: `pulse approve <n>` in their own terminal, or `a` in the map;
-   `pulse go` merges each spec into the base branch first. Once they
-   have, continue with planning (the pulse-plan
+   approved. Spec approval for planning is automatic by default in
+   `pulse go`. With explicit manual spec approval, tell the person which
+   specs wait: `pulse approve <n>` in their own terminal, or `a` in the map.
+   `pulse go` merges each approved spec into the base branch first.
+   Once approved, continue with planning (the pulse-plan
    skill, which has no command) for the approved features,
    improvements, and fixes, in this session, without asking; the
    pulse-plan skill claims each, and an item it cannot claim (an open
    blocker, another holder) stays for `pulse go`, whose planning does not
    wait for blockers. The others stay unplanned until they are approved.
-   An epic gets no PLAN. Planning hands over as its handoff says: each
-   PLAN, pushed, waits for the person's approval before its build. For an item approved
+   An epic gets no PLAN. Spec approval for planning is automatic by
+   default in the runner; explicit plan off remains manual. A valid PLAN,
+   checked with `pulse check --plan <path>` and pushed, waits for manual
+   build approval by default. That decision binds the PLAN and spec blobs;
+   explicit delegation, risks and prerequisites keep their checks. For an item approved
    later, tell the person: `pulse go` in their own terminal plans and
    builds every approved item; or `/pulse-build <n>` for one.

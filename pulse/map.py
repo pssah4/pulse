@@ -24,7 +24,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import auto, config, go, lifecycle, merge, order, ready, remove, setup, spec, state
+from pulse import auto, config, go, lifecycle, merge, order, presence, ready, remove, setup, spec, state
 
 WIDTH = 80                      # columns without a terminal (D-45)
 TITLE = 60                      # the most of a file name a row keeps (FIX-02-04-03)
@@ -60,7 +60,8 @@ HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on 
 # what the map asks of a person, the most urgent first, in the color of its state
 NEXT = {"failing": "31", "your review": "33", "waits for merge": "33",
         "plan waits for you": "33", "not approved": "33", "spec rule": "90", "spec waits": "90", "last run": "90",
-        "needs a plan": "90", "starts next": "90", "queued": "90", "spec in progress": "90", "nothing open": "90"}
+        "plan repair": "90", "plan needs you": "33", "needs a plan": "90", "starts next": "90", "queued": "90",
+        "spec in progress": "90", "nothing open": "90"}
 SILENT = 30 * 60                # a run's claim without a heartbeat this long shows no sign of life (D-43)
 PHASE = {"plan": "planning", "build": "building", "spec tests": "RED check running", "tests": "tests running",
          "check": "review and audit running", "review": "review running", "audit": "audit running",
@@ -331,6 +332,15 @@ def clean(text) -> str:
     return " ".join("".join(c if c.isprintable() else " " for c in str(text or "")).split())[:TITLE]
 
 
+def _diagnostic_url(value) -> str:
+    """Only bounded GitHub check and settings destinations become terminal links (#149)."""
+    return value if isinstance(value, str) and len(value) <= 500 and re.fullmatch(
+        r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+        r"(?:settings/secrets/dependabot|actions/runs/[0-9]+(?:/(?:job|attempts)/[0-9]+)?|"
+        r"runs/[0-9]+(?:\?check_suite_focus=true)?|commit/[0-9a-f]+/checks(?:\?check_run_id=[0-9]+)?)",
+        value) else ""
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
@@ -387,6 +397,7 @@ def places(vm: dict) -> dict:
     by_number = {i["number"]: i for i in vm["items"]}
     holds = {}                            # session or Codex subagent id -> the items its claims hold
     for x in vm["items"]:
+        holds.setdefault(x.get("claimed_holder") or "", []).append(x)
         holds.setdefault((x.get("claimed_holder") or "").partition(":")[2], []).append(x)
     holds.pop("", None)                   # no claim mark
     feats = {}
@@ -396,7 +407,7 @@ def places(vm: dict) -> dict:
             i = by_number.get(state.item_of(b)) or next(
                 (x for x in vm["items"] if b and (x.get("pr") or {}).get("branch") == b and not x["pr"].get("fork")),
                 None)
-            own = holds.get(a["id"]) or holds.get(s["id"]) or []
+            own = holds.get(a.get("holder")) or holds.get(a["id"]) or holds.get(s["id"]) or []
             if own and i not in own:
                 i = own[0]
             feats.setdefault(i["number"] if i else (b or "no branch"), []).append(a)
@@ -426,6 +437,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     vm, item, p, w = _plain(vm), _plain(item), Paint(color), width
     by_number = {i["number"]: i for i in vm["items"]}
     shown = [] if picks is None else picks
+    runner = vm.get("runner") if isinstance(vm.get("runner"), dict) else {}
+    diagnostic = vm.get("base_status") if vm.get("halt") and isinstance(vm.get("base_status"), dict) else {}
+    doing = " ".join(filter(None, (runner.get("title") or runner.get("phase"), runner.get("target"))))
+    remedy = diagnostic.get("next") or ""
+    destination = _diagnostic_url(diagnostic.get("url"))
 
     def dot(st: str) -> str:
         ch, code = DOT.get(st, DOT["idle"])
@@ -489,7 +505,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         if row.get("draft"):                  # /pulse-ba or /pulse-re writes its spec (D-43)
             who = row.get("claimed_by") or next(iter(row["assignees"]), "")
             return "idle", ("spec in progress", f"{who or '/pulse-re'} writes the spec of #{n}")
-        if row in groups["blocked"]:
+        if row in groups["blocked"] and not ready.repairable(row, s):
             return "idle", None
         if s == "not approved":               # approve writes gate 1, pulse go merges the docs PR (#115)
             if n in vm.get("unready", ()):    # a spec on the base that breaks R2 to R6 there
@@ -500,12 +516,18 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             return "waiting", (s, f"pulse approve {n}, or approve spec in its view")
         if s.startswith("spec:"):
             return "idle", ("spec rule", f"/pulse-re on the spec of #{n}")
+        if s.startswith("plan: "):
+            return ("idle", ("plan repair", f"Runner: repair #{n} plan; then ask for your approval")) \
+                if ready.repairable(row, s) else \
+                ("waiting", ("plan needs you", f"You: review #{n} plan findings; previous approvals stay"))
         if s.startswith(ready.WAITS):
             return "waiting", ("plan waits for you", f"pulse approve {n}, or approve plan in its view")
         if s.startswith(ready.MOVED):          # its docs PR moved since gate 1 (M-1)
             return "waiting", ("docs PR changed", f"pulse approve {n}, or approve spec in its view")
         if row.get("note"):                   # a run gave it back (D-43); its branch holds the work
             return "idle", ("last run", f"/pulse-build {n} goes on from where it stopped")
+        if remedy or runner and runner.get("item") in (None, n):
+            return "idle", None              # the preparation or base action below explains what happens next
         if s == "needs a plan":
             return "idle", (s, "pulse go writes its plan")
         return "idle", ("starts next", "pulse go builds it") if s.startswith("starts next") else \
@@ -583,6 +605,9 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                  ("PR", ", ".join(filter(None, [f"#{pr['number']}", pr.get("draft") and "draft",
                                                  pr.get("checks") and f"checks {pr['checks']}"])) if pr else "none"),
                  ("spec", i.get("spec") or "none"), ("plan", seen["plan"] or "none yet")]
+        if "plan_blob" in seen:
+            facts.append(("plan blob", seen["plan_blob"] or "local preview; push before approval"))
+        facts += [("plan issue", finding) for finding in seen.get("plan_findings", ())]
         menu = offers(vm, seen)
         pick = min(seen.get("pick", 0), len(menu) - 1)
         choice = [(p(f" › {words:<14}", "1") if k == pick else f"   {words:<14}")
@@ -593,7 +618,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         heading = [section(title[0])] if len(title) == 1 else [p(line, "1;36") for line in title]
         details = []
         for label, value in facts:
-            pieces = wrap(value, w - 13) if label == "goal" else [value]
+            pieces = wrap(value, w - 13) if label in ("goal", "plan", "plan blob", "plan issue") else [value]
             details += [f" {label if index == 0 else '':<12}{piece}" for index, piece in enumerate(pieces)]
         return heading + [""] + details + [""] + choice
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
@@ -604,6 +629,10 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
                                   (vm.get("order") or {}).get("why"))))
     inset = INSET if w >= 60 else 0       # beside a session the header keeps its words and leaves out the signet
+    if remedy:
+        # The action stays in the fixed header even on a short screen. NEXT keeps the complete explanation.
+        action = short("You: " + remedy.partition(" in ")[0], w - inset - 2)
+        warn = p.link(action, destination)
     head = [lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90") + "  " + vm["person"], p(vm["now"], "1"),
                    w - inset),
             "   ".join(parts), p("! " + warn, "33") if warn else ""]
@@ -611,6 +640,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     switched = vm.get("auto") or {}
     mode = p(vm["auto_why"], "31") if vm.get("auto_why") else \
         "auto you  " + auto.line(switched.get(vm["me"], {}), sep="  " if inset else " ")    # 44 columns hold it
+    if not vm.get("auto_why") and vlen(mode) > w - inset:
+        mode = "auto you " + auto.line(switched.get(vm["me"], {}), sep=" ").replace("auto after spec approval", "auto")
     out = [(fit(mark[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
     out.append("")
     if item:                              # the item view (D-44), live like the map
@@ -659,6 +690,10 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """What the agents on one line do: the one focus picks."""
         return _doing(focus(agents))
 
+    def details(agents, pad):
+        return [lr(pad + "└ " + dot(a["state"]) + " " + a["harness"] + " " + a["id"][:8],
+                   p(_doing(a)[0] or "thinking", _doing(a)[1]), w) for a in agents if a.get("harness")]
+
     def tree(entries):
         """Features, each with what its agent does below it; agents outside any feature by branch."""
         rows = []
@@ -668,6 +703,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             if isinstance(e, str):            # an agent on a branch that is no open feature
                 doing, code = said(agents)
                 rows.append(lr(stem + dot(roll(states)) + " " + e, p(doing, code), w))
+                rows += details(agents, pad)
                 continue
             st, words = gate(e)
             label = p.link(f"#{e['number']}", e.get("url")) + f" {e['title']}"
@@ -677,8 +713,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 stem, label = p("› ", "1"), p(label, "1")
             rows.append(lr(stem + dot(roll(states + [st])) + " " + label, p(words, tone.get(st, "90")), w))
             if agents:
-                doing, code = said(agents)
-                rows.append(lr(pad + "└ " + p(doing, code), "", w))
+                if any(a.get("harness") for a in agents):
+                    rows += details(agents, pad)
+                else:
+                    doing, code = said(agents)
+                    rows.append(lr(pad + "└ " + p(doing, code), "", w))
         return rows
 
     others = {}                           # the holder's claim mark decides, else the assignee
@@ -699,6 +738,13 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                   + " " + p(vm["person"], "1"),
                   p(f"{len(r['busy'])} of {r['cap']} slots busy, {agents} active", "90"), w))
     out += tree(entries)
+    if runner:
+        seconds = _secs(runner.get("started"))
+        elapsed = f"{max(0, int(seconds))} s" if seconds is not None and 0 <= seconds < 60 else \
+            _age(runner.get("started"))
+        out.append(lr(dot("working") + " " + p("Pulse runner", "1"), p(elapsed, "90"), w))
+        for text in filter(None, (doing, runner.get("detail"))):
+            out += ["  " + p(line, "90") for line in wrap(text, w - 2)]
     for login in sorted(others, key=str.lower):
         items = list(others[login].values())
         out.append(lr(dot(roll([gate(i)[0] for i in items])) + " " + p(login, "1"),
@@ -712,12 +758,29 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         [wants(x)[1] for x in rows]
     for step in filter(None, steps):
         todo.setdefault(*step)
-    if not rows and not held:
+    if not rows and not held and not runner and not remedy:
         todo["nothing open"] = "/pulse-ba explores, /pulse-re writes specs"
     out.append(section("NEXT"))
+    if runner:
+        out += [" " + line for line in wrap("Runner: " + doing, w - 1)]
+        if runner.get("next"):
+            out += [" " + line for line in wrap("Then: " + runner["next"], w - 1)]
+    if remedy:
+        cause = ": ".join(filter(None, (diagnostic.get("check"), diagnostic.get("cause"))))
+        for text in filter(None, ("You: " + remedy, cause,
+                                  "Saved base verdict still blocks new work." if diagnostic.get("cached") else "")):
+            out += [" " + line for line in wrap(text, w - 1)]
+        if destination:
+            out += [" " + p.link(line, destination) for line in wrap(destination, w - 1)]
+        for text in filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
+                                  (vm.get("order") or {}).get("why"))):
+            out += [" " + line for line in wrap(text, w - 1)]
     for state_ in NEXT:
         if state_ in todo:
-            out.append(lr(" " + p(state_, NEXT[state_]), todo[state_], w))
+            step = ("You: " if (runner or remedy) and NEXT[state_] == "33" and
+                    not todo[state_].startswith("You:") else "") + todo[state_]
+            out += [" " + line for line in wrap(step, w - 1)] if state_ in ("plan repair", "plan needs you") else \
+                [lr(" " + p(state_, NEXT[state_]), step, w)]
     out.append("")
 
     # --- ramp ---------------------------------------------------------------
@@ -1046,7 +1109,9 @@ def look(root: Path, vm: dict, n: int) -> dict:
     i = next((x for x in vm["items"] if x["number"] == n), {})
     p = ready.plans(root).get(n)
     return {"number": n, "goal": _goal(spec.find(root, i["spec"])[0] if i.get("spec") else None),
-            "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else ""}
+            "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else "",
+            **({"plan_blob": p.get("blob"), "plan_findings": ready.plan_validation(root, p["text"], i.get("spec"))}
+               if p else {})}
 
 
 def by_number(root: Path, vm: dict, number: int) -> dict:
@@ -1255,6 +1320,16 @@ def _cache_notice(root: Path) -> str:
     return f"showing last known state, cache age {age}"
 
 
+def local(root: Path, vm: dict):
+    """Local activity stays fresh while the board reader waits for the network."""
+    now = time.monotonic()
+    if now - vm.get("_presence_at", -math.inf) < 1:
+        return
+    vm["_presence_at"] = now
+    vm["sessions"] = presence.read(root)
+    vm["branches"] = {a["cwd"]: a.get("branch", "") for s in vm["sessions"] for a in [s, *s["agents"]]}
+
+
 def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     """The view model of the map; board=False leaves out what only the board section shows, the epics' closed
     children and the merges GitHub closes nothing for: pulse status <n> asks GitHub for neither (#99 fix round 1)."""
@@ -1294,10 +1369,11 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     base = cfg["base_branch"] or config.default_branch(root)
     vm = {"repo": repo, "now": time.strftime("%H:%M:%S"), "base": base,
             "person": state.who(root, me) or "you", "me": me,      # Klarname (@login), as every surface (#111)
-            # no sessions: the live state of agents comes with the Herdr map (phase 2); the map shows claims
             "items": items, "sessions": [], "error": error, "order": order_info,
             "phases": phases, "failed": failures(root, items),
             "halt": go.halt(root),              # base red, or a hook refused pulse go (#113)
+            "runner": go.activity(root),        # live preparations too, before a claim or an agent exists (#149)
+            "base_status": (go.last_run(root) or {}).get("base") or {},
             "closed": dict(Counter(closed(root, repo, items) if board else {}) + finished),
             # no spec, or neither on the base nor in an open pull request: approve refuses it (#115)
             "nowhere": [i["number"] for i in items if not i["approved"] and i.get("spec") not in there
@@ -1315,6 +1391,7 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
             _limited[root] = e
         seen = {"switches": {}, "why": f"auto switches not known: {e}"}
     vm.update(auto=seen["switches"], auto_why=seen["why"])
+    local(root, vm)
     vm["rate_limit"] = root in _limited
     if vm["rate_limit"]:
         reason = str(_limited[root]).replace("GitHub API rate limit", "GitHub rate limit", 1)
@@ -1573,6 +1650,7 @@ def main(args) -> int:
                 break
             if waiting and ui["level"] == "map":       # the line waits: never over what a step binds
                 status, waiting = waiting, ""
+            local(root, vm)
             vm["now"] = time.strftime("%H:%M:%S")
             width, size = columns(), tuple(terminal_size())
             height = size[1] or 40                     # a pty nobody sized: 0 rows

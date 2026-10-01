@@ -57,11 +57,14 @@ nothing is done until the evidence says so.
    `pulse go` sets each of its worktrees up with `setup` from the config,
    so its agents install no dependencies.
 4. No PLAN? Run the pulse-plan skill in this session first, then
-   continue here without asking. Every PLAN waits for a person: push it,
-   show the user its goal, decisions, risks (`risk:` in the spec or the
-   PLAN), and files, keep the claim, and tell the person how they approve
-   it: `pulse approve <n>` in their own terminal, which binds the PLAN as
-   origin has it. Nothing is built before it.
+   return with a valid PLAN. Spec approval for planning is automatic by
+   default; implementation waits for manual PLAN approval. A supervised
+   planning job returns its PLAN to the runner. Show the goal, decisions,
+   risks and files, and tell the person `pulse approve <n>` in their own
+   terminal. An explicit build delegation may allow the runner to bind a
+   valid PLAN automatically; expired delegation, risks and unmet
+   prerequisites keep their checks. Build only against the recorded
+   PLAN and spec.
 
 ## Spec tests first
 
@@ -98,7 +101,11 @@ For each task of the PLAN:
    touches, not the whole suite.
 
 After each step, run the tests that step affects, not the whole suite;
-run `verify` once, before the gates, and again only after a change.
+use targeted checks. Under `pulse go`, the supervisor runs the full
+`verify` once on the completed result. Its build and fix agents run
+targeted checks and additional PLAN checks that `verify` does not cover,
+then return the result to the supervisor. In an interactive build, run
+`verify` once before review and audit, and again only after a relevant change.
 
 Push the item branch after every commit (`git push -u origin <branch>`):
 the team sees the work, and whoever takes the item over starts from it.
@@ -226,6 +233,12 @@ regression test moves into the suite and is permanent from then on;
 everything else temporary is deleted.
 
 ## Done
+
+In a supervised build, finish the assigned phase after its targeted
+checks and report the result. The runner owns the full verification,
+review, audit, pushes, and PR. Do not repeat those phases in its agent.
+The following completion evidence and gates apply to the supervisor or
+to an interactive build that owns the whole item.
 
 Nothing closes on a claim. Before calling the item done, in this turn:
 

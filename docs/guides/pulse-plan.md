@@ -7,7 +7,7 @@ description: From a ready spec to a PLAN the builder can execute, after checking
 
 Planning turns a ready spec into a PLAN. It reads the code first, plans so that as much as possible can run in parallel, and keeps the few decisions that a future agent needs to know.
 
-Planning runs as a step of other commands: [`/pulse-re`](./pulse-re) plans every feature, improvement, or fix you approve in its session, right after the approval and without asking, and an epic gets no PLAN; [`/pulse-build`](./pulse-build) (in Codex `$pulse:pulse-build`) plans an item that has no PLAN before it builds; and [`pulse go`](./pulse-go) plans every approved item without one. All three follow the `pulse-plan` skill, which carries `user-invocable: false` and so stays out of the command menu. Codex does not read that field and still lists the skill; start planning through `/pulse-build` there as well.
+Planning runs as a step of other commands: [`/pulse-re`](./pulse-re) plans every feature, improvement, or fix you approve in its session, right after the approval and without asking, and an epic gets no PLAN; [`/pulse-build`](./pulse-build) (in Codex `$pulse:pulse-build`) plans an item that has no PLAN before it builds; and [`pulse go`](./pulse-go) plans every approved item without one, or repairs a structurally invalid PLAN that has never been approved. All three follow the `pulse-plan` skill, which carries `user-invocable: false` and so stays out of the command menu. Codex does not read that field and still lists the skill; start planning through `/pulse-build` there as well.
 
 ## Code first
 
@@ -36,7 +36,19 @@ The PLAN file is the item's only plan. A plan mode, such as the one in Claude Co
 
 **Coverage gate.** Before any code, checked mechanically as P1 to P6: the frontmatter names issue, spec, files, and verify, and the file is UTF-8; every requirement and success criterion is covered by a task or deferred with a reason, and every requirement has its spec test in wave 1; every task names files and a check, and `files` is exactly their union; tasks in one wave touch disjoint files; no placeholder is left; every spec test file of wave 1 matches a pattern in `[spec_tests]` of the config on the base branch. Every decision the plan relies on has a task that puts it into effect. The gate runs again whenever the spec or a decision changes.
 
-**Who approves it.** A person, for every PLAN that passes the gate: the ramp shows `plan waits for you` until `pulse approve <n>`, or `a` in the map, writes its Plan-ok. The approval binds the PLAN as origin has it (the id git gives it on the item's pushed branch) and the spec on the base branch: `pulse approve` prints both ids, a PLAN or spec changed afterwards waits again (`plan changed since plan ok`, `spec changed since plan ok`), and a PLAN only in your working tree cannot be approved before it is pushed. The map binds the ids of the PLAN the person read and refuses the approval when they changed since. `pulse go` counts it only when the person may push to the repository. `risk:` in the spec or in the PLAN is named beside it for a closer look. Neither `effort: L` nor `needs:` holds a PLAN: [`pulse go`](./pulse-go) makes each `needs:` entry a blocker of the item, and a new title a draft item; writing its `#m` into the PLAN changes the PLAN, so it waits for the person again. [`pulse go`](./pulse-go) writes PLANs for approved items by itself, in ramp order.
+Before committing or handing over the PLAN, run:
+
+```bash
+pulse check --plan _devprocess/plans/<n>-<slug>.md
+```
+
+The command reports all P1 to P6 findings together, using the spec and test-runner configuration from the current locally available base. It makes no network request and runs no test suite. Fix the findings and repeat the command until it succeeds. Runner and map select the PLAN against concrete Git commits, so a spec merge refreshes its path, source and validation.
+
+**Who approves it.** Spec approval for planning is automatic by default; the completed PLAN waits for manual approval before implementation. Show its goal, decisions, risks and files, then approve it with `pulse approve <n>`, or `a` in the map. That personal approval binds the PLAN and spec as origin has them, and a changed PLAN or spec waits again. The map refuses approval when the blobs changed since the person read them; the approving person must have repository write access. Explicit `pulse auto build on` may delegate this decision under the existing risk and prerequisite checks. An explicit off or expired delegation stays off. The runner turns each `needs:` entry into a blocker, and open prerequisites hold the build.
+
+**Repairing an existing PLAN.** A structurally invalid PLAN with no previous PLAN approval can return to the planner at its existing path. Repairs preserve risk declarations and use the existing limit of two fix rounds. If validation still fails, the item stops with the findings and a concrete next action. A PLAN that was previously approved returns to a person before automatic rewriting. Claude Code and Codex follow these same limits.
+
+Planning reads the current fetched base and its CI metadata without a full local test suite. Pending CI permits planning and holds the build. Agents run targeted checks during implementation; the supervisor runs full `verify` once on the completed result.
 
 ## Planning for parallel work
 

@@ -13,8 +13,8 @@ cap = 4                     # agents pulse go runs at once, in every phase and a
 agent = "claude"            # which [agents] templates pulse go starts, e.g. "claude:2,codex:2"
 agent_timeout = 60          # minutes before a hung agent is stopped
 base_branch = "main"
-verify = "npm test"         # pulse go needs it: the tests gate, the base check
-setup = "npm ci"            # pulse go runs it in each worktree it makes and in the base check
+verify = "npm test"         # pulse go needs it: the tests gate after the build
+setup = "npm ci"            # pulse go runs it in each item worktree it makes
 setup_timeout = 20          # minutes for one setup
 # repo = "owner/name"       # only when the repo has several GitHub remotes
 # parallel, map_autostart, go_autostart, plan_approval: gone; an older file keeps them, and Pulse reads past them
@@ -40,8 +40,8 @@ artifacts = ["dist/app.js"]
 | `agent_timeout` | `60` | minutes per phase, `verify` included; a phase that runs longer is stopped with its child processes. A plan or build that timed out gives its claim back; after the build the item keeps its claim, and [the chain after the build](../concepts/verification-gates#the-chain-after-the-build) says what a timeout means for each step |
 | `base_branch` | origin's default branch, else `main` | where branches start and PRs point |
 | `spec_branch` | `docs/{n}-{slug}` | the name of the docs branch that carries an item's BA and specs: `{n}` is the item's number, `{slug}` its short name, `{type}` its type (`epic`, `feat`, `imp`, `fix`). `/pulse-ba` and `/pulse-re` write there, `pulse new --spec` opens its docs PR. A project whose branch rule refuses `docs/` branches sets its own, for example `{type}/{n}-{slug}-spec`. A pattern without `{n}`, or one a build branch `{type}/{n}-{slug}` would match, is refused with a warning, and the default applies |
-| `verify` | none | the command that runs the project's tests. `pulse go` needs it and does not start without it: it runs it in the tests gate, the first of the three gates on every feature branch, and in the [base check](../guides/pulse-go#the-base-check). It also sets what a Claude agent may run, see [Agent templates](#agent-templates). `pulse setup --verify "<cmd>"` sets it |
-| `setup` | none | the command that makes a fresh checkout ready for the tests, such as `npm ci`. `pulse go` runs it itself, outside every agent sandbox, in each worktree it makes, again after a lockfile in it changed (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `uv.lock`, `poetry.lock`, `Cargo.lock`, `go.sum`), and in the base check, so its agents find their dependencies installed. A setup that fails in an item's worktree fails the item with `pulse:failed`; on the base it makes the base red |
+| `verify` | none | the command that runs the project's tests. `pulse go` needs it and does not start without it: it runs it in the tests gate, the first of the three gates on every feature branch, after the built result. The [base check](../guides/pulse-go#the-base-check) reads current CI and existing evidence without running this command. It also sets what a Claude agent may run, see [Agent templates](#agent-templates). `pulse setup --verify "<cmd>"` sets it |
+| `setup` | none | the command that makes a fresh checkout ready for the tests, such as `npm ci`. `pulse go` runs it itself, outside every agent sandbox, in each worktree it makes, again after a lockfile in it changed (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `uv.lock`, `poetry.lock`, `Cargo.lock`, `go.sum`), so its agents find their dependencies installed. A setup that fails in an item's worktree fails the item with `pulse:failed` |
 | `setup_timeout` | `20` | minutes for one `setup`; one that runs longer is stopped with its child processes and counts as failed |
 | `repo` | from `gh repo set-default`, else the single GitHub remote | the GitHub repository that holds the board |
 | `ids_since` | none | a commit from which the project numbers its specs anew, for example a new major version on the history of the old one: `pulse number` then counts only the IDs in file names after that commit, on branches and in worktrees that contain it, see [File names and IDs](./artifacts#file-names-and-ids) |
@@ -52,6 +52,10 @@ artifacts = ["dist/app.js"]
 **What runs a program counts as merged.** `pulse go` takes `setup`, `setup_timeout`, `verify`, `protected`, `[spec_tests]`, and `[agents]` from `.pulse/config.toml` on the base branch as origin has it, never from your working tree, which a checked-out branch or an agent may have changed: a change to them counts once it is merged and pushed. A run refuses to start when `base_branch` in your working tree names another base than the file there, and, where Python has `tomllib`, when that file is no valid TOML; without `tomllib` (Python 3.9 and 3.10), when a line of it is one the built-in reader does not understand (a multi-line string or array, `[[...]]`, a dotted key) or names a key or a table twice. The other keys come from the working tree.
 
 Pulse ignores top-level keys it does not know, such as one an older version wrote. Before Python 3.11, or when the file is not valid TOML, Pulse reads it line by line and skips a line of the top level or of `[agents]` that it does not understand, with a warning that names the line. A project without `.pulse/config.toml` reads `.dia/config.toml`, the settings file of the predecessor plugin (Digital Innovation Agents), so a project that switched that plugin off stays silent until it migrates.
+
+Without an explicit switch, `plan` is on and `build` and `merge` are off: specs proceed to planning, and the completed PLAN waits for manual approval before implementation. `pulse auto plan off` records a manual spec stop; `pulse auto build on` and `pulse auto merge on` delegate those later decisions. Explicit settings and expiry remain authoritative; an expired delegation stays off. The unset planning default appears as `plan auto`, with no invented switch time. These defaults apply equally to Claude Code and Codex.
+
+Before publication, `pulse check --plan <path>` checks P1 to P6 together against the current local base, without fetching or running a test suite. Under `pulse go`, agents run targeted checks and additional PLAN checks outside `verify`; the supervisor runs the full command once after the build, then repeats it only after a relevant change.
 
 ## Agent templates
 
@@ -86,8 +90,8 @@ The shared git directory (the same for every worktree) holds Pulse's local state
 | `.git/pulse/map.pid` | one line per live map of this clone, its process id; a map adds its line as it starts and removes it as it ends, and the file goes with the last map. No further map of this clone opens by itself while one of them lives |
 | `.git/pulse/map.command` | the script a map that Pulse opened runs; for 15 seconds after Pulse writes it, that map counts as starting and no second one opens |
 | `.git/pulse/go/<n>.log` | the log of each item `pulse go` ran, one section per phase |
-| `.git/pulse/go/report.json` | the results of the last `pulse go` run, written after every event; `pulse status` reads it |
-| `.git/pulse/go/base.log` | the output of `setup` and `verify` in the base check |
+| `.git/pulse/go/report.json` | the run results, current runner `activity`, and evaluated `base` state, written before preparation calls and after every event; the map and `pulse status` read them |
+| `.git/pulse/go/base.log` | base-check diagnostics; startup does not run `setup` or `verify` on the base |
 | `.git/pulse/usage.jsonl` | one line per agent phase of `pulse go`: agent, model, tokens, cost, seconds |
 | `.git/pulse/go.pid` | set while `pulse go` runs |
 
@@ -101,7 +105,7 @@ The cache must stay outside the workspace, git directory, temporary folders, and
 |---|---|
 | `gates/<sha>` | what each gate of `pulse go` said at this commit. Local evidence beside the commit statuses `pulse/tests`, `pulse/review`, and `pulse/audit`, which anyone with write access to the repository can set. Gate 3 and the auto merge read it. A base commit with the tree of a commit whose tests gate passed here is green without a run, the tree read from that commit |
 | `reviews/<n>.md`, `audits/<n>.md` | the review and audit verdict kept for an item's pull request, stamped with the commit it looked at |
-| `base.json` | the base check of this clone: the base commit `setup` and `verify` last ran on and how, and the last known state of the base |
+| `base.json` | this clone's evaluated base SHA, current CI and saved evidence, state, and bounded diagnostics; older saved results remain readable |
 | `audit-context.json` | the last audit that counted: its date, commit, and manifests |
 
 The Claude Code template runs without a sandbox: its agent can run the tests it wrote and `git diff --output=<file>`, and so can write any file you can, this folder too. Where that matters, let `pulse go` run Codex.

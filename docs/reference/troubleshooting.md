@@ -89,12 +89,14 @@ pulse number: git fetch said: error: cannot lock ref 'refs/remotes/origin/docs/l
 - `pulse number --apply` needs the history of every branch on origin. A branch whose ref git could not update, or wrote on another commit, counts through the commit origin names; when that commit or its history did not arrive (a fetch cut short), the refusal names the branch. Of two specs with the same ID, the one on the base branch as origin has it keeps the ID.
 - `pulse claim` names no start point while the ref it lists for the base branch or a branch of the item is not as origin has it (`start point not checked: ...`); otherwise it names the start point.
 
-When they go on, the line goes to stderr. `pulse status`, also for one item, and `pulse approve` print the same `git fetch said: ...` until a fetch goes through; they print `offline: origin did not answer` only when git said nothing, as when origin gave no answer within the time limit. Two common causes:
+When they go on, the line goes to stderr. `pulse status`, also for one item, and `pulse approve` print the same `git fetch said: ...` until a fetch goes through. A timeout says `no answer within 60 s`; Pulse ends Git and its transport processes, keeps that cause, and skips the second remote query. `offline: origin did not answer` means no more specific cause was available. Two common causes:
 
 - A lock file that a git process left when it stopped (`File exists`): when no other git runs in the clone, delete the `.lock` file the message names.
 - Two branches whose names differ only in case (on origin, or a local branch beside one on origin), on a file system that ignores case (macOS, Windows, where git sets `core.ignorecase`): the clone keeps one ref file for both, loose or in `packed-refs`, and a fetch may even exit without an error. Pulse then says `branch names that differ only in case share one ref file here:` and the names. `pulse new` registers nothing, `pulse claim` names no start point, `pulse number` counts through the commits origin names, `pulse go` starts nothing from the base or the item's branch, and the hint of `pulse claim` and `pulse release` on where another holder's work is says `where the work is stays unnamed`. With `core.ignorecase` set and origin not answering, `pulse go` starts nothing either. Delete or rename one of the two branches on origin, or move the clone to the reftable format with `git refs migrate --ref-format=reftable` (git 2.46 or newer).
 
 `git fetch --prune origin` shows git's whole message. When origin does not answer at all, `pulse new` and `pulse number` refuse with `origin did not answer` and hand out nothing; `pulse claim` makes the claim and says `start point not checked: origin did not answer`.
+
+Pulse's Git network calls also disable terminal, SSH Askpass and Git Credential Manager prompts, including during checks of preserved work and feature removal. Existing credentials and SSH configuration still apply. If authentication needs your attention, run `git fetch origin` in your own terminal, resolve the reported login or host-key issue there, then retry Pulse. A transport that does not respond stops after 60 seconds.
 
 ### `pulse approve` refuses: the spec is neither on the base branch nor in a pull request
 
@@ -199,7 +201,7 @@ A person set the label `pulse:hold` on the item in GitHub. `pulse go` neither pl
 
 ### `pulse go` starts nothing: `base red: <check>`
 
-The newest commit of the base branch is red: the project's CI failed that check, or `setup` or `verify` failed on it (their output is in `.git/pulse/go/base.log`). There every commit of an agent would fail at the project's hooks, so `pulse go` starts only an item with the label `pulse:base`. File the repair as a fix item, set `pulse:base` on it in GitHub, and approve it; once a commit of the base is green, the runs go on. When the base's own hooks refuse every commit, the fix cannot pass them either: repair the base by hand in your own session. The status `pulse/base` on the commit keeps the verdict for every clone.
+The current project CI failed that check. Read the cause, next action and run link in the map or `.git/pulse/go/report.json`, then repair the failing project check. An item marked `pulse:base` may repair the base through its normal approvals. Startup reads current CI and matching existing evidence; it no longer runs local `setup` or the full `verify` before planning. Proven GitHub Dependabot update searches are excluded, but a project check with the same name still counts. A newer CI result at the same commit takes precedence over an older Pulse result. Without project CI or matching successful evidence, Pulse starts without inventing a green status; full verification applies to the implemented result.
 
 ### `pulse go` pauses: `hook rejected: <hook> at #n`
 

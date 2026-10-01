@@ -16,12 +16,14 @@ verify:                       # the commands that prove the item; the builder ru
 ---
 
 <!-- See skills/pulse-plan/SKILL.md. `pulse go` and the ramp check P1 to
-     P5: every FR and SC of the spec
+     P6: every FR and SC of the spec
      covered by a task (or "Deferred: SC-nn reason"), one spec test per FR
      in wave 1 (an FR the spec marks `(unchanged)` may keep an existing
      test), files and a check for every task (the test files it affects;
      the full verify is no task's check), tasks of one wave on disjoint
-     files, no placeholder left. The PLAN is committed on the item's branch
+     files, no placeholder left, a configured runner for every spec test.
+     Run pulse check --plan <this-file> before committing or handing over.
+     The PLAN is committed on the item's branch
      and pushed; after the item merges, git keeps it. -->
 
 # PLAN: {title}

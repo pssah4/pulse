@@ -103,6 +103,8 @@ Each line holds a title on the left and its state on the right. The state takes 
 
 ### Auto mode
 
+Spec approval for planning is automatic by default. The header shows `plan auto` for this unset default, without a switch time. Build and merge remain off until explicitly delegated, so the completed PLAN waits for your approval. Explicit settings and expiry remain authoritative.
+
 The fourth line of the header shows your own auto mode per gate, as `pulse auto` switched it: `auto you  1 plan off  2 build on  3 merge off`, with `on until 18:00` for a switch that runs out and `off (expired 02:10)` for one that ran out. Below the header stands everyone else whose switch is on, one line per login: `auto @alice  3 merge on until 18:00 (their items)`. Their switches act only in their own `pulse go` and only on their own items, never on yours. When two open issues have the label `pulse:auto`, no switch counts for anyone, and the line says so in red: `auto off: two auto issues #12 #40, close one`. `1`, `2`, and `3` switch your own (see [Keys](#keys)).
 
 ### GitHub rate limits
@@ -115,7 +117,7 @@ Pulse waits until the reported retry time, or uses bounded backoff when GitHub s
 
 | Light | Means |
 |---|---|
-| green | an agent works: a phase of `pulse go` on the item |
+| green | an agent works: a local Claude Code or Codex session, or a phase of `pulse go` on the item |
 | yellow | something waits for you: a pull request asks for your review, your pull request waits for your merge, an item waits for approval, or a plan waits for you |
 | red | something failed: a pull request's checks, a draft pull request with a red gate, or an item the last `pulse go` run failed |
 | grey | idle: an item you hold without a running phase, a teammate's item without news, a ramp row that only waits |
@@ -139,6 +141,14 @@ Exactly one blank line separates the activity bars from the epic progress rows. 
 
 ### Who is doing what
 
+Local Claude Code and Codex sessions appear here, both interactive and headless, with their harness, short session ID, tool and edit file paths. Subagents have separate detail lines. A claim determines the item first, then the session's working directory. A runner job with a reporting session counts once. This works in any terminal, including the VS Code terminal.
+
+On the running map, activity updates independently of the board read, within five seconds of a supported hook event. Permission requests say `needs you`; finishing another parallel tool does not clear that wait. Where a harness supplies no tool-call ID, an ambiguous wait stays until the next prompt or Stop. Stop marks the session idle, SessionEnd and SubagentStop end it, and snapshots without events expire from the display after 30 minutes. Expiry changes no claim. Without trusted hooks the map still shows runner phases, but cannot infer interactive activity. Some Claude sandbox network prompts emit only a delayed Notification and are outside this shared event support.
+
+The local snapshots contain metadata only. Pulse never reads transcripts or saves prompts, shell commands, patch contents or tool output for this display. No tool event sends a heartbeat or contacts GitHub. If another hook holds the snapshot lock, capture skips that event so it cannot delay a guard decision. Set `PULSE_PRESENCE=off` to disable capture and display; project mode `off` does the same. Review changed hooks in your harness after an upgrade; Pulse never changes hook trust.
+
+Before an item is claimed, the map shows the running coordinator as **Pulse runner**: its current operation, target and elapsed time. Fetching the base, reading configuration or CI, preparing a worktree and cleaning completed worktrees are visible here. This row uses no coding-agent slot and disappears when the operation or runner ends.
+
 You come first, with the features you hold and the drafts whose spec you write. Each feature line says where it stands: while `pulse go` runs it, the step of its chain (`planning`, `building`, `RED check running`, `tests running`, `review and audit running` (one session), `review running`, `audit running`, `fix round`); once its pull request exists, `draft PR #n, a gate is red`, `PR #n, waits for merge`, `PR #n from a fork, merged on GitHub`, or what the merge would still need (`PR #n has no passing review and audit of its last commit`); `PR #n targets <branch>` when it goes into another branch than the base, as an older Pulse stacked it. A merged feature leaves the map at once, also when it merged into a branch other than the default one: GitHub closes nothing there, and the next `pulse go` closes the item before it starts anything; until then, an item it blocks still waits for it. A pull request that changes only files under `_devprocess/`, such as the spec, counts for no feature by its branch name, open or merged: the feature shows no "waits for merge" for it, and it stays on the map after that merge. A pull request from a fork counts for a feature only through its `Closes #<n>`, since the fork's owner picks its branch name, and GitHub links `Closes #<n>` only in a pull request into the default branch: merged into another base branch, it closes nothing, and you close the feature on GitHub.
 
 Teammates follow, each with the items they hold and where each pull request stands. Until the pull request exists, the line tells how their work goes: from the sign of life `pulse go` writes into its claim, or, for a session's claim, which nothing renews, how long it is held:
@@ -155,7 +165,9 @@ Their lights come from GitHub: yellow when a pull request asks for your review, 
 
 ### Next
 
-One line per kind of thing that waits, the most urgent first, each with the step that moves its first item. An item that waits for an open blocker is left out, and so is its light in the header: its blocker moves first.
+During preparation, `Runner: ...` names what is happening and `Then: ...` names the automatic next step. A failing base check includes its concrete next action and a verified GitHub link when available. Only an explicitly evidenced missing Dependabot secret links to the repository's Dependabot secret settings; the map shows the secret name, never its value.
+
+One line per kind of thing that waits, the most urgent first, each with the step that moves its first item. An item that waits for an open blocker is left out, and so is its light in the header: its blocker moves first. A repairable PLAN remains visible because the runner can repair it while its prerequisites are open; those prerequisites still hold the build.
 
 | Line | Step it names |
 |---|---|
@@ -168,6 +180,8 @@ One line per kind of thing that waits, the most urgent first, each with the step
 | `spec rule` | `/pulse-re` on the item's spec on the base branch; `pulse approve <n>`, or approve spec in its view, names the rule it breaks, and for an approved item the ramp row names it too |
 | `spec waits` | what the approval cannot move yet, grey and counted nowhere: `/pulse-re pushes the spec of #n` when the spec is neither on the base branch nor in an open pull request, `/pulse-re writes the spec of #n` when it has none |
 | `last run` | `/pulse-build <n>` goes on from where the last run stopped |
+| `plan repair` | grey: `Runner: repair #n plan; then ask for your approval`. The runner can repair a structurally invalid PLAN that has never been approved, preserving its path and risks |
+| `plan needs you` | yellow: `You: review #n plan findings; previous approvals stay`. A person reviews the findings; the runner preserves any previous approval record and does not rewrite that PLAN automatically |
 | `needs a plan` | `pulse go` writes its plan, once you start it |
 | `starts next` | `pulse go` builds it, once you start it |
 | `queued` | waits for a free slot: every slot of yours is busy |
@@ -175,6 +189,8 @@ One line per kind of thing that waits, the most urgent first, each with the step
 | `nothing open` | `/pulse-ba` explores, `/pulse-re` writes specs |
 
 The steps spell the commands as Claude Code does. In Codex, type `$pulse:<name>` for `/<name>`, so `$pulse:pulse-build` where the map says `/pulse-build`.
+
+Spec approval for planning is automatic by default when `pulse go` runs. A completed PLAN waits for manual approval before the build. The map still offers explicit approval actions, and explicit auto settings, expiry, risks and prerequisites remain authoritative. Use `pulse check --plan <path>` to read all P1 to P6 findings locally before handing over a repaired PLAN.
 
 ### Ramp
 

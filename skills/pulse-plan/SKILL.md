@@ -34,6 +34,12 @@ decision record exists only for what constrains future changes.
    matches this change.
 6. The code the spec touches: flow, callers, tests, existing patterns.
 
+Plan against the current fetched base SHA and its CI metadata. Planning
+does not run a full local test suite. Pending CI permits planning; the
+build waits for it. A current red base holds ordinary work, while its
+repair items remain eligible. Without CI, planning and build may proceed;
+the completed result still goes through full verification.
+
 **Critical review.** Before planning, check the design against the code:
 do the decisions match the real architecture, do existing patterns
 contradict them, which modules are affected but unnamed, which
@@ -68,7 +74,9 @@ it without asking. It carries:
 - **Tasks:** each covers requirement or criterion ids (`Covers`), names
   concrete files (create, modify, test), a rough diff budget, and the
   check that proves it: the test files the task affects. The full
-  `verify` is no task's check; it runs once, before the gates. A task that ends up more than twice its budget
+  `verify` is no task's check; the supervisor runs it once on the completed
+  result. Agents run targeted checks and additional PLAN checks that
+  `verify` does not cover. A task that ends up more than twice its budget
   gets one change-log line saying why.
 - **Spec tests first.** Wave 1 holds the spec tests: one test per FR,
   named after its id, written from the EARS line and its examples at the
@@ -152,6 +160,15 @@ decision changes). `pulse go` and the ramp check P1 to P6 mechanically:
 7. By judgment: every decision the plan relies on has a task that puts it
    into effect.
 
+Before committing or handing over the PLAN, execute
+`pulse check --plan _devprocess/plans/<n>-<slug>.md`. It reports all P1
+to P6 findings against the spec and test-runner configuration on the
+fetched base. Resolve the findings and run that command again until it
+passes. This checks the document locally; it runs no tests, contacts no
+service and grants no approval. Future files named as task targets need
+not exist yet. A project's own documentation check is separate; report
+an incompatible rule without creating placeholder files to satisfy it.
+
 ## Where the PLAN lives, and who approves it
 
 The PLAN file is the item's only plan. A plan mode, where the agent has
@@ -171,12 +188,17 @@ from the start point `pulse claim` names) and push it: the ramp and every teamma
 continues on that branch. `pulse go` plans approved items with a ready
 spec by itself, in ramp order, as the first phase of their job.
 
-Every PLAN that passes P1 to P6 waits for a person: the ramp shows "plan
-waits for you" until a person approves it (`pulse approve <n>`, or `a` in
-the map), which binds the PLAN as origin has it and the spec on the base
-branch; a PLAN or spec changed since waits again ("plan changed since
-plan ok"). `risk:` in the spec or in the PLAN is named beside it for a
-closer look. Neither `effort: L` nor `needs:` holds it.
+Spec approval for planning is automatic by default. The completed PLAN
+waits for manual approval before implementation: show its goal,
+decisions, risks and files, and tell the person `pulse approve <n>` in
+their own terminal, or `a` in the map. That approval binds the pushed
+PLAN and the spec on the base. An explicit `pulse auto build on` may
+delegate this decision under the existing risk and prerequisite checks;
+an explicit off or expired delegation remains off. A PLAN or spec changed
+since a person's approval waits again. The runner may repair a structurally
+invalid PLAN that has no previous PLAN approval, within its existing
+planning limit. It preserves the PLAN's risks and returns the valid
+result for approval. Automatic merge still requires opt-in.
 
 ## 3. Decision records: only with a read-when
 
@@ -223,12 +245,11 @@ A new item gets its blockers with `pulse new ... --blocked-by`; for an
 item on the board already, tell the person which blocker to add in
 GitHub (the issue's Relationships).
 
-An approved item goes on once a person approved its pushed PLAN: show
-the user the goal, the decisions, the risks (`risk:` in the spec or in
-the PLAN), and the files, and tell the person how they approve it:
-`pulse approve <n>` in their own terminal. Then `/pulse-build <n>` in
-this session, or, when several are ready, tell the person: `pulse go`
-in their own terminal builds them in ramp order without asking. An item that
-is not approved yet waits for the person who approves its spec. When the
+An item with a valid PLAN waits for its manual build approval by default.
+Show the goal, decisions, risks, and files, and tell the person how they
+approve it: `pulse approve <n>` in their own terminal. Once approved,
+continue with `/pulse-build <n>` in this session, or `pulse go`
+for several ready items. An item with an explicit manual spec setting
+waits for the person who approves its spec. When the
 plan reveals an order the team should know, name it: `pulse status`
 shows the current one.

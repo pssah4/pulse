@@ -43,7 +43,12 @@ Never say "should work", "probably okay", "looks good", "tests should
 be green now", or "this should fix it" without having run the check.
 
 After each step, run the tests that step affects, not the whole suite;
-run `verify` once, before the gates, and again only after a change.
+use targeted checks while building. Under `pulse go`, the supervisor runs
+the full `verify` once on the completed result; its agents run targeted
+checks and additional PLAN checks that `verify` does not cover. In an
+interactive build, run `verify` once before review and audit. Repeat it
+only after a relevant change. Startup reads the current base SHA and CI
+metadata without running a full local test suite before planning.
 
 ## Tests first
 
@@ -119,22 +124,30 @@ Commits name their item: `Refs: #<n>`.
 ## Flow
 
 Pulse stops for a person at these points and runs on everywhere else:
-the business analysis is approved; a person reads the spec and approves
-it (`pulse approve`, or `a` in the map, which means build it: a spec
-approved in the `/pulse-re` session is planned there at once, any other
-in ramp order; approving writes the approval and nothing else, and a spec
-not yet on the base branch is merged into the base branch first by
-`pulse go`, where agents plan from it: its open docs pull request, once
-every spec in it passes R1 to R6 and its checks pass); a person reads
-each PLAN once it is pushed and approves it (`pulse approve <n>` again,
-or `a` in the map: the approval binds the PLAN and the spec as origin
-has them, and a PLAN or spec changed since waits again; `risk:` in the
-spec or the PLAN asks for a closer look); an item `pulse go` gave up on (the label
+the business analysis is approved; the completed PLAN is approved before
+implementation; an explicit manual spec setting or an expired plan
+delegation asks the person to read and approve the spec; an item
+`pulse go` gave up on (the label
 `pulse:failed`, with a comment that says why): no run takes it until the
 person takes the label off with `pulse approve <n>` in their own terminal;
 the merge of each feature's pull request into the base branch. Between these
 points, do not ask whether to go on: finish the phase and start the
 next one.
+
+The runner merges a spec's docs PR into the base before planning once
+every spec in it passes R1 to R6 and its checks pass. An invalid PLAN
+without a prior PLAN approval can receive bounded planning repairs;
+its existing risks and manual decisions stay in effect.
+
+Spec approval for planning is automatic by default; build waits for
+manual PLAN approval. Before handing over a PLAN, run
+`pulse check --plan <path>` and resolve all P1-P6 findings. The person's
+`pulse approve <n>` binds the pushed PLAN and spec. An explicit
+`pulse auto build on` delegates that decision; an explicit off or expired
+build delegation stays off. Automatic merge requires opt-in.
+Pending CI permits planning and holds ordinary builds;
+a current red base permits only its repair items. A changed PLAN a
+person approved returns to that person.
 
 Steps that would need a person's OK (a new dependency, a changed
 schema, persisted format, or public interface, broken backward

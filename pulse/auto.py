@@ -4,8 +4,9 @@ lever without asking only for the login whose switch is on, and only on that log
 The source is the control issue "Pulse auto mode" (label pulse:auto), one comment per toggle with the line
 `<!-- pulse:auto gate=<gate> state=on|off until=<UTC minute>|- -->`. Per login and gate its newest toggle counts,
 the comment's GitHub author is the one who set it, and the issue body is an overview only (Analysis 5.2). Exactly
-one open control issue counts; with two or more every gate is off. A switch past its until is off without anyone
-writing. The interface #125 builds on: switches, control, on, read.
+one open control issue counts; with two or more every gate is off. Without an explicit plan switch, trusted
+own specs proceed to planning (#154). Builds wait for PLAN approval. An expired switch stays off.
+The interface #125 builds on: switches, control, on, read.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ LABEL, TITLE = "pulse:auto", "Pulse auto mode"
 MARKERS = ("PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
 TOGGLE = re.compile(r"^<!-- pulse:auto gate=(plan|build|merge) state=(on|off) "
                     r"until=(-|\d{4}-\d\d-\d\dT\d\d:\d\dZ) -->$", re.M)
+INTENT = re.compile(r"<!--\s*pulse:auto\b[^\r\n]*")
 STAMP = "%Y-%m-%dT%H:%MZ"                   # an until: UTC to the minute
 MINE = {"plan": "Your items only: issues you opened.",
         "build": "Your items only: issues you opened or claims you hold.",
@@ -36,7 +38,7 @@ SHORT = {"plan": "pulse go plans your items", "build": "pulse go builds your pla
          "merge": "pulse go merges your green PRs"}
 BODY = ("Auto mode of this repository, per person and gate. `pulse auto <gate> on|off` in your own terminal, or "
         "1, 2, 3 in the Pulse map, switches yours. The comments below count, the newest of each login per gate; "
-        "this text is an overview only.\n\n")
+        "this text is an overview only. Planning is automatic by default; builds wait for PLAN approval.\n\n")
 
 
 def person(env, tty) -> bool:
@@ -61,7 +63,7 @@ def _epoch(at: str) -> float:
     for form in ("%Y-%m-%dT%H:%M:%SZ", STAMP):
         try:
             return calendar.timegm(time.strptime(at, form))
-        except ValueError:
+        except (ValueError, TypeError):
             pass
     return 0.0                                # a date that is none (month 13): long run out
 
@@ -74,24 +76,47 @@ def switches(issue: dict, now=None) -> dict:
     now = time.time() if now is None else now
     out = {}
     for c in issue.get("comments") or ():
-        login, m = (c.get("author") or {}).get("login"), TOGGLE.search(c.get("body") or "")
-        if login and m and (c.get("edited") or (out.get(login, {}).get(m.group(1)) or {}).get("edited")):
-            out.setdefault(login, {})[m.group(1)] = {"on": False, "since": c.get("createdAt") or "", "until": None,
-                                                     "expired": False, "edited": True}
-        elif login and m:
-            gate, st, until = m.group(1), m.group(2), None if m.group(3) == "-" else m.group(3)
+        login, body = (c.get("author") or {}).get("login"), c.get("body") or ""
+        intent, matches = INTENT.findall(body), list(TOGGLE.finditer(body))
+        if not login or not intent:
+            continue
+        malformed = len(intent) != 1 or len(matches) != 1
+        gates = set(re.findall(r"\bgate=(plan|build|merge)\b", "\n".join(intent))) or set(GATES)
+        for gate in gates:
+            edited = c.get("edited") or (out.get(login, {}).get(gate) or {}).get("edited", False)
+            since = c.get("createdAt") or ""
+            if malformed or edited:
+                out.setdefault(login, {})[gate] = {"on": False, "since": since, "until": None,
+                                                   "expired": False, "edited": bool(edited)}
+                continue
+            m = matches[0]
+            st, until = m.group(2), None if m.group(3) == "-" else m.group(3)
             over = st == "on" and until is not None and _epoch(until) <= now
-            out.setdefault(login, {})[gate] = {"on": st == "on" and not over, "since": c.get("createdAt") or "",
-                                               "until": until, "expired": over}
+            out.setdefault(login, {})[gate] = {"on": st == "on" and not over and _epoch(since) > 0,
+                                               "since": since, "until": until, "expired": over}
     return out
 
 
+def _setting(gates: dict, gate: str):
+    """A missing plan choice delegates planning; a present invalid choice remains off."""
+    if not isinstance(gates, dict):
+        return None
+    if gate == "plan" and gate not in gates:
+        return {"on": True, "since": "", "until": None, "expired": False, "default": True}
+    return gates.get(gate)
+
+
 def on(switches: dict, login: str, gate: str, now=None):
-    """The switch of login at gate while it is on and has not run out, else None: what pulse go asks before it pulls
-    a lever for login (#125). Another login's switch never counts for it (SC-01)."""
-    s = (switches.get(login) or {}).get(gate)
+    """An active switch, or default plan delegation when never configured; otherwise None. Callers check read's
+    why first. Another login's explicit choice never counts for this login (SC-01)."""
+    gates = switches.get(login, {}) if isinstance(switches, dict) and login else None
+    s = _setting(gates, gate)
     now = time.time() if now is None else now
-    return s if s and s["on"] and (not s["until"] or _epoch(s["until"]) > now) else None
+    if not isinstance(s, dict) or s.get("on") is not True or s.get("expired") is not False or s.get("edited"):
+        return None
+    if "until" not in s or (gate != "plan" or gate in gates) and _epoch(s.get("since")) <= 0:
+        return None
+    return s if s["until"] is None or _epoch(s["until"]) > now else None
 
 
 def control(issues) -> tuple:
@@ -122,10 +147,10 @@ def read(root, repo=None, run=None, fresh=False, ttl=state.TTL) -> dict:
         run = run or state.gh
         n, why = control(json.loads(run(["issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
                                          "--json", "number"]) or "[]"))
-        comments = [{"author": {"login": (c.get("user") or {}).get("login")}, "body": m.group(0),
+        comments = [{"author": {"login": (c.get("user") or {}).get("login")}, "body": c.get("body") or "",
                      "createdAt": c.get("created_at"), "edited": c.get("updated_at") not in (None, c.get("created_at"))}
                     for c in (state.pages(run, f"repos/{repo}/issues/{n}/comments?per_page=100") if n else ())
-                    for m in [TOGGLE.search(c.get("body") or "")] if m]
+                    if INTENT.search(c.get("body") or "")]
     except (state.StateError, ValueError) as e:
         if fresh or not known:
             raise state.StateError(str(e)) from None
@@ -136,20 +161,22 @@ def read(root, repo=None, run=None, fresh=False, ttl=state.TTL) -> dict:
 
 
 def _seen(kept: dict) -> dict:
-    return {"issue": kept.get("issue"), "why": kept.get("why") or "", "switches": switches(kept)}
+    why = kept.get("why") or ""
+    if any(not (c.get("author") or {}).get("login") for c in kept.get("comments") or ()):
+        why = why or "auto off: a toggle has no identifiable author"
+    return {"issue": kept.get("issue"), "why": why, "switches": switches(kept)}
 
 
 def toggle(root, repo: str, gate: str, switch_on: bool, until=None, run=None) -> str:
-    """Write the toggle of gate for the login gh runs as (FR-01, FR-02): the first on creates the control issue and
-    pins it where a slot is free, else says so (FR-05); the body becomes the overview of every switch. Returns what
-    happened, in one line."""
+    """Write the toggle for the login gh runs as. The first on or plan/build off creates the control issue and pins it
+    where a slot is free; the body becomes the overview. Returns what happened, in one line."""
     run = run or state.gh
     login, note = state.me(root, run=run), ""
     seen = read(root, repo, run=run, fresh=True)
     if seen["why"]:
         raise state.StateError(seen["why"])
     n = seen["issue"]
-    if n is None and not switch_on:
+    if n is None and not switch_on and gate not in ("plan", "build"):
         return f"{gate} is off: nobody switched auto mode on in {repo}"
     if n is None:
         color, desc = setup.LABELS[LABEL]     # a repository set up before #124 lacks it
@@ -172,9 +199,11 @@ def toggle(root, repo: str, gate: str, switch_on: bool, until=None, run=None) ->
 
 
 def overview(switches: dict) -> str:
-    return BODY + "\n".join(f"- @{login}: " + ", ".join(f"{g} {'on' if (s or {}).get('on') else 'off'}" +
+    return BODY + "\n".join(f"- @{login}: " + ", ".join(f"{g} " + ("auto" if
+                                                         (s or {}).get("default") else
+                                                         "on" if (s or {}).get('on') else "off") +
                                                          (f" until {s['until']}" if (s or {}).get("on") and s["until"]
-                                                          else "") for g in GATES for s in [gates.get(g)])
+                                                          else "") for g in GATES for s in [_setting(gates, g)])
                             for login, gates in sorted(switches.items(), key=lambda x: x[0].lower()))
 
 
@@ -186,6 +215,8 @@ def when(at: str, now=None) -> str:
 
 def word(s, since=False) -> str:
     """on, on until 18:00, on since 10:12 (since), off, or off (expired 02:10) (FR-07)."""
+    if s and s.get("default"):
+        return "auto"
     if s and s["expired"]:
         return f"off (expired {when(s['until'])})"
     if not s or not s["on"]:
@@ -195,9 +226,9 @@ def word(s, since=False) -> str:
 
 
 def line(gates: dict, since=False, only_on=False, sep="  ") -> str:
-    """1 plan on  2 build off  3 merge off; only_on leaves out the gates that are off."""
-    return sep.join(f"{k} {g} {word(gates.get(g), since)}" for k, g in enumerate(GATES, 1)
-                     if not only_on or (gates.get(g) or {}).get("on"))
+    """The three gates including the plan default; only_on leaves out the gates that are off."""
+    return sep.join(f"{k} {g} {word(s, since)}" for k, g in enumerate(GATES, 1) for s in [_setting(gates, g)]
+                     if not only_on or (s or {}).get("on"))
 
 
 def show(root, repo: str, run=None) -> str:
@@ -237,5 +268,5 @@ def said(seen: dict, login: str) -> str:
     mine = seen["switches"].get(login, {})
     others = [f"@{l} {line(gates, only_on=True)}" for l, gates in sorted(seen["switches"].items())
               if l != login and any(s["on"] for s in gates.values())]
-    return "Your auto mode: " + ", ".join(f"{g} {word(mine.get(g))}" for g in GATES) + "." + \
+    return "Your auto mode: " + ", ".join(f"{g} {word(_setting(mine, g))}" for g in GATES) + "." + \
         (" Others, for their own items only: " + "; ".join(others) + "." if others else "")

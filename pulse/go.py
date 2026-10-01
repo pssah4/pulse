@@ -29,8 +29,8 @@ more try in the run first (#114). An item given back after a failure, a
 usage limit, or a stop keeps a note with the phase, the reason, and its
 branch; an item held for a person (D-42) keeps one too. Each agent phase adds a line to .git/pulse/usage.jsonl.
 
-Before it starts anything at a new base SHA, pulse go checks the base (pulse/base.py): nothing starts on a
-red base or one whose state is not known yet. Every worktree it makes gets the config's setup, and again
+Before scheduling, pulse go reads the current base and its CI (pulse/base.py), without local baseline tests.
+A pending check allows planning; a red base stops ordinary work. Every worktree gets the config's setup, and again
 after a lockfile in it changed. What runs a program (setup, verify, [agents]) counts as origin/<base> has it.
 
 One run drives several agents ("claude:2,codex:2"), so two subscriptions work at
@@ -77,7 +77,7 @@ from pulse import auto, base, check, config, lifecycle, merge, ready, review, sp
 
 TIMEOUT_UNIT = 60              # agent_timeout is in minutes
 REVIEW_ROUNDS = 1              # fix rounds per item for its gates, RED too (#117, #126); then the PR says why
-PLAN_ROUNDS = 2                # fix rounds for a PLAN that fails P1 to P5; then the item fails
+PLAN_ROUNDS = 2                # fix rounds for a PLAN that fails P1 to P6; then the item fails
 TOKENS = ("input", "output", "cache_read", "cache_write")
 GATES = ("tests", "review", "audit")           # in this order after every build; a fix repeats the tests and the red ones
 # How Claude Code and Codex say that a subscription is used up, and when it comes back.
@@ -95,7 +95,7 @@ SKILLS = Path(__file__).resolve().parents[1] / "skills"
 BUILD_SKILL = SKILLS / "pulse-build" / "SKILL.md"
 PLAN_SKILL = SKILLS / "pulse-plan" / "SKILL.md"
 PLAN_TEMPLATE = SKILLS / "pulse-plan" / "templates" / "PLAN-TEMPLATE.md"
-RULES = """pulse go builds from the PLAN only when it passes P1 to P5:
+RULES = """pulse go builds from the PLAN only when it passes P1 to P6:
 P1 the frontmatter names issue, spec, files, and verify.
 P2 a task covers every FR and SC of the spec (or a line "Deferred: SC-nn
 reason"), every task covers one, and every FR not marked (unchanged) has its
@@ -104,7 +104,9 @@ P3 every task names its files in backticks and a check; files in the
 frontmatter is exactly the union of the tasks' files.
 P4 tasks of one wave touch disjoint files.
 P5 no placeholder outside inline code and the change log: no {...}, TODO,
-???, or [CLARIFY]."""
+???, or [CLARIFY].
+P6 every wave-1 spec test has a configured spec_tests runner, including its
+required scope. Run the complete PLAN check before reporting success."""
 PLAN_PROMPT = """You plan item #{n} "{title}" in this worktree, on branch {branch}.
 Read _devprocess/SYSTEM-MAP.md where it exists (never create it here), its spec ({spec}), the decision records whose Read When fits, and the
 code the spec touches. Write the PLAN with the discipline in {skill}, from
@@ -113,7 +115,8 @@ work has to be built first, name it under needs: in the frontmatter: '#m
 title' for an item on the board, else a short title, which pulse go makes a
 draft item this one waits for.{drafts} What needs a person's OK (a new
 dependency, a schema, a public interface, a destructive change) goes under
-risk:. Commit the PLAN alone as "docs(plan): #{n}"; if git refuses to commit (a
+risk:. Run pulse check --plan {plan} and resolve every finding before committing.
+Commit the PLAN alone as "docs(plan): #{n}"; if git refuses to commit (a
 sandbox), leave it, pulse go commits it. Write no code. Do not touch GitHub.
 Nobody answers or approves anything in this session: a command that is
 denied is not available to you, so plan from what you can read.{again}
@@ -127,7 +130,9 @@ branch {branch}, with the discipline in {skill}. It fails these checks:
 
 {findings}
 
-Change the PLAN until none of them holds. Commit it as "docs(plan): #{n}";
+Change this existing PLAN until none of them holds. Preserve its risk entries.
+Run pulse check --plan {plan} and resolve every finding before committing.
+Commit it as "docs(plan): #{n}";
 if git refuses to commit (a sandbox), leave it, pulse go commits it. Write
 no code. Do not touch GitHub.
 
@@ -139,7 +144,10 @@ Follow its PLAN ({plan}) and its spec ({spec}) with the discipline in
 requirement and named after its id; run them once, they must fail, and
 commit them alone as "test: spec tests for #{n}". From then on do not
 change those tests, change the code. Inside, work test first, stay within
-the PLAN's files; after each task run the tests it touches, and the PLAN's verify commands once before you finish, again only after a change. Commit
+the PLAN's files; after each task run the tests it touches. Run additional
+PLAN verification not covered by the configured verify command. The
+orchestrator runs that full command once on your completed result; do not
+duplicate it in this session. Commit
 your work on {branch} with "Refs: #{n}"; if git refuses to commit (a
 sandbox), leave the changes, pulse go commits them. The worktree may hold
 work from an earlier attempt: check git status and git log first.
@@ -148,11 +156,13 @@ orchestrator does that. Work that has to be built first and is not in the
 PLAN goes under needs: in the frontmatter of _devprocess/plans/{n}-needs.md,
 one short title per line; pulse go makes each a draft item this one waits
 for. End with a short summary, the other things you found, and the output
-of the verify commands."""
+of the targeted checks."""
 FIX = """You are fixing item #{n} "{title}" in this worktree, on branch {branch}. Its
 {gate} gate is red. Fix each blocking finding
 below with the discipline in {skill}: test first, stay within the PLAN's files,
-run the tests the fix touches, then the PLAN's verify commands once. Commit on {branch} with
+run the tests the fix touches and additional PLAN checks not covered by
+the configured verify command. The orchestrator reruns full verification
+on your completed fix. Commit on {branch} with
 "Refs: #{n}"; if git refuses to commit (a sandbox), leave the changes, pulse go
 commits them. Do not touch GitHub. Notes do not block; leave them.
 
@@ -211,6 +221,7 @@ class Job:
     item: dict = field(default_factory=dict)       # the item as the board read it when its job began: its approvals
     begun: str = ""            # the commit its build started from, whose PLAN the Plan-ok names (#115, L-1)
     deferred: bool = False
+    plan_risk: list = field(default_factory=list)  # original repair risks survive a planner dropping them (#154)
 
     def public(self, **extra):
         return {"number": self.number, "title": self.title, "branch": self.branch,
@@ -368,7 +379,7 @@ def _start(root: Path, cfg: dict, template: str, job: Job, plans: dict, specs: d
     job.merge = phase == "merge"
     if job.merge and _git(job.worktree, "rev-parse", "HEAD").stdout.strip() != job.carried:
         return f"its worktree is not at the approved head {job.carried[:12]}: nothing merged"
-    if phase == "merge" or phase == "build" and not preserved:
+    if phase == "merge" or phase in ("build", "plan") and not preserved:
         m = _git(job.worktree, "merge", "-q", "--no-edit", job.start)
         if m.returncode:
             clash = _git(job.worktree, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
@@ -401,7 +412,13 @@ def _start(root: Path, cfg: dict, template: str, job: Job, plans: dict, specs: d
         _red(job, cfg, logs)
         return ""
     if phase == "plan":
-        prompt = _plan_prompt(job)
+        if job.plan:
+            text = ready._git(job.worktree, "show", f"HEAD:{job.plan}")
+            job.plan_risk = list(dict.fromkeys(job.plan_risk + ready.listed(text, "risk")))
+            findings = ready.plan_findings(text, spec.on_base(root, job.spec), cfg.get("spec_tests"))
+            prompt = _plan_fix_prompt(job, "\n".join(f"- {w}" for w in findings))
+        else:
+            prompt = _plan_prompt(job)
     else:
         prompt = PROMPT.format(n=job.number, title=job.title, branch=ready.printable(job.branch), skill=BUILD_SKILL,
                                plan=job.plan, spec=job.spec or "see the issue")
@@ -497,28 +514,33 @@ def _fetch_base(root: Path, base_branch: str) -> tuple:
 
 
 def _check_base(root: Path, repo: str, cfg: dict, gh_run, rep: dict, base_branch: str) -> None:
-    """Once a round in which something could start: the base's SHA, taken once, and the base checked there
-    (FR-02) until the answer is final (B5, FR-04). Every item the round starts starts from that SHA (M-1); a
+    """Once a round in which something could start: the current base SHA and its current CI metadata.
+    Every item the round starts starts from that SHA (M-1); a
     fetch that fails starts nothing."""
+    _activity(rep, "base", "reading current CI", base_branch, "plan and build approved work")
     sha, said = _fetch_base(root, base_branch)
-    was = rep["base"] or {}
     if not sha:
         rep["base"] = {"sha": "", "ok": None, "final": False, "why": f"origin/{base_branch} not fetched: {said}"}
-    elif was.get("sha") != sha or not was.get("final"):
-        ok, why, final = base.check(root, cfg, sha, repo, gh_run, TIMEOUT_UNIT)
-        rep["base"] = {"sha": sha, "ok": ok, "why": why, "final": final}
+    else:       # CI can rerun on the same SHA while the planner works. This reads metadata only.
+        detail = {}
+        ok, why, final = base.check(root, cfg, sha, repo, gh_run, TIMEOUT_UNIT, detail)
+        rep["base"] = {**detail, "sha": sha, "ok": ok, "why": why, "final": final}
     if rep["paused"] and sha and rep["paused"]["sha"] != sha:
         rep["paused"] = None           # a new base SHA ends the pause of a rejected hook (FR-05)
     b = rep["base"] or {}
     rep["halt"] = rep["paused"]["why"] if rep["paused"] else f"base red: {b['why']}" if b.get("ok") is False else \
         f"base not known yet: {b['why']}" if b and b.get("ok") is None else ""
+    _save(rep)
 
 
-def _held(rep: dict, item: dict) -> bool:
+def _held(rep: dict, item: dict, kind="build") -> bool:
     """Whether item may not start now: a project hook refused pulse go (FR-05), the state of the base is not
     known yet (FR-04), or the base is red and item no fix for it with pulse:base (FR-03)."""
-    ok = (rep["base"] or {}).get("ok")
-    return bool(rep.get("tainted") or rep["paused"]) or ok is None or (ok is False and not item.get("base_fix"))
+    status = rep["base"] or {}
+    ok = status.get("ok")
+    pending_plan = kind == "plan" and status.get("state") == "pending"
+    return bool(rep.get("tainted") or rep["paused"]) or (ok is None and not pending_plan) or \
+        (ok is False and not item.get("base_fix"))
 
 
 def _hook(wt: Path, *names) -> str:
@@ -545,10 +567,16 @@ def _plan_prompt(job: Job, again: str = "") -> str:
     drafts = "; ".join(ready.printable(f"#{m} {title}") for m, title in job.drafts)
     return PLAN_PROMPT.format(n=job.number, title=job.title, branch=ready.printable(job.branch), skill=PLAN_SKILL,
                               template=PLAN_TEMPLATE, spec=job.spec, slug=slug(job.title), rules=RULES, again=again,
+                              plan=f"{ready.PLANS}/{job.number}-{slug(job.title)}.md",
                               after=f" It waits for {refs} on the board already; needs: does not repeat "
                                     "that." if refs else "",
                               drafts=f" Drafts other PLANs need already: {drafts}; name one as '#m title' when "
                                      "this item needs the same." if drafts else "")
+
+
+def _plan_fix_prompt(job: Job, findings: str) -> str:
+    return PLAN_FIX.format(n=job.number, title=job.title, plan=job.plan, branch=ready.printable(job.branch),
+                           skill=PLAN_SKILL, findings=findings, rules=RULES)
 
 
 # What a verify line of the PLAN never gets unasked (D2/D3): a download, a package runner, another
@@ -760,9 +788,7 @@ def _fix(job: Job, cfg: dict, logs: Path, gate: str, findings: str) -> bool:
         job.rounds[g] = job.rounds.get(g, 0) + 1
     job.fixing, job.fixes = gate, job.fixes + 1
     if gate == "plan":
-        prompt = PLAN_FIX.format(n=job.number, title=job.title, plan=job.plan, branch=ready.printable(job.branch),
-                                 skill=PLAN_SKILL, findings=findings, rules=RULES) if job.plan else \
-            _plan_prompt(job, NO_PLAN)
+        prompt = _plan_fix_prompt(job, findings) if job.plan else _plan_prompt(job, NO_PLAN)
     else:
         prompt = FIX.format(n=job.number, title=job.title, branch=ready.printable(job.branch), gate=gate, skill=BUILD_SKILL,
                             findings=findings)
@@ -1208,14 +1234,20 @@ def _renamed(text: str, named: dict) -> str:
 
 def _planned(root: Path, repo: str, job: Job, gh_run, rep: dict, cfg: dict, who: dict, logs: Path,
              found=((), ())) -> bool:
-    """A planning agent ended: a PLAN that fails P1 to P5, or whose needs: would close a cycle (found, from
+    """A planning agent ended: a PLAN that fails P1 to P6, or whose needs: would close a cycle (found, from
     _needs), goes back to it with the findings, up to two rounds. Each round's PLAN is pushed already
-    (_advance). Then name the gate and give the claim back last, so an error on the way keeps it (ADR-04)
-    and no run builds the item before a person looked."""
+    (_advance). Bind a valid PLAN for automatic build, keeping the claim across the handoff; explicit
+    manual settings, risk and dependencies still hold it."""
     why = job.why or (f"exit {job.rc}" if job.rc else "")
     written = _git(job.worktree, "diff", "--name-only", "--diff-filter=d", f"{job.head}..HEAD", "--",
                    ready.PLANS).stdout.split()
     job.plan = job.plan or (written[0] if written else "")        # a fix round works on the first one
+    if why and job.plan_risk:
+        text = ready._git(job.worktree, "show", f"HEAD:{job.plan}")
+        missing = [r for r in job.plan_risk if r not in ready.listed(text, "risk")]
+        if missing:       # a crash must not restart from the riskless PLAN it already pushed
+            why += f"; risk: restore the original PLAN entries: {', '.join(missing)}"
+            return _fail(root, repo, job, gh_run, rep, who, why, plan=job.plan, log=job.log.name, usage=job.usage)
     if not (why or job.plan) and _fix(job, cfg, logs, "plan", ""):    # it ended asking, not planning
         return False
     crash, why = bool(why), why or ("" if job.plan else "no PLAN written")
@@ -1225,16 +1257,42 @@ def _planned(root: Path, repo: str, job: Job, gh_run, rep: dict, cfg: dict, who:
         blobs = [_git(job.worktree, "rev-parse", f"HEAD:{job.plan}").stdout.strip(),      # pushed: what a Plan-ok binds
                  _git(root, "rev-parse", f"{job.start}:{job.spec}").stdout.strip() if job.spec else ""]
         wrong = ready.plan_findings(text, spec_text, cfg.get("spec_tests")) + list(found[1])
+        missing = [r for r in job.plan_risk if r not in ready.listed(text, "risk")]
+        if missing:
+            wrong.append(f"risk: restore the original PLAN entries: {', '.join(missing)}")
         if wrong and _fix(job, cfg, logs, "plan", "\n".join(f"- {w}" for w in wrong)):
             return False
     if why:
         return _fail(root, repo, job, gh_run, rep, who, why, crash=crash, log=job.log.name, usage=job.usage)
+    # Keep this run's claim across the handoff, including work another person authored.
+    # The approval binds the pushed PLAN and current spec exactly as pulse approve does.
+    if not wrong and not found[0] and not job.blockers:
+        try:
+            current = state.item(repo, job.number, gh_run)
+            if current.get("spec") != job.spec:
+                job.kept = False
+                reason = "spec changed during planning; update the PLAN for the current spec"
+                stays = _release(root, repo, job.number, gh_run, who, _handover(job, reason))
+                _event(rep, "planned", job.public(plan=job.plan, gate=reason + stays, usage=job.usage))
+                return True
+            login = state.me(root, run=gh_run)
+            switch, why = _auto(root, repo, "build", current, login, who, gh_run,
+                                _holds(root, cfg, current, blobs[0], text))
+            if why:
+                _say(job, f"automatic build approval waits: {why}")
+            if switch and ready.plan_ok(current, *blobs, text):
+                state.approve(root, repo, job.number, 2, tuple(blobs), run=gh_run, by=_as(login, "build", switch))
+                current = state.item(repo, job.number, gh_run)
+            job.item = current
+        except (state.StateError, ValueError) as error:
+            _say(job, f"automatic build approval waits: {error}")
     gate = (f"plan: {wrong[0]}" if wrong else ready.plan_gate(text, spec_text, cfg, ready.plan_ok(job.item, *blobs, text))) or \
         ("waits for " + ", ".join(f"#{m}" for m in found[0]) if found[0] else "ready")
     job.kept = gate == "ready" and not job.blockers     # the next round builds it on this claim
     if gate.startswith("plan: "):      # its fix rounds are spent: a person fixes the pushed PLAN
-        return _fail(root, repo, job, gh_run, rep, who, f"{gate} (after {PLAN_ROUNDS} fix rounds; the PLAN is on "
-                                                       f"{job.branch})", plan=job.plan, log=job.log.name, usage=job.usage)
+        why = "plan: " + "; ".join(wrong) + f" (after {PLAN_ROUNDS} fix rounds; the PLAN is on {job.branch}). " \
+            f"Fix it, run pulse check --plan {job.plan}, push it, then pulse approve {job.number} to retry."
+        return _fail(root, repo, job, gh_run, rep, who, why, plan=job.plan, log=job.log.name, usage=job.usage)
     stays = "" if job.kept else _release(root, repo, job.number, gh_run, who)
     _event(rep, "planned", job.public(plan=job.plan, gate=gate + stays, usage=job.usage))
     return True
@@ -1550,7 +1608,7 @@ def _docs(root: Path, repo: str, items: list, gates: dict, gh_run, rep: dict, tr
     the base now, and the round goes on from the base the merges made (_moved), which keeps the base check of the
     round's SHA (#113) only for a change under _devprocess/. Once a merge queue holds one, no other merges in this
     run: the base moves after go judged the next against it (L-3)."""
-    merged, queued = set(), next((m for k, m in tried if k == "queued"), None)
+    merged, queued = set(), next((entry[1] for entry in tried if entry[0] == "queued"), None)
     for i in items:
         n, pr = i["number"], re.match(r"spec in PR #(\d+)", gates.get(i["number"], ""))
         if not pr or ("docs", n) in tried:
@@ -1603,6 +1661,15 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict) -> bo
             why += f"; its claim could not be taken back ({e}): pulse release --take {job.number}"
         _event(rep, "failed", job.public(why=why, log=_log_path(job)))
         return False
+    if job.phase == "plan" and job.plan_risk:
+        text = ready._git(job.worktree, "show", f"HEAD:{job.plan}")
+        missing = [r for r in job.plan_risk if r not in ready.listed(text, "risk")]
+        if missing:
+            # A supervisor stop after publication must never make the next run forget these risks.
+            _fail(root, repo, job, gh_run, rep, who,
+                  f"risk: restore original PLAN entries before publishing: {', '.join(missing)}",
+                  plan=job.plan, log=_log_path(job))
+            return False
     push = ready.net_git(job.worktree, "push", "-q", "origin", job.branch)
     if push.returncode == 1 and " ! [" not in push.stderr:      # origin's refusals read " ! [rejected] ..."
         job.hook = _hook(job.worktree, "pre-push")
@@ -1697,13 +1764,15 @@ def _hold(root: Path, repo: str, job: Job, gh_run, rep: dict, logs: Path, change
 def _tidy(root: Path, open_: set, rep: dict, repo: str = "", gh_run=state.gh) -> None:
     """The clean worktree pulse go made for an item that is closed now (merged, or dropped) goes, under
     .worktrees/ or beside the repo from before IMP-03-14; one with changes stays and the report names
-    it (F7.07). Then the local branch of each closed item goes too, where git branch -d takes it: no
+    it (F7.07). Only branches of these managed worktrees are candidates; historical user branches stay.
+    The local branch of each closed managed item goes too, where git branch -d takes it: no
     worktree on it, and all of it on origin's copy of the branch (the base here may not have the merge
     yet) or in HEAD."""
     trees = _trees(root)
     top = _top(root, trees)
     preserved = set(open_)
-    branches = _git(root, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads").stdout.split()
+    branches = {branch for wt, branch in trees[1:] if state.item_of(branch) and wt.resolve() != root.resolve() and
+                wt.resolve() in {p.resolve() for p in _places(top, branch)}}
     if repo:
         for branch in branches:
             number = state.item_of(branch)
@@ -1732,7 +1801,31 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-REPORTED = ("run", "items", "took", "unclean", "halt")   # report.json (D-14)
+REPORTED = ("run", "items", "took", "unclean", "halt", "activity", "base")   # report.json (D-14)
+
+
+def _activity(rep: dict, phase="", title="", target="", next_="", detail="", **extra) -> None:
+    """Publish preparation before its blocking call. Job phases keep their existing per-item records."""
+    previous = rep.get("activity") or {}
+    changed = (phase, target, title) != (previous.get("phase"), previous.get("target"), previous.get("title"))
+    rep["activity"] = {"phase": phase, "title": title, "target": target,
+                       "started": _now() if changed else previous["started"], "detail": detail,
+                       "next": next_, **extra} if phase else None
+    _save(rep)
+    if phase and changed:
+        print(f"  Pulse runner: {title} {target}. Next: {next_}", flush=True)
+
+
+def activity(root: Path):
+    """Only the preparation of the live runner identified by both the report and go.pid."""
+    rep = last_run(root)
+    if not rep or not rep["run"].get("running") or not isinstance(rep.get("activity"), dict):
+        return None
+    try:
+        pid = int((config.pulse_dir(root) / "go.pid").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return rep["activity"] if pid > 0 and pid == rep["run"]["pid"] else None
 
 
 def _event(rep: dict, kind: str, entry: dict) -> None:
@@ -2208,13 +2301,17 @@ def _claimed(item: dict, login: str, who: dict) -> bool:
 
 def _as(login: str, gate: str, s: dict) -> str:
     """Who approves in an auto lever's comment (FR-06 of #125): the login and the switch."""
-    return f"pulse go as @{login} (auto {gate} on since {auto.when(s['since'])})"
+    source = "automatic planning" if s.get("default") else \
+        f"auto {gate} on since {auto.when(s['since'])}"
+    return f"pulse go as @{login} ({source})"
 
 
 def _holds(root: Path, cfg: dict, item: dict, blob, plan, files=()) -> str:
     """What keeps gates 2 and 3 of item for a person whatever the switch says (FR-03, FR-04 of #125): risk: in its
     spec on the base, in the PLAN a Plan-ok approves (blob, as git has it) or in the PLAN as it stands (plan; None:
     gone), either one, and a changed file a person must see (merge.protected); "" when nothing."""
+    if item.get("blocked_by"):
+        return "waits for " + ", ".join(f"#{n}" for n in item["blocked_by"])
     approved = _git(root, "cat-file", "blob", blob) if base.SHA.fullmatch(blob or "") else None
     if plan is None or approved is None or approved.returncode:
         return "its PLAN is gone" if plan is None else f"the PLAN approved ({str(blob)[:12]}) could not be read"
@@ -2479,12 +2576,58 @@ def _removal_gates(root: Path, repo: str, current: dict, gh_run, logs: Path) -> 
 
 
 def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
+    """Own the live report and lock from the first fetch through final cleanup."""
+    common = config.pulse_dir(root)
+    lock, left = _lock(common)
+    rep = {"agent": agent, "started": [], "planned": [], "done": [],
+           "failed": [], "limited": [], "skipped": [], "stopped": [], "merged": [],
+           "took": [], "unclean": [], "base": None, "paused": None, "halt": "", "tainted": "", "guard": None,
+           "items": {}, "activity": None, "report": str(common / "go" / "report.json"),
+           "run": {"pid": os.getpid(), "started": _now(), "ended": None, "stopped": ""}}
+    handlers = {s: signal.signal(s, _exit) for s in STOPS[1:]}
+    try:
+        return _run(root, cap, agent, gh_run, poll, rep, lock, left)
+    except KeyboardInterrupt as error:
+        rep["run"]["stopped"] = error.args[0] if isinstance(error, Stopped) else "SIGINT"
+        return rep
+    except Exception:
+        active = rep.get("activity") or {}
+        phase = active.get("phase", "startup")
+        cause, next_ = {
+            "fetch": ("could not fetch the current base", "check access to origin and retry pulse go"),
+            "configuration": ("project configuration could not start the runner",
+                              "check verify, spec_tests and agent settings on the base branch"),
+            "board": ("could not read approved work", "check GitHub access and retry pulse go"),
+        }.get(phase, ("runner preparation failed", "inspect the CLI error and retry pulse go"))
+        # The CLI still reports the original exception. Persist only bounded, known text, never its payload.
+        rep["halt"] = cause
+        rep["base"] = {"state": "unknown", "cause": cause, "next": next_, "why": cause,
+                       "sha": (rep.get("base") or {}).get("sha", ""), "ok": None, "final": False}
+        raise
+    finally:
+        rep["activity"] = None
+        rep["run"]["ended"] = _now()
+        _save(rep)
+        if _noted(lock).get("pid") == os.getpid() and not _noted(lock).get("groups"):
+            _note(lock, {})
+        try:
+            (common / "go.pid").unlink()
+        except FileNotFoundError:
+            pass
+        lock.close()
+        for s, handler in handlers.items():
+            signal.signal(s, handler)
+
+
+def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left) -> dict:
     base_branch = config.load(root)["base_branch"] or config.default_branch(root)
+    _activity(rep, "fetch", "fetching current code", base_branch, "read configuration and approved work")
     ready.fetch(root)
     sha, said = _fetch_base(root, base_branch)
     if not sha:                        # never from an older copy of the base (L-C)
         raise state.StateError(f"origin/{base_branch} could not be fetched ({said}): pulse go reads what runs a "
                                "program from it")
+    _activity(rep, "configuration", "reading project configuration", base_branch, "read approved work")
     cfg = config.load(root, ref=sha)   # what runs a program, as the base on origin holds it (FR-06)
     if (cfg["base_branch"] or config.default_branch(root)) != base_branch:
         raise state.StateError(f"base_branch is {base_branch} here, {cfg['base_branch']} in .pulse/config.toml on "
@@ -2496,15 +2639,12 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
         raise state.StateError(f"no [spec_tests] in .pulse/config.toml on origin/{base_branch}: map each spec test "
                                'pattern to its runner, e.g. "tests/**/test_*.py" = { run = "python3 -m pytest {files}" '
                                "}, commit, and push")
+    _activity(rep, "board", "reading approved work", base_branch, "plan and build ready items")
     repo, login = state.repo(root, run=gh_run), state.me(root, run=gh_run)
     spec, limit = agent or cfg["agent"], cap or cfg["cap"]
     slots = _slots(spec, limit, cfg)
     common = config.pulse_dir(root)
-    rep = {"agent": spec, "started": [], "planned": [], "done": [],
-           "failed": [], "limited": [], "skipped": [], "stopped": [], "merged": [],
-           "took": [], "unclean": [], "base": None, "paused": None, "halt": "", "tainted": "", "guard": None, "items": {},
-           "report": str(common / "go" / "report.json"),
-           "run": {"pid": os.getpid(), "started": _now(), "ended": None, "stopped": ""}}
+    rep["agent"] = spec
     jobs: dict = {}
     tried: set = set()         # one plan and one build per item and run: nothing loops
     spent: dict = {}           # agent -> until when it is at its usage limit (#119)
@@ -2519,7 +2659,6 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
     handlers = {}
     last, read = None, True    # read reads the board in the next round: a slot came free
     keys, said, told, quit_ = False, None, set(), False     # the terminal while go waits (FR-07 of #119)
-    lock, left = _lock(common)
     who = state.run_holder(root)       # under the lock: one run makes the clone's id (M-4 of #118)
     # a job is no chat of the VS Code window the run began in: the map links it nowhere (#61)
     # no agent reaches GitHub (M2 of #119): no token, and gh finds no login in an empty config dir; go acts there
@@ -2550,9 +2689,9 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
         items = _take_over(root, repo, login, left, gh_run, rep, base_branch, who, off)
         _note(lock, {"pid": os.getpid(), "holder": who["id"], "groups": {}})
         _save(rep)
-        _tidy(root, {i["number"] for i in items} - set(rep["merged"]), rep, repo, gh_run)
         rep["guard"] = _shared(root, config.common_dir(root))      # the clone's git setup as the run found it (M-A)
         while True:          # at the start and whenever a slot came free: read the board, fill the slots (F5.09)
+            _activity(rep, "board", "reading approved work", base_branch, "start the next ready item")
             read = stopping() or read
             closed = len(rep["merged"])        # a merge of this round changes the board: no idling on the old one
             try:               # fresh in a run: _take_over read it
@@ -2580,13 +2719,15 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                 _check_base(root, repo, cfg, gh_run, rep, base_branch)      # the SHA its docs PRs are checked against
                 if not rep["halt"] and _docs(root, repo, items, gates, gh_run, rep, tried, base_branch, known):
                     _moved(root, repo, cfg, gh_run, rep, base_branch)        # the round starts from the new base
+                    found = ready.plans(root)
                     gates = ready.gates(root, ramped, cfg, found)
             files = ready.plan_files(root, found)
             r = ready.ramp(ramped, files, min(limit, sum(slots.values())) + len(parked), login, gates=gates)
             plans = {n: p["path"] for n, p in found.items()}
             specs = {i["number"]: i.get("spec") for i in items}
             pos = {i["number"]: k for k, i in enumerate(ready.order(items))}      # one queue (FR-01 of #119)
-            unplanned = [i for i in items if gates.get(i["number"]) == "needs a plan"]
+            unplanned = [i for i in items if gates.get(i["number"]) == "needs a plan" or
+                         ready.repairable(i, gates.get(i["number"], ""))]
             mine = [i for i in items if i["number"] not in jobs and i.get("claimed_holder") == who["id"] and
                     i.get("pr") and not i["pr"].get("fork") and i["number"] not in rep.get("_resuming", ())]
             for i in (i for i in mine if i["pr"].get("auto")):
@@ -2606,8 +2747,9 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                     _event(rep, "skipped", job_for(root, i, base_branch).public(why=f"gate 3: {e}"))
                 if rep["halt"]:
                     break
-            for i in items:            # a PLAN that fails P1 to P5 waits for a person: say so once a run
-                if gates.get(i["number"], "").startswith("plan: ") and ("plan", i["number"]) not in tried:
+            for i in items:            # a previously approved invalid PLAN waits for a person
+                if gates.get(i["number"], "").startswith("plan: ") and not ready.repairable(i, gates[i["number"]]) \
+                        and ("plan", i["number"]) not in tried:
                     tried.add(("plan", i["number"]))
                     _event(rep, "skipped", job_for(root, i, base_branch).public(why=gates[i["number"]]))
             todo = [("merge", i) for i in held if i["number"] in merges] + sorted(
@@ -2642,7 +2784,7 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                 _check_base(root, repo, cfg, gh_run, rep, base_branch)      # only when something could start
             for kind, item in todo:
                 n = item["number"]
-                if n in jobs or n in parked or (kind, n) in tried or _held(rep, item):
+                if n in jobs or n in parked or (kind, n) in tried or _held(rep, item, kind):
                     continue
                 if len(jobs) >= limit:         # cap counts every running job, whatever its phase (FR-02 of #119)
                     break
@@ -2654,6 +2796,9 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                         _event(rep, "skipped", job_for(root, item, base_branch).public(why=CLAUDE))
                     continue
                 job = job_for(root, item, base_branch)
+                if kind == "plan":
+                    job.plan_risk = ready.listed((found.get(n) or {}).get("text", ""), "risk")
+                _activity(rep, "claim", "preparing " + kind, f"#{n}", f"start the {kind} agent", item=n)
                 if kind != "merge":            # only approvals of people who may push count (FR-03 of #115)
                     try:
                         why = _counts(repo, item, gh_run, known, gate2=kind == "build")
@@ -2678,6 +2823,18 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                     if why:
                         _event(rep, "skipped", job.public(why=why))
                     continue           # a planned one stays in kept and goes back below
+                if kind == "plan" and n in plans:
+                    try:
+                        current = state.item(repo, n, gh_run)
+                        safe = _claimed(current, login, who) and current.get("spec") == item.get("spec") and \
+                            ready.repairable(dict(current, assignees=[], claimed_holder=""), gates.get(n, ""))
+                        why = "" if safe else "PLAN repair waits: its approval or claim changed"
+                    except (state.StateError, ValueError) as error:
+                        why = f"PLAN repair waits: its current approval could not be read: {error}"
+                    if why:
+                        tried.add((kind, n))
+                        _event(rep, "skipped", job.public(why=why + _release(root, repo, n, gh_run, who)))
+                        continue
                 kept.pop(n, None)
                 rep.get("_resuming", set()).discard(n)
                 tried.add((kind, n))
@@ -2688,6 +2845,8 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                     continue
                 log, gone = "", False
                 try:       # a start that fails (git, a gone worktree, a missing agent) must not stop the others
+                    _activity(rep, "setup", "preparing worktree", f"#{n}", f"start the {kind} agent", item=n,
+                              log=str(common / "go" / f"{n}.log"))
                     why = _start(root, cfg, cfg["agents"][a], job, plans, specs, common / "go", phase=kind,
                                  start=(rep["base"] or {}).get("sha"))
                     if not (why or job.proc):      # a draft whose spec tests were bent: its text says so
@@ -2728,12 +2887,19 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                 if stays:
                     _event(rep, "failed", planned.public(why="planned" + stays, log=planned.log.name))
             kept.clear()
+            _activity(rep)
             if not jobs and len(rep["merged"]) > closed:     # what the merge unblocked starts in the next round
                 read = True
                 continue
             if not jobs:               # FR-07 of #119: in a terminal it waits for what a person approves next
                 waits = sorted({n for n, g in gates.items() if g.startswith(ready.WAITS)} | {
                     i["number"] for i in mine if not i["pr"].get("draft") and not i.get("failed") and not i.get("hold")})
+                pending_ci = (rep.get("base") or {}).get("state") == "pending" and bool(todo)
+                if pending_ci:
+                    waits = sorted(set(waits) | {i["number"] for _, i in todo})
+                    _activity(rep, "base", "waiting for current CI", base_branch,
+                              "build " + ", ".join(f"#{n}" for n in waits),
+                              detail=(rep["base"] or {}).get("why", ""))
                 if keys is False and (parked or waits):
                     keys = pmap._keys()
                 if not (parked or waits and keys):
@@ -2774,9 +2940,13 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                             continue
                         _group(common / "go", job.number, None)
                         freed = True
-                        read = read or not job.kept        # a planned item going on into its build frees none
+                        read = read or not job.kept
                         if job.kept:
                             kept[job.number] = job
+                            # _planned read the bound approval already. Carry it forward without
+                            # loading the whole board again just to move this same claim into build.
+                            last = [dict(i, plan_ok=job.item.get("plan_ok"), plan_oks=job.item.get("plan_oks"))
+                                    if i["number"] == job.number else i for i in last]
                         if job.limited and keys is False:
                             keys = pmap._keys()
                         if job.limited and job.resumed and not keys:    # B2 of #119: headless, one try past a reset
@@ -2801,7 +2971,9 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
                         _beat(root, repo, job, gh_run, who)
                         alive[n] = time.time()
                 waiting()
-        _save(rep)
+        _activity(rep, "cleanup", "cleaning completed worktrees", base_branch, "finish this round")
+        _tidy(root, {i["number"] for i in items} - set(rep["merged"]), rep, repo, gh_run)
+        _activity(rep)
     except KeyboardInterrupt as e:     # Ctrl-C, SIGTERM, SIGHUP: the claims go back, the report stays
         rep["run"]["stopped"] = e.args[0] if isinstance(e, Stopped) else "SIGINT"
     finally:
@@ -2830,15 +3002,6 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0) -> dict:
             if _lifecycle_stop(root, repo, planned, gh_run, rep, common / "go", who):
                 continue
             _release(root, repo, n, gh_run, who, _handover(planned, stop))
-        rep["run"]["ended"] = _now()
-        _save(rep)
-        if _noted(lock).get("pid") == os.getpid() and not _noted(lock).get("groups"):
-            _note(lock, {})            # a clean end: nothing for the next start to take over
-        lock.close()
-        try:
-            (common / "go.pid").unlink()
-        except FileNotFoundError:
-            pass
         for s, h in {**quiet, **handlers}.items():
             signal.signal(s, h)
     return rep

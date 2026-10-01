@@ -280,6 +280,22 @@ def check_specs(paths) -> list:
     return found
 
 
+def check_plans(root: Path, paths) -> list:
+    """Every P1-P6 finding for local candidates against the available base spec/config. This checks
+    structure only, without reading the board, granting approval, fetching, or running project commands."""
+    found = []
+    for path in map(Path, paths):
+        try:
+            text = spec.read(path)
+        except OSError as e:
+            found.append(Finding(str(path), 0, "P1", f"PLAN not readable: {e.strerror}"))
+            continue
+        for finding in ready.plan_validation(root, text):
+            rule, _, message = finding.partition(" ")
+            found.append(Finding(str(path), 1, rule, message))
+    return found
+
+
 def run(root: Path, board: bool = True) -> list:
     """Every finding; board=False leaves R1 to R6 out, which read the board (the tests gate of pulse go)."""
     found = []
@@ -324,7 +340,8 @@ def main(args) -> int:
     if root is None:
         print("pulse check: not inside a git repository")
         return 2
-    found = check_specs(args.spec) if args.spec else run(root)
+    found = check_plans(root, args.plan) if getattr(args, "plan", None) else \
+        check_specs(args.spec) if args.spec else run(root)
     skipped = [f for f in found if f.rule == "R1-R6"]      # no board: said, but no reason to block
     found = [f for f in found if f.rule != "R1-R6"]
     for f in found + skipped:

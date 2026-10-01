@@ -4,6 +4,8 @@ Pulse comes to Codex as a plugin from `pssah4/pulse`, the same marketplace Claud
 
 The plugin serves the Codex CLI and the Codex IDE extension alike: both read `~/.codex` (or `$CODEX_HOME` when you set it), so you install it and trust its hooks once, and the extension picks it up in a new chat. OpenAI documents plugins as unsupported in the IDE extension and does not promise this; current versions load the plugin anyway, and a Pulse test checks that they still do. The manual path is the fallback, without hooks. Take one path: with both, every skill shows up twice, so uninstall one before you switch to the other.
 
+Trusted lifecycle and tool hooks also show local Codex activity in `pulse map`, for interactive chats and `codex exec`. The map stores session metadata and edit file paths in the clone's Git directory, never prompts, commands, patch contents or transcripts. An update that adds these hooks requires your normal hook review again; Pulse never trusts them for you. `PULSE_PRESENCE=off` disables capture and display, and project mode `off` keeps it silent.
+
 ## Prerequisites
 
 After upgrading, run `pulse setup --codex-rules` in your own terminal to refresh the machine rules. `pulse defer`, `resume`, `discard`, and `delete` are person-only commands, like the approval levers. Agents may prepare an explicitly requested removal PR, but cannot approve its merge or delete its issue.

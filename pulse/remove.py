@@ -19,7 +19,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
-from pulse import auto, base, config, merge as gates, state
+from pulse import auto, base, config, merge as gates, ready, state
 
 
 SUMMARY = "number,state,headRefName,baseRefName,headRefOid,mergeCommit,isCrossRepository,closingIssuesReferences"
@@ -32,7 +32,8 @@ GATES = ("tests", "review", "audit")
 
 def _git(root, *args, input=None):
     try:
-        result = subprocess.run(["git", *args], cwd=root, input=input, capture_output=True, text=True, timeout=120)
+        result = ready.net_git(root, *args) if args[0] in ("ls-remote", "fetch", "push") else \
+            subprocess.run(["git", *args], cwd=root, input=input, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise state.StateError(f"removal git failed: {error}") from None
     if result.returncode:

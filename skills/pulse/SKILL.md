@@ -40,7 +40,7 @@ Take the first row that applies. In Codex, name each command as
 | Project-BA is a Draft | `/pulse-ba` in Validation Mode |
 | A new epic or feature is wanted | `/pulse-ba` for its Item-BA |
 | A validated Project-BA or an Item-BA exists, no epics or features registered yet | `/pulse-re` |
-| Specs wait for approval (`pulse status`: "not approved") | show each spec's goal, scope, and success criteria, then tell the person how they approve it, which means build it: `pulse approve <n>` in their own terminal, or `a` in the map; it writes the approval and nothing else, and `pulse go` merges a spec not yet on the base branch there first: the docs PR that `pulse new` opened, once every spec in it passes R1 to R6, it changes only `_devprocess/`, and its checks pass. It refuses a spec neither on the base branch nor in an open pull request (R1: `/pulse-re` pushes it) and, for a feature, improvement, or fix, a spec on the base branch that breaks R2 to R6: then `/pulse-re` on that spec (an epic needs R1 only) |
+| Specs are not approved yet (`pulse status`: "not approved") | spec approval for planning is automatic by default when `pulse go` runs. Show each spec's goal and scope. With an explicit manual spec setting, tell the person `pulse approve <n>` in their own terminal, or `a` in the map; it writes the approval and nothing else. The runner merges the spec's docs PR into the base once every spec passes R1 to R6, the diff changes only `_devprocess/`, and its checks pass. A missing or invalid spec goes to `/pulse-re`: a feature, improvement, or fix on the base must pass R2 to R6 (an epic needs R1 only). Implementation still waits for the completed PLAN's approval |
 | An approved spec waits for `pulse go` (`pulse status`: "spec in PR #m: pulse go merges it") | offer to start `pulse go`; on an explicit start request, execute [Start pulse go](#start-pulse-go). The run merges the docs PR, then plans; when it names why it did not merge it (a spec that breaks a rule, a file outside `_devprocess/`, checks that have not passed), fix that on the docs branch and push |
 | Items are approved but their spec does not pass R1 to R6 (`pulse check`) | `/pulse-re` on that spec |
 | A PLAN waits for a person (`pulse status`: "plan waits for you", or "plan changed since plan ok", "spec changed since plan ok") | show its goal, decisions, and risks, and tell the person how they approve it: `pulse approve <n>` in their own terminal, which binds the PLAN as origin has it and the spec on the base |
@@ -108,14 +108,24 @@ When the person explicitly asks to start `pulse go`, execute it from this
 interactive session in a persistent foreground TTY. In Codex use
 `exec_command` with `tty: true` and retain the returned session id; read
 its startup output, report its actual state, and use that session to stop
-it when the person asks. Run outside the sandbox when network access or
+it when the person asks. Before replying, read that retained TTY and a
+fresh `pulse status` or run report. A run that ended or is blocked needs
+its actual outcome, cause, and next step. During preparation name the
+current activity and say there are no active agents until an agent
+actually starts. The report exposes board loading, base checking, and
+worktree setup before the first claim. Run outside the sandbox when network access or
 shared Git writes require it. Keep all session markers. Never start
 `pulse go` automatically, from a runner agent or child session, through
 another terminal's keys, or with a detached shell. A person can also run
 it in their own terminal. It plans and builds every approved item in
 parallel with the configured cap (planned first when it has no PLAN),
 runs the RED check and tests, review,
-and audit, and opens a PR per item. Starting it grants no approval and
+and audit, and opens a PR per item. Specs proceed to planning automatically
+by default; implementation waits for manual PLAN approval. Structurally
+invalid PLANs without a previous PLAN approval get bounded repair attempts.
+Explicit settings, expired delegation, risks, blockers and failing checks
+retain their holds. Startup reads current base and CI metadata,
+and the full `verify` runs once on the completed result. Starting it grants no approval and
 changes no auto switch. It needs `verify` and `[spec_tests]` on the base
 branch as origin has it; report missing configuration with the base and
 prepare the required config change. It ends when the ramp is empty or
@@ -139,7 +149,9 @@ to press `a` on the item in the Pulse map, or to run `pulse approve <n>`
 in their own terminal. The auto mode per gate is theirs as well: when the person
 asks how `pulse go` could pass a gate without asking them, name
 `pulse auto <plan|build|merge> on [--for 8h]` in their own terminal, or
-`1` `2` `3` in the map; never switch it yourself. Never send text or keys into the map's pane, nor
+`1` `2` `3` in the map. Spec approval for planning is automatic by default;
+build and merge require manual approval or an explicit delegation.
+An explicit off or expired delegation stays off. Never switch it yourself. Never send text or keys into the map's pane, nor
 `pulse map` into another terminal: the map runs as the person, and the
 guard refuses it. Details:
 <https://pssah4.github.io/pulse/guides/pulse-map>.

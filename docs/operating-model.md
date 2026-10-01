@@ -122,7 +122,9 @@ with its planning and review steps,
 [`pulse go`](/guides/pulse-go) plans and builds every approved item at
 once, each in its own worktree ([Parallel work](/concepts/parallel-work)).
 Pulse stops for a person only [where a person decides](/concepts/v-model#where-pulse-stops-for-you):
-the BA, each spec (`pulse approve` means build it), each PLAN, and the merge. Between those points the phases hand over without
+the BA, the completed PLAN before implementation, and the merge.
+Specs proceed to planning automatically by default; an explicit manual
+spec setting adds that stop. Between those points the phases hand over without
 asking; nobody passes approved work on by hand, and the order in the ramp
 decides what an agent takes next.
 

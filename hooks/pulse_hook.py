@@ -7,8 +7,9 @@
                                   or the item branch has commits origin lacks
   guard                           deny a command that pulls a person's lever
                                   (PreToolUse, synchronous, pulse/guard.py)
+  presence                        update local activity metadata, without commands or transcripts
 
-Only the guard runs per tool use, for commands that reach a shell or a tool
+The guard runs for commands that reach a shell or a tool
 server. A hook must never break a session: any failure
 is swallowed and the hook prints nothing. The active item comes from the
 issue cache that the pulse CLI keeps (state.cache_path). Two paths reach
@@ -29,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from pulse import auto, config, guard, ready, setup, state  # noqa: E402
+from pulse import auto, config, guard, presence, ready, setup, state  # noqa: E402
 
 KEPT = 86400                   # seconds a hook takes the login the CLI kept: it asks no network (#111)
 EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
@@ -336,6 +337,13 @@ def lever_guard(stdin_text, env):
 
 
 def main(argv, stdin_text, env):
+    if argv[:1] in (["presence"], ["guard"], ["session-start"], ["subagent-start"], ["stop"]):
+        try:
+            presence.record(json.loads(stdin_text), env)
+        except (ValueError, TypeError):
+            pass
+    if argv[:1] == ["presence"]:
+        return ""
     if argv[:1] == ["guard"]:
         return lever_guard(stdin_text, env)
     try:
