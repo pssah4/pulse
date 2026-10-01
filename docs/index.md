@@ -34,7 +34,7 @@ hero:
 | Part | What it gives you |
 |---|---|
 | [Operating model](./operating-model) | A rhythm for teams where each person works with several agents: three tempos (hourly, daily, every two weeks), a conscious filter that decides what becomes work, roles as hats. |
-| [Collaboration](./concepts/parallel-work) | One shared board for people and agents, a ramp that hands out ready work in the right order, `pulse go` to build all of it in parallel, and the live map above. |
+| [Collaboration](./concepts/parallel-work) | One shared board for people and agents, a ramp that hands out ready work in the right order, `pulse go` to build all of it in parallel, and a live terminal map shown in the demo above. |
 | [Digital Innovation Agents](./concepts/v-model) | The method: one command per step from a raw idea to reviewed code. Business analysis, requirements, plan, build with the spec tests first, review, security audit. |
 
 ## Quick start

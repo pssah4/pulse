@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "docs:dev": "vitepress dev",
-    "docs:build": "vitepress build",
+    "docs:dev": "python3 scripts/render_map_demo.py && vitepress dev",
+    "docs:build": "python3 scripts/render_map_demo.py && vitepress build",
     "docs:preview": "vitepress preview"
   },
   "devDependencies": {
