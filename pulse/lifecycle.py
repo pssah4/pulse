@@ -143,6 +143,22 @@ def _resume_work(root, current, actor):
     return work
 
 
+def _interactive_work(root, raw, current, actor):
+    marks = state._marks(raw)
+    holder = current.get("holder", {}) if current.get("phase") in ("requested", "stopped", "paused") else \
+        (marks[0] if marks else {})
+    if holder.get("author") != actor or not holder.get("id", "").startswith(("claude:", "codex:")) or \
+            [assignee["login"] for assignee in raw.get("assignees", [])] != [actor]:
+        return {}
+    candidates = []
+    for block in _git(root, "worktree", "list", "--porcelain", "-z").split("\0\0"):
+        fields = dict(field.split(" ", 1) for field in block.split("\0") if " " in field)
+        branch = fields.get("branch", "").removeprefix("refs/heads/")
+        if state.item_of(branch) == raw["number"]:
+            candidates.append((fields.get("worktree", ""), branch))
+    return _work(root, *candidates[0]) if len(candidates) == 1 else {}
+
+
 def preview(root, repo, number, action, run=state.gh) -> dict:
     if type(number) is not int or number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise state.StateError("a repository and positive item number are required")
@@ -174,6 +190,8 @@ def preview(root, repo, number, action, run=state.gh) -> dict:
             work = _resume_work(root, current, actor)
     elif current.get("phase") in ("requested", "stopped") and current.get("action") != action:
         raise state.StateError("the current stop request must finish first")
+    if action == "defer":
+        work = _interactive_work(root, raw, current, actor)
     prs = json.loads(run(["pr", "list", "--repo", repo, "--state", "all", "--limit", "200", "--json",
                           "number,headRefName,headRefOid,state,isCrossRepository,closingIssuesReferences"]))
     parents = []
@@ -191,8 +209,12 @@ def preview(root, repo, number, action, run=state.gh) -> dict:
     lines = [f"{repo}#{number}: {raw['title']} ({raw['state']}); acting as @{actor}", consequences[action],
              "Holders: " + (", ".join(assignee["login"] for assignee in raw.get("assignees", [])) or "none"),
              "Affected records: " + ", ".join(f"#{entry['number']}" for entry in [raw, *parents])]
+    if action == "defer" and work:
+        lines += ["Confirm that your original interactive session has stopped before releasing its claim.",
+                  f"Preserve local work in {work['worktree']} on {work['branch']}; no files are changed."]
     return {"repo": repo, "number": number, "action": action, "actor": actor, "snapshot": snapshot,
-            "confirmation": f"{repo}#{number}" if action == "delete" else action, "lines": lines,
+            "confirmation": f"{repo}#{number}" if action == "delete" else
+                            "defer stopped" if action == "defer" and work else action, "lines": lines,
             "record": raw, "work": work}
 
 
@@ -209,7 +231,16 @@ def _append(root, repo, number, event, run):
 def _ensure_hold(root, repo, number, raw, current, run):
     added = state.HOLD not in {label["name"] for label in raw.get("labels", [])}
     if added:
-        run(["issue", "edit", str(number), "--repo", repo, "--add-label", state.HOLD])
+        try:
+            run(["issue", "edit", str(number), "--repo", repo, "--add-label", state.HOLD])
+        except state.StateError:
+            labels = state.pages(run, f"repos/{repo}/labels?per_page=100")
+            if any(label.get("name") == state.HOLD for label in labels):
+                raise
+            from pulse import setup
+            color, description = setup.LABELS[state.HOLD]
+            run(["label", "create", state.HOLD, "--repo", repo, "--color", color, "--description", description])
+            run(["issue", "edit", str(number), "--repo", repo, "--add-label", state.HOLD])
         state.drop_cache(Path(root))
     held = _hold_event(repo, number, run)
     if held.get("actor") not in (current["actor"], current["holder"].get("author")) or \
@@ -223,7 +254,8 @@ def _finish(root, repo, number, current, run, who=None):
     current = _ensure_hold(root, repo, number, raw, current, run)
     if not current["holder"] and (raw.get("assignees") or state._marks(raw)):
         raise state.StateError("a holder arrived during the stop request; keep the operation pending")
-    if current["holder"] and not current["retained"] and (raw.get("assignees") or state._marks(raw)):
+    if current["holder"] and (not current["retained"] or current["action"] == "defer") and \
+            (raw.get("assignees") or state._marks(raw)):
         work = current["work"]
         if _work(root, work["worktree"], work["branch"]) != work:
             raise state.StateError("work changed after the stop acknowledgement; keep the claim and acknowledge again")
@@ -243,7 +275,8 @@ def _finish(root, repo, number, current, run, who=None):
     else:
         phase = "paused"
     _append(root, repo, number, {**current, "phase": phase}, run)
-    return f"#{number} {phase}" + ("; worktree and claim retained for local resume" if current["retained"] else "")
+    return f"#{number} {phase}" + (("; worktree retained for local resume" if current["action"] == "defer" else
+                                   "; worktree and claim retained for local resume") if current["retained"] else "")
 
 
 def apply(root, repo, planned, confirmation, run=state.gh) -> str:
@@ -267,6 +300,9 @@ def apply(root, repo, planned, confirmation, run=state.gh) -> str:
         _append(root, repo, number, {**current, "phase": "resumed", "work": fresh["work"]}, run)
         return f"#{number} resumed from its preserved work"
     if current.get("action") == action and current.get("phase") in ("paused", "discarded"):
+        if action == "defer" and fresh["work"] and current.get("retained"):
+            return acknowledge(root, repo, number, {"id": current["holder"]["id"]},
+                               fresh["work"]["worktree"], fresh["work"]["branch"], run=run)
         return f"#{number} already {current['phase']}"
     if current.get("phase") not in ("requested", "stopped"):
         marks = state._marks(raw)
@@ -283,6 +319,9 @@ def apply(root, repo, planned, confirmation, run=state.gh) -> str:
         _append(root, repo, number, current, run)
     current = _ensure_hold(root, repo, number, _read(repo, number, run), current, run)
     if current["holder"]:
+        if action == "defer" and fresh["work"]:
+            return acknowledge(root, repo, number, {"id": current["holder"]["id"]},
+                               fresh["work"]["worktree"], fresh["work"]["branch"], run=run)
         return f"#{number} stop requested; waiting for its original holder"
     return _finish(root, repo, number, current, run)
 

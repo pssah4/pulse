@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-01
+
+### Fixed
+
+- Defer releases a stopped item's claim and returns it to the ramp while preserving uncommitted and unpushed work for local resume. People can confirm an ended interactive session through the shared Map/CLI preview. Missing hold labels are created when needed.
+
 ## [0.2.2] - 2026-09-30
 
 ### Changed
