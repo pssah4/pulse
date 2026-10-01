@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-01
+
+### Fixed
+
+- Restore the animated terminal map on the documentation homepage. The docs build generates its frames from the current map renderer, serves the animation under the GitHub Pages base path, and shows a still frame when reduced motion is requested.
+
 ## [0.2.4] - 2026-10-01
 
 ### Fixed
