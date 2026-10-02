@@ -17,7 +17,7 @@ description: Sebastian Hanke, creator of Pulse, a way for teams to build digital
 
 ## About me
 
-I'm Sebastian, a product and technology generalist based in Germany. I've spent most of my career working on strategy, product development, and applied technology, sometimes with early-stage projects, sometimes with established teams.
+I'm Sebastian, a product and technology specialist based in Germany. I've spent most of my career working on strategy, product development, and applied technology, sometimes with early-stage projects, sometimes with established teams.
 
 My interest in how teams move ideas from "this could work" to "this is live in production" led me to build Pulse. The goal: coding agents that follow a method, so the path from raw idea to production code is deliberate, traceable, and reviewable, and teams that can run many agents at once without losing track of who does what.
 
