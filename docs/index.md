@@ -1,12 +1,13 @@
 ---
 layout: home
 title: Pulse
-titleTemplate: Parallel, method-driven development with AI coding agents
+titleTemplate: Coding agents across developers and machines
+description: Coordinate your team's Claude Code and Codex agents across developers and machines, with a shared GitHub board and a workflow from specs to checked integration.
 
 hero:
-  name: "Multiplayer is on."
-  text: Your team and all its agents build one repo without a single collision.
-  tagline: "Coding agents are fast alone and chaotic together. Pulse plans the dependencies between tasks, starts them in the right order, gives each to one agent, and never runs two at once that touch the same files. Features start as specs, from business analysis to requirements engineering, and a pull request is ready only after tests, review, and a security audit pass."
+  name: "One team. One pulse."
+  text: Coordinate coding agents across developers and machines.
+  tagline: "Each developer runs Claude Code or Codex in their own clone. Pulse coordinates work through shared claims, dependencies and planned files, then takes each item through tests, review and security audit to integration. Regular checked results complete automatically; manual final approval is an option."
   actions:
     - theme: brand
       text: Get started
@@ -29,12 +30,20 @@ hero:
   </a>
 </div>
 
+## Your agents run locally. The team shares the work.
+
+Alice starts `pulse go` on her laptop. Bob starts it in his clone on another machine. Both runners use the same board: they claim items, start agents in separate worktrees, and compare planned files with the work the team already holds. Each person has their own agent slots, permissions, and subscriptions.
+
+Work becomes visible during scoping: `/pulse-ba` and `/pulse-re` register drafts before implementation starts. Specs and Plans live on item branches. GitHub hosts the item board and a shared Git branch for confirmed claims and progress. Local actions are saved before background synchronization, with no additional coordination service for your team to operate.
+
+The map shows each person's items, runner phases, and last heartbeat. Detailed tool activity stays in the local clone. Shared revisions serialize competing claims. Planned file reservations reduce overlap, but actual changes can still conflict. [Parallel work](./concepts/parallel-work) explains those boundaries and how to hand work over.
+
 ## Three parts
 
 | Part | What it gives you |
 |---|---|
 | [Operating model](./operating-model) | A rhythm for teams where each person works with several agents: three tempos (hourly, daily, every two weeks), a conscious filter that decides what becomes work, roles as hats. |
-| [Collaboration](./concepts/parallel-work) | One shared board for people and agents, a ramp that hands out ready work in the right order, `pulse go` to build all of it in parallel, and a live terminal map shown in the demo above. |
+| [Collaboration](./concepts/parallel-work) | A shared board across people and machines, an ordered queue, `pulse go` to run local agents against it, and `pulse map` to see the team's work. |
 | [Digital Innovation Agents](./concepts/v-model) | The method: one command per step from a raw idea to reviewed code. Business analysis, requirements, plan, build with the spec tests first, review, security audit. |
 
 ## Quick start
@@ -57,28 +66,27 @@ Then run `/pulse` in your project (in Codex, trust the Pulse hooks when Codex as
 
 ## Where the work lives
 
-You never write tickets on GitHub. Epics, features, and plans are Markdown files in your repository, written by the agents together with you and versioned in git like code: once you approve a spec, `pulse go` merges it into the base branch, and a plan travels in the pull request of its build. GitHub only keeps the board, one small record per item, so that everyone sees the same state.
+Business analyses, epics, features and Plans are Markdown files versioned with the code. Each item keeps its spec, Plan and implementation on one published branch. Valid specs permit planning; valid Plans permit building when dependencies and file reservations allow it. Existing Plans and unfinished work are preserved when a run resumes.
 
 <div class="pulse-diagram">
 <!--@include: ./diagrams/where-the-work-lives.svg-->
 </div>
 
-The `pulse` commands write these records; nobody edits them by hand. Agents ask questions instead of reading files: `pulse status --json` answers "what can I start?" from a local copy. Under the hood the records are GitHub issues with a `pulse:` label, so pull requests close them and GitHub shows dependencies for free. [Where things live](./concepts/where-things-live) has the details.
+The `pulse` commands manage the shared state; nobody edits it by hand. `pulse status --json` reads a local view. GitHub holds the item catalog and relationships; a shared Git branch holds claims, results and integration state. Local actions enter a durable outbox and gain team authority only after synchronization confirms them. Pulse closes an item after proving its result reached the shared base. [Where things live](./concepts/where-things-live) has the details.
 
-## Why not just GitHub?
+## What Pulse coordinates
 
-Pulse keeps its records in GitHub issues on purpose: types, sub-issues, dependencies, assignees, and pull requests that close issues all come from GitHub. What GitHub leaves open is the moment several people each run several agents on one repository. GitHub records what exists and who has it; it does not decide what may start now.
+Pulse uses GitHub for item types and relationships. Shared Pulse state coordinates who may write and what may integrate when several people each run several agents on one repository.
 
-| GitHub gives you | Pulse adds |
+| Step | What happens |
 |---|---|
-| Dependencies between issues, shown as "blocked" | One ordered ramp: an item starts only when it is approved, its spec passes the rules, its PLAN exists, and its blockers are done |
-| One branch per agent; conflicts show up when the branches merge | The ramp holds back an item whose PLAN touches files another running item holds, before the first line of code |
-| An assignee per issue; nothing stops a second agent from taking it too | A claim per session: a second session is refused, the map shows each claim's phase and last sign of life, and a stalled item can be handed over |
-| A view of the agent sessions GitHub runs, and of Copilot's own clients | Claude Code and Codex on your own machines and subscriptions, on one live map with your teammates' work |
-| Checks and reviews on the pull request | Spec tests first, then tests, and review and security audit in one fresh session, with one fix round; the pull request leaves draft only when all three pass, and nothing starts on a base commit that is red |
-| Spec Kit: spec, plan, tasks, implement | The step before the spec (a business analysis with 34 methods), tech-agnostic success criteria, and checks that keep specs and PLANs to their rules |
+| Register | Draft records expose analysis and specification work before code is written |
+| Select | The ordered queue considers published specs and Plans, dependencies and files already reserved by the team |
+| Execute | Each person's runner claims items and starts Claude Code or Codex in local worktrees |
+| Verify | The runner executes project tests, review and security audit, then publishes the checked result |
+| Integrate | Final approval binds the exact result and base, automatically by default or under a chosen manual policy; Pulse merges with project hooks |
 
-When one person works with one agent at a time, GitHub and a spec template may be all you need. Pulse pays off once several people and their agents build on the same repository at once.
+Pulse fits teams that want this workflow across their own machines and are willing to maintain specs and plans. For one person working on one item at a time, issues and branches may be enough. For messaging, shared infrastructure leases, or a configurable skill pipeline, other tools may fit better. [Choosing a coordination tool](./concepts/choosing-a-coordination-tool) compares those uses with sources and a review date.
 
 ## The method, one command per step
 
@@ -86,10 +94,10 @@ When one person works with one agent at a time, GitHub and a spec template may b
 <!--@include: ./diagrams/method-steps.svg-->
 </div>
 
-The steps run forward on their own and stop for you only where the diagram says so; they loop back when the work teaches something new. A red gate (tests, review, or audit) gets a fix round; then the tests run again and only the gates that were red. [`pulse go`](./guides/pulse-go), in your own terminal, runs planning, build, and the three gates for every approved item in parallel, each feature on its own branch with one pull request back to the base branch. Each command has a [guide](./guides/pulse); `/pulse` tells you where you stand and what comes next.
+The steps run forward within the authorized task and loop back when the work teaches something new. A red gate gets one fix round, followed by tests. Green review or audit evidence may carry to a new commit only when its Git tree is identical; changed contents require both checks again. [`pulse go`](./guides/pulse-go) processes the queue. Add a free-text objective directly, such as `pulse go finish Epic 4 and investigate the UI problem`, to add that work through the same visible item workflow. Explicit scope restrictions bound the run. A start without a terminal uses a managed process. Regular checked results integrate automatically by default; a person may select manual final approval of the exact head and base. Each command has a [guide](./guides/pulse); `/pulse` tells you where you stand and what comes next.
 
 ## What Pulse keeps out of your way
 
-- **No status in documents.** Specs describe the work. Its state (approved, taken, blocked, done) sits on the shared board, and agents ask `pulse status` instead of reading a backlog file.
+- **No status in documents.** Specs describe the work. Its state (claimed, held, waiting, done) sits on the shared board, and agents ask `pulse status` instead of reading a backlog file.
 - **No rules that only work when someone types a command.** The rules reach every agent session and every subagent automatically.
 - **No bookkeeping by prompt.** Claims, dependencies, the ramp, and the checks are scripts, so no model has to remember them.

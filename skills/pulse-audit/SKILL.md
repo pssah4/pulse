@@ -20,9 +20,9 @@ concrete remediation plan.
 
 ## Two modes
 
-- **Per-item audit** (before a feature's PR is ready): runs on the
+- **Per-item audit** (before a result is ready for integration approval): runs on the
   feature branch against its base; in the chain without a question
-  (below), its verdict and fixes go into the same PR.
+  (below), its verdict and fixes stay with the same result.
 - **Periodic full-codebase audit**: runs on `audit/<YYYY-MM-DD>`,
   produces a standalone report, and registers a fix or improvement item per
   deferred finding. Follow-ups get their own branches via `/pulse-build`.
@@ -75,7 +75,7 @@ commit or without a Coverage line, and none for a pass whose SCA was
 `SCA unavailable`.
 
 The builder fixes blocking findings; then the tests run again and the
-audit looks again. Medium and Low findings go into the PR body as notes.
+audit looks again. Medium and Low findings stay in the result's audit evidence as notes.
 
 ## Ask the scope first (by hand, before any scan)
 
@@ -86,7 +86,7 @@ a matching `--scope`:
 | Scope | What | Use when |
 |-------|------|----------|
 | `full` | whole codebase | first audit, release gate, periodic (recommended default when no prior baseline) |
-| `branch` | branch vs merge-base with `--base` | before a PR / merge (common gate) |
+| `branch` | branch vs merge-base with `--base` | before integration approval (common gate) |
 | `commit` | last commit | quick post-commit check |
 | `working` | uncommitted + untracked | mid-development |
 | `staged` | staged only | pre-commit |
@@ -305,10 +305,11 @@ it like any other fix:
    working as FR-02 (unchanged); `parent:` the affected feature (or
    epic). Run `pulse number --apply`: it names the file
    `FIX-{ee}-{ff}-{nn}-<slug>.md` after its place under that parent.
-2. Commit the fix spec on a docs branch from `refs/remotes/origin/<base>` after
-   `git fetch origin` and push it: `pulse new` takes a spec
-   only once its commit is on origin. Then register it:
-   `pulse new fix "<title>" --parent <affected feature or epic> --spec <the fix spec>`.
+2. Reserve a draft with `pulse new fix "<title>" --draft`, create its
+   `fix/<n>-<slug>` branch from `refs/remotes/origin/<base>` after
+   `git fetch origin`, commit the spec and push.
+   Attach it with `pulse new fix "<title>" --parent <affected feature or epic>
+   --spec <the fix spec> --issue <n>`. Spec, Plan and fix use this branch.
    It writes `issue:` and `parent:` into the spec; the handoff commit
    takes them along.
 3. The report keeps the finding `Confirmed` with the note "Deferred to
@@ -335,7 +336,7 @@ records, stubs without an open item). It must report nothing.
    the fix items, on the branch you audit or a docs branch. Push after
    every commit. The body names unresolved P0/P1 findings and why,
    architectural concerns that need redesign rather than patching (for
-   a future PLAN), and the release verdict: green, yellow, or
+   a future Plan), and the release verdict: green, yellow, or
    red.
 3. Say the verdict. Green means the release can go.
 

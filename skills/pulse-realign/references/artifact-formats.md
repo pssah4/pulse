@@ -285,4 +285,6 @@ for FR-..", that names the FR ids.
 
 Target already satisfied: no spec, one line in the realign report.
 Undecidable: no spec yet; list it in the report with the open question.
-Nothing is approved here.
+Inventory and registration grant no integration approval. Resolve missing
+requirements before planning new work; final approval belongs to the
+checked result at its exact head and base.

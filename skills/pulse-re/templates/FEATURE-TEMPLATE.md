@@ -6,7 +6,7 @@ ba-ref: ../../analysis/BA-{slug}.md
 subtype: user-facing  # user-facing | library
 priority: P2          # P0 | P1 | P2
 effort: M             # XS | S | M | L; split XL into smaller items first
-risk: []              # auth, security, data-migration, public-api, new-dependency: a person approves the PLAN
+risk: []              # auth, security, data-migration, public-api, new-dependency: retain for Plan and result review
 ---
 
 <!-- See skills/pulse-re/SKILL.md for how to fill. Save it under its slug
@@ -14,9 +14,10 @@ risk: []              # auth, security, data-migration, public-api, new-dependen
      features/FEAT-{ee}-{nn}-{slug}.md. Leave issue as it is:
      `pulse new --parent <epic>` sets issue and parent and lists the feature in
      the epic's Items. Until then pulse check (C9) lets a spec without an issue
-     number name its parent. Once the item is approved, pulse check reads this
-     spec from the base branch (rules R1 to R6): no placeholder and no open
-     [CLARIFY] may remain. -->
+     number name its parent. Reserve the draft number first and publish on
+     feat/<n>-<slug>, then attach with --spec <path> --issue <n>. This
+     published spec must pass R1 to R6 before planning, including when it
+     lives on the item branch. No placeholder or unresolved [CLARIFY] remains. -->
 
 # Feature: {Name}
 
@@ -99,5 +100,5 @@ Populated rows only, every target with a number. Omit the section if nothing is 
 - [ ] All user stories implemented and success criteria verified
 - [ ] Every FR has a green test named after its id
 - [ ] Activation Path trigger or symbol exists in code
-- [ ] Item closed by the merged pull request
+- [ ] Checked result approved at exact head and base, integrated and completion recorded
 - [ ] Navigation (SYSTEM-MAP or path-local AGENTS.md) updated if a new entry point landed

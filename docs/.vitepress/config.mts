@@ -18,7 +18,7 @@ const guidesSidebar = [
       { text: '/pulse', link: '/guides/pulse' },
       { text: 'pulse setup', link: '/guides/pulse-setup' },
       { text: '/pulse-realign', link: '/guides/pulse-realign' },
-      { text: 'Upgrading from 0.1.6', link: '/guides/upgrading' },
+      { text: 'Upgrading Pulse', link: '/guides/upgrading' },
     ],
   },
   {
@@ -67,6 +67,7 @@ const conceptsSidebar = [
     items: [
       { text: 'Operating model', link: '/operating-model' },
       { text: 'Parallel work', link: '/concepts/parallel-work' },
+      { text: 'Choosing a coordination tool', link: '/concepts/choosing-a-coordination-tool' },
       { text: 'Where things live', link: '/concepts/where-things-live' },
     ],
   },
@@ -82,13 +83,13 @@ const conceptsSidebar = [
 
 export default defineConfig({
   title: 'Pulse',
-  description: 'Operating model, live collaboration, and the Digital Innovation Agents: from raw idea to shipped code, built in parallel by people and agents.',
+  description: 'Coordinate coding agents across developers and machines, with a shared GitHub board and a workflow from specs to checked integration.',
   base: '/pulse/',
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/pulse/assets/pulse-icon-hell.svg' }],
     ['meta', { name: 'theme-color', content: '#007780' }],
     ['meta', { property: 'og:title', content: 'Pulse' }],
-    ['meta', { property: 'og:description', content: 'Operating model, live collaboration, and a V-Model method for teams of people and coding agents.' }],
+    ['meta', { property: 'og:description', content: 'Coordinate coding agents across developers and machines, with a shared GitHub board and a workflow from specs to checked integration.' }],
     ['meta', { name: 'keywords', content: 'Pulse, V-Model, innovation, business analysis, requirements engineering, parallel agents, GitHub issues, ADR, OWASP, Claude Code, Codex' }],
   ],
 

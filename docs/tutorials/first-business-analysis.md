@@ -258,9 +258,9 @@ project.
 
 ## Step 7: Hand over
 
-`/pulse-ba` lists the files it wrote and the HMW question, commits the BA on its docs branch (`docs(ba): <title>`) with the scope, the HMW, the critical hypotheses, and the open questions in the commit body, and pushes the branch (`git push -u origin docs/<slug>`, here `docs/retrospectives`), as it does after every commit, so your team sees the BA while it is written. Then it asks you to approve the BA, the first stop of the flow: in at most eight lines the problem, who has it, the solution hypothesis and its strongest assumption, the scope, the success signal, and the top risk, and then "Is this BA approved? Or what should change?"
+`/pulse-ba` lists the files and key findings, commits the Project-BA on `docs/<slug>` (here `docs/retrospectives`) with `docs(ba): <title>` and `Refs: #<n>`, and pushes after every commit. The team can read the work throughout discovery. At handoff it summarizes the problem, audience, scope, evidence and top uncertainty.
 
-Name what should change, and it goes into the BA before the question comes again. Approve it, and the BA becomes `validity: Validated`, the skill commits and pushes that, asks you to close the Project-BA's draft on GitHub, and continues with [`/pulse-re`](../guides/pulse-re) in the same session without asking again.
+Correct any unsupported claim through the interview. Once the evidence and required input are complete, the BA becomes `validity: Validated`; the skill records why, commits and pushes it, asks you to close the Project-BA's draft on GitHub, and continues authorized work with [`/pulse-re`](../guides/pulse-re) in the same session. There is no separate routine BA approval. Open questions hold only the work that depends on them.
 
 `/pulse-re` opens the first epic of a new project straight from this Project-BA, without an Item-BA. A later epic starts with an Item-BA of its own: run `/pulse-ba` again and answer "a new epic" (or "a new feature" for a feature the BA of its epic does not cover).
 

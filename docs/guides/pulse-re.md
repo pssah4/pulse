@@ -149,7 +149,7 @@ risk: []
 
 **The tree lives in the repository.** `parent:` links the feature to its epic, and the epic lists its features (with their fixes and improvements) under `## Items`. `pulse new --parent` sets `issue:` and `parent:` in the spec and adds its line to `## Items`; `pulse check` (C9) keeps them in step. A spec written from the template names its parent before it is registered: C9 lets a spec without an issue number do that, so `pulse check` stays clean on the first commit of the specs. The file name carries the tree as well: write each spec under its slug, run `pulse number --apply` before the commit, and every spec starts with its ID (`EPIC-01`, `FEAT-01-02`, `FIX-01-02-01`); C10 reports one that does not.
 
-**Risk flags.** `risk: [auth, security, data-migration, public-api, new-dependency]` marks a feature whose PLAN a person approves before anything is built.
+**Risk flags.** `risk: [auth, security, data-migration, public-api, new-dependency]` records consequential choices. Preserve them in the Plan and final review. They add no routine early approval; a necessary decision outside the authorized task still goes to the person.
 
 **Frontmatter rule.** Status, claim, and dependencies do **not** live
 in the frontmatter; the record carries them. The frontmatter holds
@@ -265,20 +265,20 @@ The label is visible on every Feature card so the architect knows immediately wh
 
 ## Quality gates
 
-Once an item is approved, `pulse check` reads its spec as the base branch has it and applies six rules. They are the mechanical half of "can an agent plan from this". Before that, `pulse check --spec <path> ...` applies them to specs in your working tree (one `--spec` takes several paths, and a repeated `--spec` adds its paths), and `/pulse-re` runs it before its last push (see below):
+Pulse validates the published spec before planning, including a spec on its item branch. The six rules answer the mechanical half of "can an agent plan from this". `pulse check --spec <path> ...` applies them to files in your working tree without reading the board; one `--spec` takes several paths and repeated flags add paths. `/pulse-re` runs this before publication:
 
 | Rule | Checks |
 |---|---|
-| R1 | the spec exists on the base branch and names its item (`issue:`) |
+| R1 | the spec is published and names its item (`issue:`) |
 | R2 | every mandatory section of its type is there and not empty |
 | R3 | no placeholder, no open `[CLARIFY]`, no TODO outside the sections filled at the end |
 | R4 | at least one requirement, each a list line that starts with its id, such as `- FR-01: WHEN ... THE SYSTEM SHALL ...` (the id plain, bold, or in backticks), in EARS form with SHALL |
 | R5 | success criteria without technology terms, every NFR with a number |
 | R6 | priority P0 to P2 and effort XS to L (split XL first) |
 
-`pulse new` applies R2 to R6 to each spec before it registers it and refuses one that breaks a rule, with the findings; the skill fixes them and runs it again. `pulse check --spec <path> ...` applies the same rules to the files as they are, R1 only for an epic, and asks no board, so a spec that passes is one `pulse go` merges once it is approved.
+`pulse new` applies R2 to R6 before attaching a work item's spec and reports findings that must be fixed first. `pulse check --spec <path> ...` applies the same content rules locally; an epic needs R1 only. A valid published work-item spec is ready for planning without a separate spec merge.
 
-The judgment half stays with the interview and the approval: every prioritized need has a story, emotional and social layers were probed, success criteria measure an outcome for the user.
+The judgment half stays with the interview and review: every prioritized need has a story, emotional and social layers were probed, success criteria measure an outcome for the user.
 
 See [Verification Gates](../concepts/verification-gates) for the full gate mechanic.
 
@@ -288,9 +288,13 @@ The final artifact is `architect-handoff.md`, a single document that planning wi
 
 Every item is on the board from the moment the skill names it, as a draft (`pulse new feat "<title>" --draft`), so the team sees a spec in progress and who writes it; an issue you name becomes the draft instead (`--issue <n>`). Before it writes, the skill checks the open drafts and items for overlap and asks you when one covers the same goal.
 
-The skill validates (forbidden-terms grep, NFRs with numbers, ASRs classified, an Activation Path per feature), runs `pulse number --apply` so every spec starts with its ID, commits the specs on the docs branch (`docs(re): <epic>`), named as `spec_branch` in `.pulse/config.toml` says (default `docs/{n}-{slug}`). Then it attaches each spec to its draft with `pulse new`, which pushes the docs branch and opens its docs PR, epic first: `pulse new epic "<title>" --spec <path> --issue <n>`, then `pulse new feat "<title>" --parent <epic> --spec <path> --issue <n>` per feature, with `--blocked-by` where one needs another. `pulse new` refuses a spec that breaks one of R2 to R6; the first call opens the docs PR into the base branch, and the next ones use it, so one PR carries the specs of the run. The record links the spec and the docs PR and carries the label `P0`, `P1`, or `P2` from the spec's `priority:`. `pulse new` writes each item number into its spec as `issue:`, links the spec to its parent (`parent:`), and lists it in the epic's Items. The skill commits these lines, pushes again, and puts each spec up for approval. Spec approval for planning is automatic by default in the runner; implementation waits for the completed PLAN. With an explicit manual spec setting, a person runs `pulse approve <n>`, or approve spec on the map, so [`pulse go`](./pulse-go) can pick it up. The approval writes the approval and nothing else. Agents plan from the spec as the base branch has it, so `pulse go` merges the docs PR into the base branch first, once every spec in it passes R1 to R6, it changes nothing outside `_devprocess/`, and its checks pass; nobody merges it on GitHub. `pulse approve` refuses while the spec is neither on the base branch nor in an open pull request (R1), and for a feature, improvement, or fix while the spec on the base branch breaks one of R2 to R6; an epic needs R1 only. The skill tells you which specs wait and how you approve them. When you approve a spec, in your own terminal or on the map, the skill plans it in the same session without asking, for a feature, improvement, or fix; an epic gets no PLAN. Planning claims each item, and one it cannot claim (an open blocker, another holder) stays for `pulse go`, whose planning does not wait for blockers. [Planning](./pulse-plan) is a step of `/pulse-re` too, and the build follows once you approved the pushed PLAN, in the session or through `pulse go` when several are ready. An item approved later, by hand or on the map, is planned by `pulse go` or `/pulse-build <n>`.
+Reserve each draft first to obtain its number, then create its `<type>/<n>-<slug>` branch from the fetched base. The skill validates the spec, runs `pulse number --apply`, commits it with `docs(re): <title>` and `Refs: #<n>`, and pushes. It attaches each published spec to its existing draft, parents first: `pulse new epic "<title>" --spec <path> --issue <n>`, then `pulse new feat "<title>" --parent <epic> --spec <path> --issue <n>`. `--blocked-by` records prerequisites. Commit and push the metadata that registration writes, on that same branch.
 
-Your agent asks before these steps unless its permission settings allow them: Claude Code in its default mode, in the terminal and the VS Code extension alike, before every shell command outside a small read-only set such as `git status`, so before `pulse status`, `pulse check`, `git add`, the commits, the pushes, and `pulse new` ([the rules that stop these prompts](../tutorials/installation#fewer-prompts-in-claude-code)), and Codex, whose sandbox keeps `.git` read-only and has no network (with the Codex rules of `pulse setup --codex-rules`, it runs `pulse new` without asking). Allow them when asked. Neither runs the personal `pulse approve` command; the runner applies the configured delegation and merges the spec: the session names the command for your own terminal, and the Pulse guard and the Codex rules refuse it to the agent.
+Published specs pass R1-R6 and continue into planning. For each ready feature, improvement or fix, the skill plans it in the same session without asking; an epic gets no implementation Plan. Planning claims the item and can proceed while prerequisites wait; building waits for their integration. After `pulse check --plan <path>` passes and the Plan is published, continue with `/pulse-build <n>` or an explicitly requested `pulse go` for the ready backlog. Spec, Plan and implementation stay together on the item branch. No PR or early person approval is needed.
+
+The harness's permissions still apply to these operations. Claude Code may ask before `pulse status`, `pulse check`, `git add`, commits, pushes and `pulse new`; see [Fewer prompts in Claude Code](../tutorials/installation#fewer-prompts-in-claude-code). Codex's sandbox may require permission for shared Git writes or network access. Keep session markers and real hooks intact.
+
+Final integration approval is automatic by default. A person with repository write access may choose manual approval. The session names `pulse approve <n>` for your own terminal or the result action in the Map; it never operates that lever itself. The automatic policy uses the same head, base and evidence checks. That policy does not authorize destructive removal.
 
 ## Read the skill file
 

@@ -49,11 +49,11 @@ With the plugin, in the CLI and the IDE extension alike: `codex plugin list` sho
 
 This is GitHub's request budget, not the agent's token allowance. Pulse pauses requests until GitHub's reset or Retry-After deadline, and uses bounded backoff when no deadline is available. The map names the limit and marks its cached board as stale. Its counts may no longer match GitHub. It clears the warning after a successful fresh read; restarting the map does not bypass the shared cooldown.
 
-Do not rotate credentials or remove the cooldown to force retries. Keep only the maps and runners you need open. Requests from other tools can consume the same account's budget. A stale board never authorizes a write; wait for a fresh read before approving work.
+Do not rotate credentials or remove the cooldown to force retries. Keep only the maps and runners you need open. Requests from other tools can consume the same account's budget. A cached revision can support a local queued intent, but only shared confirmation grants authority. A stale revision conflicts; refresh the item before confirming a new intent.
 
 ### A deferred item does not resume automatically
 
-That is intentional. In your own terminal, `pulse resume <n>` resumes work explicitly. Defer preserves its approvals and PRs; normal content and commit checks still apply. A stop request with an unreachable holder remains pending. If uncommitted work needs its original worktree, use that clone for the handover instead of deleting the worktree or taking its claim blindly.
+That is intentional. In your own terminal, `pulse resume <n>` resumes work explicitly. Defer preserves its branch, worktree, notes and evidence; normal content and commit checks still apply. A stop request with an unreachable holder remains pending. If uncommitted work needs its original worktree, use that clone for the handover instead of deleting the worktree or taking its claim blindly.
 
 ### `pulse` says "not inside a git repository" or names several remotes
 
@@ -69,13 +69,18 @@ Pulse needs `gh` 2.94 or newer for parent links and "blocked by" links. Update i
 
 ### `pulse new` refuses: push the spec first
 
-A record links a spec that every clone must be able to read and an agent can plan from, so `pulse new --spec` checks the file as committed before it writes anything. A spec that breaks one of R2 to R6 is refused with its findings (exit 1), as `pulse check --spec` names them; only its `issue:` line is left out, since `pulse new` writes it. On a docs branch (a branch other than the base that changes nothing outside `_devprocess/` and is no item's build branch `<type>/<n>-<slug>`), `pulse new` pushes the branch and opens its docs PR into the base branch, or uses the open one; when origin refuses the push, it stops with `git push said: ...` (exit 2). On the base branch or a build branch it pushes nothing and stops while the committed spec is not on origin (exit 2):
+A spec must be committed and published so other clones can plan it.
+`pulse new --spec` validates its structure and reports R2-R6 findings;
+fix them before attaching it. Reserve a draft first to obtain the number,
+create `<type>/<n>-<slug>`, commit and push its spec, then attach it with
+`pulse new <type> "<title>" --spec <path> --issue <n>`. Commit and push
+its metadata changes on the same branch. No docs PR is created.
 
-```text
-pulse new: _devprocess/requirements/features/FEAT-01-02-login.md is not on origin as committed here; commit it, then: git push -u origin docs/12-login
-```
-
-Commit the spec, run the push the message names, and run the same `pulse new` again. A spec you changed after the push needs another commit and push. `write the spec first, <path> does not exist in the repository` means the path is wrong or the spec is not written yet. For work whose spec does not exist yet, register a draft instead: `pulse new <type> "<title>" --draft`. `could not add label: 'P1' not found` means the project set up its labels before the priority labels existed: run `pulse setup --labels` once, then the same `pulse new` again. With `--issue`, `pulse new` wrote nothing to the record yet, so the rerun goes through.
+If the spec changed after publication, commit and push again. A missing
+path means the spec is absent or the path is wrong. A missing or unpublished
+spec exits with exit 2; correct the path or publish it, then retry. A missing priority
+label needs `pulse setup --labels` in the person's terminal. Reuse the
+existing draft number rather than creating another item.
 
 ### `pulse new`, `pulse number`, or `pulse claim` says `git fetch said`
 
@@ -89,7 +94,7 @@ pulse number: git fetch said: error: cannot lock ref 'refs/remotes/origin/docs/l
 - `pulse number --apply` needs the history of every branch on origin. A branch whose ref git could not update, or wrote on another commit, counts through the commit origin names; when that commit or its history did not arrive (a fetch cut short), the refusal names the branch. Of two specs with the same ID, the one on the base branch as origin has it keeps the ID.
 - `pulse claim` names no start point while the ref it lists for the base branch or a branch of the item is not as origin has it (`start point not checked: ...`); otherwise it names the start point.
 
-When they go on, the line goes to stderr. `pulse status`, also for one item, and `pulse approve` print the same `git fetch said: ...` until a fetch goes through. A timeout says `no answer within 60 s`; Pulse ends Git and its transport processes, keeps that cause, and skips the second remote query. `offline: origin did not answer` means no more specific cause was available. Two common causes:
+When they go on, the line goes to stderr. `pulse status`, also for one item, prints the same `git fetch said: ...` until a fetch goes through. A timeout says `no answer within 60 s`; Pulse ends Git and its transport processes, keeps that cause, and skips the second remote query. `offline: origin did not answer` means no more specific cause was available. Two common causes:
 
 - A lock file that a git process left when it stopped (`File exists`): when no other git runs in the clone, delete the `.lock` file the message names.
 - Two branches whose names differ only in case (on origin, or a local branch beside one on origin), on a file system that ignores case (macOS, Windows, where git sets `core.ignorecase`): the clone keeps one ref file for both, loose or in `packed-refs`, and a fetch may even exit without an error. Pulse then says `branch names that differ only in case share one ref file here:` and the names. `pulse new` registers nothing, `pulse claim` names no start point, `pulse number` counts through the commits origin names, `pulse go` starts nothing from the base or the item's branch, and the hint of `pulse claim` and `pulse release` on where another holder's work is says `where the work is stays unnamed`. With `core.ignorecase` set and origin not answering, `pulse go` starts nothing either. Delete or rename one of the two branches on origin, or move the clone to the reftable format with `git refs migrate --ref-format=reftable` (git 2.46 or newer).
@@ -98,33 +103,68 @@ When they go on, the line goes to stderr. `pulse status`, also for one item, and
 
 Pulse's Git network calls also disable terminal, SSH Askpass and Git Credential Manager prompts, including during checks of preserved work and feature removal. Existing credentials and SSH configuration still apply. If authentication needs your attention, run `git fetch origin` in your own terminal, resolve the reported login or host-key issue there, then retry Pulse. A transport that does not respond stops after 60 seconds.
 
-### `pulse approve` refuses: the spec is neither on the base branch nor in a pull request
+### `pulse approve` says to open or refresh the Map
 
-```text
-#12 not approved: R1 spec not on origin/main and in no open pull request; /pulse-re pushes it
-```
+The CLI has no cached shared revision for that item. Open or refresh
+`pulse map`, inspect its result, and confirm approval there or retry the
+command in your terminal. Acceptance saves a local action; it is not a
+synchronous whole-board read or an integration decision by itself.
 
-Agents plan from the spec as the base branch on origin has it (rule R1). `pulse approve` writes the approval and nothing else; [`pulse go`](../guides/pulse-go) merges the spec into the base branch first, through the docs PR that `pulse new` opened. Here the base branch lacks the spec and no open pull request carries it: push the spec on its docs branch, or let `/pulse-re` do it (its `pulse new` opens the docs PR), then approve again. `R1 issue: ... in the spec, item is #12` means the spec names another item or none: commit the `issue:` line that `pulse new` wrote into the spec and push. For a feature, improvement, or fix, `pulse approve` also refuses a spec on the base branch that breaks one of R2 to R6; an epic needs R1 only.
+### A result cannot be approved
 
-### `pulse go` does not merge a docs PR
+Final approval requires a published, verified result whose head and base
+are still current. A hold, failed gate, changed branch or moved base
+keeps it unavailable. Read the item findings and current runner report.
+Resolve the named finding or revalidate the result before approving its
+new exact head/base pair. A valid spec or Plan alone is not a final result.
 
-The run's report names why, and the ramp keeps `spec in PR #m: pulse go merges it` meanwhile:
+### An action stays queued, syncing, conflict or error
 
-- A spec in the pull request breaks one of R1 to R6: fix it with `/pulse-re` on the docs branch and push.
-- The merge would change a file outside `_devprocess/`, or add a link or a submodule there. A spec committed on a build branch reaches the base branch with that branch's pull request. Pulse judges the merge as git makes it, so a moved file or a history that merges back and forth counts with every path the merge writes.
-- It waits for its checks: `pulse go` set the status `pulse/tests` ("docs only: R1-R6") at the head it checked and merges once the whole rollup of that head passed, in a later run.
-- It does not merge cleanly (`PR #8 does not merge cleanly into main here ...`), most often because a second feature of the same epic merged first: each `pulse new` adds its line at the end of the epic's `## Items`. The way on: merge `refs/remotes/origin/<base>` into the docs branch (`git fetch origin`, then `git merge refs/remotes/origin/main` on the docs branch), keep both lines where they conflict, commit, and push the branch; the next run merges it.
-- The approval came from an account that may not push to the repository: someone who may approves the item again.
+The request was saved locally before network work. Its synchronization
+worker can continue after the Map closes. Check the displayed reason:
+network errors retain the request for retry, while a changed shared
+revision produces a conflict. Refresh before proposing a new intent;
+Pulse never silently binds an old approval to newer code. Only confirmed
+approval authorizes integration. Defer and revoke already block locally
+while their shared updates are pending.
 
-`pulse go` merges only the head it checked. When GitHub only queues the merge, the spec reaches the base branch later, and a later run plans the item.
+### A published spec or Plan is not ready
+
+Check its R1-R6 or P1-P6 findings and the named publication branch.
+Specs, Plans and implementation use the same item branch. Fix and publish
+the document; no separate spec merge or early approval is needed.
+If several eligible branches make the source ambiguous, resolve that
+ambiguity before planning rather than choosing one arbitrarily.
+
+### The item branch conflicts with the current base
+
+Fetch origin, then merge `refs/remotes/origin/<base>` into the item's
+branch with the project's normal hooks enabled. If both branches added
+items to the same epic, keep both entries and their links. Resolve the
+conflict, run the affected checks, commit and push the item branch.
+The changed head or base needs revalidation before final approval;
+never force the base update or delete another item's work.
+
+### Plan-only commits fail project validation
+
+Run `pulse setup --check-plan` and read the base SHA, step, result and log.
+The isolated probe uses a valid Plan naming future files with the real
+project commit gates enabled. Missing setup, incompatible checks or a
+timeout leave concrete findings. Correct the tracked rule and recheck;
+never create placeholder code or disable hooks to obtain a passing probe.
 
 ### The map does not start `pulse go`
 
-It never does. Start `pulse go` in your own terminal or explicitly ask the Pulse skill to start it in a foreground TTY. Ctrl-C stops a terminal run; ask the skill to stop its run ([pulse go](../guides/pulse-go#start-a-run)).
+It never does. Start `pulse go` in your terminal or explicitly ask the Pulse skill to execute it. Without a TTY Pulse starts or reuses its managed process, confirms its report and returns the log path. Ctrl-C stops a foreground run; `pulse go --stop` requests a controlled stop of the current run ([pulse go](../guides/pulse-go#start-a-run)).
 
 ### The map shows "no agent active" although an agent works
 
-The map shows claims, not sessions: no hook records what a session does. An item a session holds shows up under its holder with how long it is held (`held 2 h`); an item a `pulse go` run holds, with the phase and the age of the run's last sign of life. An agent that `pulse go` started counts as working while its phase runs.
+The Map reads runner phases and supported local hook activity separately
+from claims. A claim alone proves ownership, not that an agent is active.
+Check hook trust and `PULSE_PRESENCE`; without trusted activity hooks,
+interactive work may be unknown while runner phases remain visible.
+Preparation appears as **Pulse runner** before any coding agent starts.
+See [activity](../guides/pulse-map#who-is-doing-what).
 
 ### `pulse map` prints one frame and ends
 
@@ -136,17 +176,15 @@ Check `.pulse/config.toml`: `mode = "off"` silences every hook. In Claude Code, 
 
 ### `pulse check` reports findings
 
-Each finding names the file, the line, and the rule (C1 to C10, or R1 to R6 for an approved item's spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
+Each finding names the file, the line, and the rule (C1 to C10, or R1 to R6 for a published spec, see [Commands](./commands#pulse-check)). Fix the document, or for a cap, add a `## Reasoned exception` section (the heading in any case). An epic's `## Items` list, which `pulse new` writes, does not count toward its cap.
 
 A C10 finding names a spec whose file name lacks the ID of its place in the tree: it has none yet, it moved to another parent, or another branch took the same ID. `pulse number --apply` renames it, rewrites the paths to it, and moves its record along; commit the result. An open record keeps its old path until the rename is on the base branch: after the merge, run `pulse number --apply` once more.
 
-An R finding is about the spec as the base branch on origin has it. A fix on your branch clears it only once it is merged. The way out:
-
-1. Take the approval back, so no session or `pulse go` run claims the item meanwhile: remove the `pulse:approved` label in GitHub. When nothing would claim it, the approval can stay: skip this step and step 3.
-2. Fix the spec on a branch, with [`/pulse-re`](../guides/pulse-re) or by hand, push it, and merge it into the base branch.
-3. `pulse approve <n>` again. It reads the base branch on origin and refuses while the spec there still breaks one of R1 to R6.
-
-`pulse check` reads origin as of your last fetch: after the merge, pull the base branch, and the finding is gone.
+An R finding names the selected published spec. Fix and publish it on
+the item's branch, then refresh and recheck. Use `pulse defer <n>` when
+you need a deliberate pause while resolving a requirement; only a
+confirmed resume removes that pause. Old approval labels do not control
+readiness or authorize final integration.
 
 ### `pulse claim` says an item is held
 
@@ -156,14 +194,22 @@ Every claim leaves a mark on the item's record that names the session holding it
 #12 is held by alice since 2026-09-24 09:12 UTC; to hand it over: pulse release --take 12
 ```
 
-- **Another person holds it:** agree with them first. `pulse release --take <n>` then hands the item over: their assignee and claim marks go, and a comment on the record names who did it. Claim it as usual afterwards. An agent runs this only after you said yes. For a draft, the refusal and the hand-over name its docs branch on origin as where the work is (`; the work is on origin/docs/12-mode`), and the claim starts from it.
-- **Another session of yours holds it and has ended:** `pulse claim --take <n>` takes it over.
+- **Another person or session holds it:** inspect its work and request
+  `pulse release --take <n>` in your own terminal. Repository write
+  permission can authorize this across accounts. The handoff waits for
+  the writer to stop and preserve work before ownership changes. An
+  agent cannot perform this person-only action or bypass it with keys.
+- **An ended session of your own:** use the person-only recovery path
+  `pulse claim --take <n>` and follow its preserved-work checks.
+
+Continue only after shared confirmation, from the published branch or
+recorded original worktree. Never discard unpublished work to clear a claim.
 
 `release` refuses a claim that is not yours in the same way.
 
 ### The map says `spec in progress by <login>`
 
-The item is a draft: a `/pulse-ba`, `/pulse-re`, or `/pulse-realign` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. A draft that a session of your own held before it ended: `pulse claim --take <n>` in the new session.
+The item is a draft: a `/pulse-ba`, `/pulse-re`, or `/pulse-realign` session of that person registered it with `pulse new ... --draft` and holds it while it writes. A draft has no spec on the board yet, cannot be approved, and no agent builds it. Talk to that person before you write about the same topic. The draft ends when its spec is pushed and attached with `pulse new <type> "<title>" --spec <path> --issue <n>`. For a draft held by an ended session, use the person-only handoff or recovery path in your own terminal.
 
 ### `pulse new --draft` says `is the draft ... already`
 
@@ -173,7 +219,11 @@ An open draft of the same type carries the same title, for example a realign (`R
 
 A teammate's `pulse go` run holds the item and has not reported for 30 minutes or more. `pulse go` reports each phase it starts and every 10 minutes while one runs, so silence means the run was stopped, or its machine is off the network. `pulse status <n>` prints `claimed_phase` and `claimed_beat`, the time of the last report in UTC. A session's claim never says this: nothing renews its time, so the map shows how long it is held (`held 2 h`), which says nothing about whether the session still works.
 
-Ask the holder. Once they agree, `pulse release --take <n>` hands the item over; claim it, then continue on the item branch they pushed (`pulse go` starts from it on its own, `/pulse-build <n>` continues on it). What they did not push stays on their machine. A session of theirs that still runs learns of the hand-over from its next `pulse claim` or `pulse release`, which names who has the item now: it stops the work on the item and pushes nothing more of it. Its stop hook asks for no push of the item, since it reads who holds the item from the board at every stop, and a new session on the item's branch hears who holds it. Its `pulse release <n>` answers that the item was handed over and there is nothing to give back.
+Inspect the holder and preserved work, then request a handoff with
+`pulse release --take <n>` in your own terminal. Pulse requires the
+writer's stop and recorded work before releasing the claim. Until it is
+confirmed, do not begin a second writer. Continue its published branch
+or its original retained worktree; unpushed changes remain in that clone.
 
 ### The ramp says `last run: ...`
 
@@ -181,7 +231,7 @@ A `pulse go` run gave the item back and left a note on it: why it stopped (a fai
 
 ### A command says "only a person does this"
 
-`approve`, `auto` with `on` or `off`, `claim --take`, and `release --take` refuse to run in an agent session, which carries `PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, or `CODEX_THREAD_ID`, and when stdin is not a terminal. These decisions belong to a person: run the command in your own terminal. An explicit `pulse go` request can run through the interactive Pulse skill with a persistent TTY; nested runners and starts without a TTY are refused. So do `setup --remove` and `setup --mode off`, which would switch the guard off. `CLAUDECODE` alone does not count, since IDE extensions set it in their terminals too. Such an agent also claims and gives back only the item it was started for (`PULSE_ITEM`); `pulse claim` or `pulse release` of another item ends with "claims and releases only its own item".
+`approve`, `revoke`, lifecycle actions, `claim --take`, and `release --take` refuse to run in an agent session, which carries `PULSE_HOLDER`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, or `CODEX_THREAD_ID`, and when stdin is not a terminal. These decisions belong to a person: run the command in your own terminal. An explicit `pulse go` request can run through the interactive Pulse skill; without a TTY Pulse owns its managed process. Nested runner agents remain refused. So do `setup --remove` and `setup --mode off`, which would switch the guard off. `CLAUDECODE` alone does not count, since IDE extensions set it in their terminals too. Such an agent also claims and gives back only the item it was started for (`PULSE_ITEM`); `pulse claim` or `pulse release` of another item ends with "claims and releases only its own item".
 
 ### An agent's command is denied: "Gate levers belong to a person"
 
@@ -189,7 +239,7 @@ The [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) denied a 
 
 ### The map names another account
 
-Pulse acts as the account `gh` uses in that terminal: `gh auth status` shows it, and a `GH_TOKEN` in the environment wins over the login. Switch with `gh auth switch`, or unset `GH_TOKEN`; the map shows the new account at once, since Pulse keeps the login per gh config and token. A map that another program started, such as a Herdr pane or a VS Code task, has that program's environment. Every approval names its account in a comment on the item, such as `gate 1 approved by Sebastian Hanke (@pssah4)`.
+Pulse acts as the account `gh` uses in that terminal: `gh auth status` shows it, and a `GH_TOKEN` in the environment wins over the login. Switch with `gh auth switch`, or unset `GH_TOKEN`; the map shows the new account at once, since Pulse keeps the login per gh config and token. A map that another program started, such as a Herdr pane or a VS Code task, has that program's environment. The final approval proof binds its operation, result and base to the actual comment author. Pulse verifies that account's repository write permission when synchronizing and integrating.
 
 ### `Codex hooks not trusted: run /hooks in Codex`
 
@@ -197,11 +247,11 @@ The agents of this project include Codex (`agent` in `.pulse/config.toml`), and 
 
 ### `pulse go` skips an item: `on hold (pulse:hold)`
 
-A person set the label `pulse:hold` on the item in GitHub. `pulse go` neither plans nor builds it. Remove the label, and the next run goes on with it.
+A shared or pending local hold pauses the item. Inspect its reason; deferred work needs `pulse resume <n>` in your terminal or the Map and shared confirmation. Removing a legacy label alone does not clear canonical state.
 
-### `pulse go` starts nothing: `base red: <check>`
+### CI is pending or red
 
-The current project CI failed that check. Read the cause, next action and run link in the map or `.git/pulse/go/report.json`, then repair the failing project check. An item marked `pulse:base` may repair the base through its normal approvals. Startup reads current CI and matching existing evidence; it no longer runs local `setup` or the full `verify` before planning. Proven GitHub Dependabot update searches are excluded, but a project check with the same name still counts. A newer CI result at the same commit takes precedence over an older Pulse result. Without project CI or matching successful evidence, Pulse starts without inventing a green status; full verification applies to the implemented result.
+CI status does not hold Pulse planning, building or integration. The runner needs a fetched base and valid configuration; it verifies the completed result itself before integration. Agents run targeted checks, and the supervisor owns the full `verify` of that result. Read the current report for the actual blocker, such as a failed fetch, missing configuration, a hold or failing result gates. An old `base red: <check>` report describes a previous runner version, not current start authority.
 
 ### `pulse go` pauses: `hook rejected: <hook> at #n`
 
@@ -217,11 +267,15 @@ A spec test of the item's first wave matches a pattern of `[spec_tests]` with `l
 
 ### `pulse go` skips an item: `failed (pulse:failed)`
 
-A run of `pulse go` gave up on the item: it set the label `pulse:failed` and left a comment `pulse go: failed at <base>: <reason>`. No run plans or builds it again on its own. Read the reason and the log `.git/pulse/go/<n>.log`, fix what it names, then run `pulse approve <n>` in your own terminal: it takes the label off, and the next run tries again.
+Read the preserved finding and `.git/pulse/go/<n>.log`, repair what it
+names test-first and publish the item branch. Use `pulse resume <n>` in your own terminal, or resume in the Map, to
+request a retry through the local outbox. Wait for shared confirmation;
+the next run reuses preserved work and applies the normal checks. Final
+approval does not clear a failure or authorize unverified integration.
 
 ### An item was approved by mistake
 
-Remove the `pulse:approved` label in GitHub: the map writes approvals only. Until someone approves it again, no session and no `pulse go` run claims it.
+Use `pulse revoke <n>` in your terminal or revoke in the Map. It blocks locally immediately and synchronizes the withdrawal. Read its status until confirmed; an old approval comment remains historical evidence and cannot override the withdrawal.
 
 ### An agent of `pulse go` is refused a command
 
@@ -245,8 +299,8 @@ configuration only after checking that the commits belong to your work.
 
 - **The guard reads commands, not files.** It checks shell, Monitor, and MCP calls. An agent that writes `.pulse/config.toml` or `.claude/settings.json` with its own file tools, or runs a script file, passes it ([Levers belong to a person](../concepts/parallel-work#levers-belong-to-a-person)). While a map runs, it refuses more tmux commands than it needs to.
 - **The guard reads quoted text too.** A commit message or a search that contains a lever, such as `pulse auto build on`, is denied.
-- **Auto mode.** Two first `pulse auto ... on` at the same moment make two issues "Pulse auto mode", and every switch is off until you close one. A switch comment you delete brings back the one before it; one you edit turns that gate off for its login.
-- **Spec tests.** A runner that waits for the lock of another item's spec tests spends that time from `agent_timeout`. The PLAN rule P6 looks only at files whose names read as tests.
+- **Approval policy.** Final approval is automatic by default; a person may choose manual approval for regular integration. The same result, base and evidence checks apply, and destructive removal stays explicit. Historical auto comments and labels grant no authority.
+- **Spec tests.** A runner that waits for the lock of another item's spec tests spends that time from `agent_timeout`. The Plan rule P6 looks only at files whose names read as tests.
 - **Herdr.** The pane beside the chat and the notifications are tested against a stand-in for Herdr; tell us when yours behaves differently.
 
 ## Versions

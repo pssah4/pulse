@@ -1,5 +1,5 @@
 <svg class="pd" viewBox="0 0 1000 250" role="img" aria-labelledby="wl-title">
-  <title id="wl-title">Business analysis, epics, features, and plans are Markdown files in your repository. GitHub keeps the board, one record per item with its type, whether it is ready, who has it, what it waits for, and whether it is done. pulse new registers a new item on the board. People and agents claim and finish items with pulse claim and pulse done, read the board with pulse status from a local cache, and read the spec in the repository to build.</title>
+  <title id="wl-title">Business analyses, specs and Plans are Markdown files on item branches. GitHub holds the item catalog and relationships; a shared Git branch holds claims, holds, results and integration state. pulse new registers work, pulse claim reserves it, and pulse go verifies and integrates results before closing items. pulse status reads a local view. Personal actions enter a durable local outbox; only confirmed synchronization grants team authority.</title>
   <defs>
     <marker id="wl-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="pd-head" d="M0 0L10 5L0 10z"/></marker>
   </defs>
@@ -24,13 +24,13 @@
   <text x="345" y="145" text-anchor="middle">build</text>
   <path class="pd-edge" d="M590 140H716" marker-end="url(#wl-head)"/>
   <text class="pd-mono" x="655" y="114" text-anchor="middle">pulse claim,</text>
-  <text class="pd-mono" x="655" y="129" text-anchor="middle">pulse done</text>
+  <text class="pd-mono" x="655" y="129" text-anchor="middle">pulse go</text>
   <path class="pd-edge" d="M720 172H594" marker-end="url(#wl-head)"/>
   <text class="pd-mono" x="655" y="192" text-anchor="middle">pulse status</text>
   <text x="655" y="207" text-anchor="middle">from a local cache</text>
   <rect class="pd-card" x="720" y="70" width="260" height="164" rx="14"/>
-  <text class="pd-h" x="744" y="104">GitHub, the sync database</text>
-  <text x="744" y="126">The board, one record per item</text>
+  <text class="pd-h" x="744" y="104">Shared Pulse board</text>
+  <text x="744" y="126">GitHub catalog + Git state</text>
   <rect class="pd-chip" x="744" y="146" width="46" height="26" rx="13"/>
   <text x="767" y="163" text-anchor="middle">type</text>
   <rect class="pd-chip" x="798" y="146" width="53" height="26" rx="13"/>

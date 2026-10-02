@@ -1,29 +1,39 @@
 ---
-title: Upgrading from 0.1.6
-description: What Pulse 0.2.0 removes, what to do once per project, and what behaves differently.
+title: Upgrading Pulse
+description: Move an older Pulse project to the current published-result workflow and final integration approval.
 ---
 
-# Upgrading from 0.1.6
+# Upgrading Pulse
 
-Pulse 0.2.0 has fewer commands, three gates a person opens, and `pulse go` doing the rest. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
+The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
-## What breaks
+## From 0.2.6 to 0.3.0
+
+Update every participating clone's Claude Code and Codex plugin, refresh Codex rules with `pulse setup --codex-rules`, and start new agent sessions. Codex asks for its normal review of changed hooks. Keep existing item branches and worktrees; Pulse resumes retained work rather than replacing it.
+
+This release removes the PR dependency and early spec and Plan approvals. Regular checked results integrate automatically by default. For a project that needs manual final approval, a person with repository write access selects `pulse auto merge off` before starting the runner. Old approval labels, auto switches and PR checks confer no current integration authority.
+
+Run `pulse setup --check-plan` once per existing project to check the actual commit gates with a valid Plan. Resolve any compatibility or legacy-state finding shown by Pulse. Keep real Git hooks enabled. A repository rule that requires PRs on the target branch must be reconciled with the PR-free integration policy by its administrator; Pulse cannot bypass it.
+
+The Map shows local actions as queued, syncing, confirmed, conflict or error. `pulse go` processes the queue; free text adds an objective, and explicit `only` / `nur` or `--epic` / `--item` selectors restrict its scope. Press `?` in the Map for the workflow and command guide.
+
+## From 0.1.6 and older: command changes
 
 | Gone | Use instead |
 |---|---|
 | `pulse done <n>` | `pulse go` closes what it merged; close a dropped item or a draft on GitHub |
-| `pulse approve-plan <n>`, the label `pulse:plan-ok`, the map's `p` | `pulse approve <n>`, or `a` in the map, at gate 2 |
+| `pulse approve-plan <n>`, the label `pulse:plan-ok`, the map's `p` | a valid published Plan proceeds to the authorized build; `pulse approve <n>` now approves only a final result and base |
 | the commands review and audit of `pulse`, and the review skill | `pulse go` and `/pulse-build` run review and audit themselves; `/pulse-audit` by hand for a chosen scope |
 | `pulse show <n>` | `pulse status <n>` |
-| `pulse rank`, the `Rank:` line, the map's `m` | the priority labels `P0` to `P2` order the ramp |
+| `pulse rank`, the `Rank:` line | priority and dependencies order the ramp; the Map's `m` previews a shared manual order |
 | `pulse block` | `pulse new --blocked-by`, or the link in GitHub |
 | `pulse beat` | nothing: `pulse go` writes its own signs of life |
 | `pulse arch` and the architecture map | the system map stays for navigation |
-| `pulse go --detach`, `--agent`, `--cap`, `--json`, `--dry-run` | `pulse go` in the foreground of your terminal; `cap` and `agent` in `.pulse/config.toml`; `pulse status` shows what the next run takes |
-| starting `pulse go` from the map (`g`, the autostart) | `pulse go` in your own terminal |
+| `pulse go --detach`, `--agent`, `--cap`, `--json`, `--dry-run` | `pulse go` in a terminal or as an explicitly requested managed start without a TTY; `cap` and `agent` in `.pulse/config.toml`; `pulse status` shows what the next run takes |
+| starting `pulse go` from the map (`g`, the autostart) | explicitly request `pulse go` in your terminal or through the Pulse skill |
 | `pulse map --once`, `--demo`, `--color`, `--no-color` | `pulse status` prints one frame |
-| `claim --files`, `release --note`, `release --drop-unpushed`, `approve --undo`, `approve --claim` | push first; remove the `pulse:approved` label on GitHub to take an approval back |
-| `pulse setup --parallel`, `--plan-approval`, `--git-hook` | `cap` alone; every PLAN waits for a person; `pulse check` inside `verify` |
+| `claim --files`, `release --note`, `release --drop-unpushed`, `approve --undo`, `approve --claim` | publish before ordinary release; use `pulse revoke <n>` to withdraw final approval |
+| `pulse setup --parallel`, `--plan-approval`, `--git-hook` | `cap` for parallelism, `pulse check --plan` for structural validation and final approval after result verification |
 | the skills for `pulse go`, the map, and setup | `/pulse` explains setup, `pulse go`, and the map; the commands `pulse setup`, `pulse go`, and `pulse map` stay |
 | the adapters for Cursor, OpenCode, and Gemini | Claude Code or Codex |
 
@@ -37,16 +47,20 @@ Pulse 0.2.0 has fewer commands, three gates a person opens, and `pulse go` doing
 6. **Codex.** Update Pulse in Codex, trust the hooks again with `/hooks` in the CLI (or **Trust** on the Hooks page of the IDE extension), and run `pulse setup --codex-rules` again. A Codex template of your own in `[agents]` must name `--sandbox workspace-write` and no profile, or `pulse go` stops before its first claim.
 7. **Agents for localhost tests.** `pulse go` runs Codex without network. An item whose spec tests match a `[spec_tests]` pattern with `localhost = true` needs Claude: name it in `agent` (`claude:2,codex:2`, say), or the item waits with `needs a Claude agent (localhost spec tests)`.
 
+8. **Plan compatibility.** Run `pulse setup --check-plan` before the planning handoff. Resolve findings in the tracked project validation without disabling real hooks.
+9. **Legacy state.** Old approval labels, Plan comments, auto settings and PR state grant no final integration authority. Read and resolve any migration finding rather than manually editing Pulse's shared state.
+
 ## What behaves differently
 
-- **Approve writes, go acts.** `pulse approve <n>`, or `a` in the map, writes the approval the item waits for and nothing else. `pulse go` acts on it: at gate 1 it merges the spec's docs PR and plans the item, at gate 2 it builds the approved PLAN, and at gate 3 it merges the ready pull request you gave a merge ok, then closes the issue. Every PLAN waits for a person.
-- **One check session.** Review and audit run in one fresh session per item, also for `risk: [security]`, and an item gets one fix round for all its gates. A gate still red after it leaves the pull request a draft.
-- **Auto mode starts off.** `pulse auto <gate> on`, or `1` `2` `3` in the map, lets your own `pulse go` pass a gate for your items. Nothing switches it on for you, and it still stops for a person on `risk:`, a protected path, and the other cases in [Auto mode](./pulse-go#auto-mode).
-- **Levers stay with you.** The [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) refuses approvals, merges, `pulse go`, and `pulse auto` in every agent session, also after your yes: the agent names the command for your own terminal. `/pulse-build` opens its pull request as a draft, and you mark it ready.
-- **`pulse go` runs in your terminal only.** It stays in the foreground, checks each new base commit before it builds on it, sets up each worktree with `setup`, and waits at gates 2 and 3 while nothing else runs; `q` ends it. Its agents get no GitHub token.
-- **The map.** In Herdr it opens beside each chat by itself; in any other terminal, run `pulse map` in a second one. It starts nothing.
-- **`pulse status` only reads.** It closes no merged item; `pulse go` does.
+- **One final approval policy.** Valid published specs and Plans proceed without early approval stops. After tests, review and audit, Pulse authorizes the exact result head and base automatically by default. A chosen manual policy waits for personal approval. Changed head or base requires revalidation and new approval.
+- **Local actions first.** Approval, defer, resume, revoke and handoff are durably queued before network work. The Map shows queued, syncing, confirmed, conflict or error. Only confirmed shared approval authorizes integration; defer and revoke block locally while pending.
+- **One check session.** Review and audit run in one fresh session, also for `risk: [security]`. One fix round addresses blocking findings. Failed work and evidence remain available for repair; `pulse resume <n>` requests a retry through the local outbox.
+- **Choose manual approval when needed.** `pulse auto` shows the current policy. A person with repository write access can select manual approval with `pulse auto merge off`, or restore automatic approval with `pulse auto merge on`. Historical switches grant no authority. Agents cannot change this policy or operate a person's Map actions.
+- **Explicit managed starts.** In a terminal `pulse go` remains in the foreground. Without a TTY it starts or reuses a Pulse-owned process and returns its receipt, report and log. It survives the caller and, under a manual policy, waits for confirmed final approval. `pulse go --stop` requests a controlled stop; nested runner agents remain refused.
+- **Claims cover active work.** Published results and later retries stay visible without idle claims. Handoff requests stop and preserve the current writer, including across accounts. Unpublished work stays in its original worktree.
+- **Claim continuity.** Separate `pulse claim` and `pulse release` processes in the same session and clone share a durable local acquisition receipt. Pulse saves it before publishing the claim and reuses it after a lost response. Registered worktrees share the receipt; another clone or a replacement claim does not. Legacy migration preserves file reservations and authenticates the original writer before transferring an own claim.
+- **The Map and status.** They display progress and decisions. They start no backlog runner and close no item; the runner records completion after proven remote integration.
 
 ## Known limits
 
-The current limits of the guard, auto mode, and the spec tests are listed under [Known limits](../reference/troubleshooting#known-limits).
+The current limits of the guard and spec tests are listed under [Known limits](../reference/troubleshooting#known-limits).

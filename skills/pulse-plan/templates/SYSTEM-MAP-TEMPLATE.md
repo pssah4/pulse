@@ -1,4 +1,4 @@
-<!-- Navigation map for agents. Every planner reads it before a PLAN; a
+<!-- Navigation map for agents. Every planner reads it before a Plan; a
      planning session with a person, or /pulse-realign, creates it on a docs
      branch into the base, never an item branch; a build updates an
      existing one as its last task when the item changes an entry point,

@@ -39,7 +39,7 @@ Project-BA, `BA-{slug}.md` for every Item-BA. An Item-BA's `issue:` is
 its draft or the issue it adopted (next section). Frontmatter carries
 identity and document relations only
 (`issue`, `project-ba-ref`, `personas`, `validity`). Work state (draft,
-approved, taken, blocked, done) lives on the board, never in the file.
+claimed, held, awaiting integration approval, done) lives on the board, never in the file.
 
 ## Start on the board
 
@@ -80,9 +80,13 @@ Pulse set up with its labels: when `pulse status --json` says
    pulse new epic "Project BA: <product>" --draft --phase analysis
    ```
 
-3. Write on a docs branch from `refs/remotes/origin/<base>` after `git fetch origin`: for an Item-BA the name
-   that `spec_branch` in `.pulse/config.toml` gives, filled in with the draft's `{n}`, `{slug}`, and
-   `{type}` (default `docs/{n}-{slug}`), `docs/<slug>` for a Project-BA; `/pulse-re` continues on it.
+3. For an Item-BA, continue on `<type>/<n>-<slug>` from the draft's
+   number and the fetched `refs/remotes/origin/<base>`. Its spec, Plan
+   and build stay on that branch. Project-wide discovery can use
+   `docs/<slug>`; `/pulse-re` creates each work item's own branch.
+
+Push the item branch after every commit, from the first one. For project-wide
+discovery, publish its docs branch with the same frequency.
 
 ## What you create
 
@@ -218,7 +222,7 @@ Three modes based on what you find:
   confirmation." Per section: "This came from {source}. Does this still
   match your understanding, or do you want to correct it?" A correction
   keeps the original source and the reason next to it.
-- **`validity: Draft`** -> the BA was never approved. Continue the
+- **`validity: Draft`** -> the BA still has unvalidated inputs. Continue the
   interview on its gaps, then Handoff.
 - **File exists, no Draft marker** -> Refresh Mode. Ask: "A validated
   BA exists. Refresh it (walk and update), or start a new iteration
@@ -382,35 +386,23 @@ legacy project), move the full document to
 1. Report what you produced: the BA file(s), the Exploration Board for
    PoC and MVP, and the key output (HMW, value proposition, referenced personas
    by ID, unmapped KPIs).
-2. Commit the BA files, with the Exploration Board for PoC and MVP, on
-   the docs branch, message `docs(ba): <title>`,
-   plus `Refs: #<n>` for its draft or adopted issue. A Project-BA names
-   `Refs: #<n>` of its draft too. Scope, HMW, critical hypotheses, and open
-   questions go into the commit body as short bullets. Where origin is
-   public (`gh repo view --json visibility`), ask the person once before
-   the first push. Push the docs branch after every commit, from the
-   first one: `git push -u origin <branch>` (the branch from step 3 of
-   Start on the board), for a Project-BA `git push -u origin docs/<slug>`.
-   The team sees the BA while it is written; the approval in step 3
-   decides whether it counts.
-3. Ask for approval, the first stop of the Pulse flow: in at most eight
-   lines the problem, who has it, the solution hypothesis and its
-   strongest assumption, the scope, the success signal and the top risk,
-   then "Is this BA approved? Or what should change?". A correction goes
-   into the BA and the question comes again. Once it is approved, set
-   `validity: Validated` and `validated-by: /pulse-ba on {date}` in its
-   frontmatter, commit that, and push again:
-   `git push -u origin <branch>`, for a Project-BA
-   `git push -u origin docs/<slug>`, then tell the person to close the
-   Project-BA's draft #<n> on GitHub: the
-   team knows the BA counts then. Then
-   invoke the pulse-re skill
-   (`/pulse-re`) at once in this session, with the draft number as its
-   argument: the approval covers it, so never ask whether to continue. It
-   writes the spec for that item on the same branch, registers each
-   further item it names as a draft, and writes `ba-ref:` into each spec.
-   A Project-BA hands over no draft number: `/pulse-re` registers a draft
-   for each item it names.
+2. Commit the BA and Exploration Board on the item's branch with
+   `docs(ba): <title>` and `Refs: #<n>`, then push. A Project-BA can use
+   `docs/<slug>` and names `Refs: #<n>` of its draft in the commit. Keep scope, HMW,
+   critical hypotheses and unresolved questions in the artifact.
+3. Summarize the problem, audience, scope, evidence and top uncertainty
+   in at most eight lines. Resolve missing facts through the interview;
+   a separate BA approval is not a routine stop. Set `validity: Validated`
+   only when its claims are supported and the required input is complete,
+   then record `validated-by: /pulse-ba on {date}`, commit and push.
+   Continue authorized work with `/pulse-re` in this session. Pass the
+   Item-BA's draft number so its spec uses the same item and branch.
+   For a Project-BA, RE registers each item it identifies. After the final
+   push, ask the person to close its draft #<n> on GitHub. Name any
+   unresolved input honestly; it holds only the work that depends on it.
+   Final integration approval comes after implementation and checks,
+   automatically by default. A person may choose manual final approval;
+   that setting never authorizes destructive removal.
 
 ### What RE does with the handoff
 

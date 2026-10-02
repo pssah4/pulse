@@ -33,7 +33,7 @@ The walk, scaled to Simple Test, PoC, or MVP:
 4. **Epics and features:** anticipated epics grouping observed capabilities, one feature spec per capability. Each observed behavior is a requirement with its source and its test (or `none`): every operation, every error a caller sees, every limit, every data contract a rebuild must keep. Operations such as install, start, and logging are features too. A success criterion carries the observed target; only a business target waits for the BA. A rerun completes the specs of an earlier realign in place. Every feature names its epic in `parent:`, every epic lists all its features under `## Items`, and `pulse number --apply` starts each file name with its ID (`EPIC-04`, `FEAT-04-02`), so a folder listing shows which features belong to which epic.
 5. **BA draft:** from README, docs, and changelogs only; the header counts what came from sources and what still needs you.
 6. **Findings:** TODOs, skipped tests, requirements without a test (one improvement per feature), outdated dependencies; each checked against the code before it counts.
-7. **Records:** after the verification gate, every epic, every feature, and every verified finding gets a record, each pointing at its spec; a rerun skips a spec that has one. The epics and features describe code that exists: the skill lists their records for you to close on GitHub, so the board holds only open work and each epic counts its features as done. An epic with an open fix or improvement stays open. Nothing is approved before `/pulse-ba` and [`/pulse-re`](./pulse-re) validated it.
+7. **Records:** after the verification gate, every epic, every feature, and every verified finding gets a record, each pointing at its spec; a rerun skips a spec that has one. The epics and features describe code that exists: the skill lists their records for you to close on GitHub, so the board holds only open work and each epic counts its features as done. An epic with an open fix or improvement stays open. Existing-code inventory grants no integration approval. Resolve missing requirements with `/pulse-ba` and [`/pulse-re`](./pulse-re) before planning new work.
 8. **Cleanup:** method files from earlier tools go once their content moved (see [below](#nothing-of-the-old-structure-stays)).
 
 **Verification gate.** Before any record exists, three checks run:
@@ -64,7 +64,7 @@ pulse check
 
 | Step | Changes |
 |---|---|
-| `--local` | `.dia/config.toml` becomes `.pulse/config.toml`; a DIA mode `off` stays `off`, supply-chain settings are carried over. DIA anchor blocks are replaced in place. Work state leaves the frontmatter (a BA's `status` becomes `validity`). Then the tracked files in `.dia` and the git hooks DIA installed in this clone go; untracked files and a hooks folder other clones share stay and are named. `BACKLOG.md` stays until `--issues`. |
+| `--local` | `.dia/config.toml` becomes `.pulse/config.toml`; a DIA mode `off` stays `off`, supply-chain settings are carried over. DIA anchor blocks are replaced in place. Work state leaves the frontmatter (a BA's `status` becomes `validity`). Obsolete tracked method files are removed only as previewed. Real Git hooks and their configured paths stay enabled, including hooks inherited from DIA; untracked files remain named. `BACKLOG.md` stays until `--issues`. |
 | `--issues` | Every open backlog item gets a record on the board, or reuses the GitHub issue DIA already created for it (titles like `FEAT-01-02: ...` or `[EPIC-01] ...`). Epics become parents, fixes and improvements hang under their feature, `depends-on` becomes "blocked by". Specs get `issue:` and keep their old ID as `legacy-id:`. An issue counts as one an earlier run made only with the ID in its body and its `pulse:` type label, and as DIA's only with a DIA-style title; either way only when its author is you or has write access to the repository; the preview shows every reuse and every claim it passes over, so a rerun creates nothing twice. `BACKLOG.md` goes only when every row got a record or is done and git tracks the file; otherwise the result says why it stays. |
 
 Done items stay history and are not migrated. Both steps need a clean working tree and move to their own `chore/pulse-migrate-<date>` branch when started on a base branch. Old commit trailers and tags stay in the git history.
@@ -75,12 +75,18 @@ The rest of the DIA layout moves in the cleanup below:
 |---|---|
 | `_devprocess/context/`: `BACKLOG.md` when `--issues` kept it, `BACKLOG-HISTORY.md`, `HANDOFFS.md`, `METRICS.md`, backups such as `BACKLOG.md.preMigration` | git history; open work in them becomes a spec and a record first |
 | `_devprocess/architecture/`, `_devprocess/adr/` | `_devprocess/decisions/` with a router row; `arc42*.md` into `_devprocess/` |
-| `_devprocess/implementation/plans/` | an open item's PLAN into `_devprocess/plans/`; done ones are history |
-| `_devprocess/requirements/handoff/plan-context.md` | the PLAN or the system map |
+| `_devprocess/implementation/plans/` | an open item's Plan into `_devprocess/plans/`; done ones are history |
+| `_devprocess/requirements/handoff/plan-context.md` | the Plan or the system map |
 | `_devprocess/rules/`, `src/ARCHITECTURE.map` | the agent guide or a path-local AGENTS.md; fast paths into `_devprocess/SYSTEM-MAP.md` |
 | `dia.config.json`, `dia-migration.yml`, scripts only DIA used | not needed |
 
-After the migration: uninstall the Digital Innovation Agents plugin, install Pulse ([Installation](../tutorials/installation)), and run [`/pulse`](./pulse). Teammates delete the git hooks DIA installed in their own clones (`.git/hooks/pre-commit` and `pre-merge-commit` with a DIA header, `.git/hooks-data/`).
+After the migration: uninstall the Digital Innovation Agents plugin, install Pulse ([Installation](../tutorials/installation)), and run [`/pulse`](./pulse). Teammates keep their real Git hooks enabled and run the same compatibility check in their clone.
+
+## Before planning, in both modes
+
+Run `pulse setup --check-plan` after setup or migration and before handing work to planning. It tries a valid Plan that names future files against the fetched base's actual commit gates in an isolated checkout. Read its base SHA, compatibility result, failing step and log. Fix incompatible project validation in tracked configuration and check again. A failed or incomplete probe is not a passing result; never disable hooks, change `core.hooksPath` to bypass them or create placeholder code to satisfy a document check.
+
+Published valid specs and Plans then proceed under the existing task authorization without early approval stops. Each work item keeps its spec, Plan and implementation on one published branch. Final Pulse approval comes after the checked result and binds its exact head and base.
 
 ## Nothing of the old structure stays
 

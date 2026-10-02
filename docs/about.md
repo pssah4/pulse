@@ -17,7 +17,7 @@ description: Sebastian Hanke, creator of Pulse, a way for teams to build digital
 
 ## About me
 
-I'm Sebastian, a product and technology specialist based in Germany. I've spent most of my career working on strategy, product development, and applied technology, sometimes with early-stage projects, sometimes with established teams.
+I'm Sebastian, a product and technology generalist based in Germany. I've spent most of my career working on strategy, product development, and applied technology, sometimes with early-stage projects, sometimes with established teams.
 
 My interest in how teams move ideas from "this could work" to "this is live in production" led me to build Pulse. The goal: coding agents that follow a method, so the path from raw idea to production code is deliberate, traceable, and reviewable, and teams that can run many agents at once without losing track of who does what.
 
@@ -34,7 +34,7 @@ My first answer was the Digital Innovation Agents, a set of skills that walks an
 5. **Test** across features
 6. **Audit** for the OWASP Top 10 and the OWASP Top 10 for LLM applications
 
-Then the agents got fast enough that one person ran several at once, and a team ran many. The bottleneck moved from writing code to coordination: who works on what, what may run in parallel, what waits for whom. Pulse is the next step. It keeps the method as one of three parts and adds an operating model for the team and a shared, live view of the work, with parallel builds that do not collide.
+Then the agents got fast enough that one person ran several at once, and a team ran many. The bottleneck moved from writing code to coordination: who works on what, what may run in parallel, what waits for whom. Pulse connects the method to a shared GitHub board and local runners. Several people can run agents in their own clones, see the team's work, and take items through planning, implementation and checks to integration. Regular checked results complete automatically; manual final approval is an option. The runner uses dependencies and planned file reservations to reduce conflicting work.
 
 Pulse runs in Claude Code and Codex, in the terminal and in the VS Code extension. Support for GitHub Copilot will follow.
 

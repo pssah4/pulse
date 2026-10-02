@@ -157,8 +157,9 @@ it, and tell the person to close them on GitHub. An
 epic with an open fix or improvement below it stays open. The board
 then holds only open work, and each epic counts its features as done.
 What a partially built feature lacks is a finding with its own spec.
-Nothing is approved: that happens after `/pulse-ba` and `/pulse-re`
-validated it.
+Existing code gains no integration approval from this inventory. Resolve
+unvalidated requirements before planning new work; final approval is
+reserved for a checked, published result.
 
 **A8 Cleanup.** See Cleanup below.
 
@@ -196,7 +197,7 @@ files.
 | Directory tree | the repo | never repeated |
 | Status, claim, blockers | the board | never in files |
 | Tree epic > feature > fix | `parent:`, `## Items`, the ID in the file name | always |
-| History, authorship | git log, PRs | never |
+| History, authorship | git log | never |
 | Behavior under test | test files | `Test:` per FR |
 
 ## Mode B: migrate a DIA project
@@ -220,9 +221,9 @@ Steps 1 to 4 run through `pulse migrate`; each is shown before it runs.
    (DIA mode `off` stays `off`, supply-chain settings carried over), DIA
    anchor blocks replaced in place, work state removed from
    `_devprocess` frontmatter (a BA's `status` becomes `validity`). Then
-   the tracked files in `.dia/` and the git hooks DIA installed in this
-   clone go; untracked files and a hooks folder other clones share stay
-   and are named. One commit. Push the migration branch after every
+   obsolete tracked method files can be removed as the preview names.
+   Keep real Git hooks and their configured paths enabled; do not delete
+   a hook merely because DIA installed it. Untracked files stay named. One commit. Push the migration branch after every
    commit, this one first. Then put the realign on the board (Start
    on the board).
 4. Ask before writing to GitHub, then `pulse migrate --issues`: open
@@ -231,9 +232,9 @@ Steps 1 to 4 run through `pulse migrate`; each is shown before it runs.
    title); either counts only when its author is the gh user or has
    write access, so a rerun creates nothing twice; epic -> parent, `depends-on` ->
    blocked-by; specs get `issue:` and `legacy-id:`. Nothing is
-   approved: tell the user which items DIA had ready (the preview marks
-   them), and only a person approves them, once this branch is merged
-   into the base branch, with `pulse approve`. A record
+   granted integration approval by migration. Published valid specs can
+   proceed to planning after compatibility checks; legacy ready or
+   approval marks authorize no final integration. A record
    the migration creates holds its spec link and legacy id, nothing
    else. Done items stay history. BACKLOG.md goes only when every row
    got a record or is done and git tracks it; otherwise the result says
@@ -248,8 +249,8 @@ Steps 1 to 4 run through `pulse migrate`; each is shown before it runs.
 |---|---|
 | `_devprocess/context/`: `BACKLOG.md` when step 4 kept it, `BACKLOG-HISTORY.md`, `HANDOFFS.md`, `METRICS.md`, backups such as `BACKLOG.md.preMigration` | git history; open work in them becomes a spec and a record first |
 | `_devprocess/architecture/`, `_devprocess/adr/` | `_devprocess/decisions/` with a router row; `arc42*.md` into `_devprocess/` |
-| `_devprocess/implementation/plans/` | an open item's PLAN into `_devprocess/plans/`; done ones are history |
-| `_devprocess/requirements/handoff/plan-context.md` | the PLAN or the system map |
+| `_devprocess/implementation/plans/` | an open item's Plan into `_devprocess/plans/`; done ones are history |
+| `_devprocess/requirements/handoff/plan-context.md` | the Plan or the system map |
 | `_devprocess/rules/`, `src/ARCHITECTURE.map` | the agent guide or a path-local AGENTS.md; fast paths into `_devprocess/SYSTEM-MAP.md` |
 | `dia.config.json`, `dia-migration.yml`, scripts only DIA used | not needed |
 
@@ -295,8 +296,17 @@ open BA points (stories, business targets). Say "rebuildable" only when no inven
 entry and no place of the rebuild reading stays open; else name what is
 missing. The blueprint is the specs, the decisions, and the system map;
 the board carries only open work, and a rebuild from the specs gives
-today's product without the open fixes. After Mode B, teammates delete the git
-hooks DIA installed in their own clones (`.git/hooks/pre-commit` and
-`pre-merge-commit` with a DIA header, `.git/hooks-data/`). Recommend
-`/pulse-ba` in Validation Mode for the BA draft, then `/pulse-re` for
-the anticipated epics.
+today's product without the open fixes.
+
+Before either mode hands work to planning, run `pulse setup --check-plan`.
+It checks a valid Plan-only commit with future files against the project's
+actual commit gates in an isolated checkout with real hooks enabled. Report the
+base SHA, outcome and concrete findings. A conflict with project rules
+needs a tracked compatibility fix; never disable hooks or manufacture
+placeholder code to make a Plan pass. Publish the compatible settings
+where the runner reads them, then repeat this targeted check.
+
+Resolve the BA draft's missing input with `/pulse-ba`, then continue
+`/pulse-re` for the anticipated epics. No early spec or Plan approval is
+introduced by migration; a checked implementation receives its final
+head/base approval later.

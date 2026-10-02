@@ -24,10 +24,10 @@ import time
 
 REASON = ("Gate levers belong to a person or to their own auto switch. Tell the person which gate waits: "
           "a in the Pulse map, or pulse approve in their terminal.")
-PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|done|defer|resume|discard|delete|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
-                   r"claim[ \t]+--take|release[ \t]+--take)(?![\w.])")      # quoted too, in comments and bodies
+PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|revoke|handoff|retry|done|defer|resume|discard|delete|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
+                   r"claim[ \t]+--take|release[ \t]+--take)(?![\w.-])")      # quoted too, in comments and bodies
 RISKY = re.compile(r"\b(?:pulse|gh|herdr|tmux|osascript)\b|\bgit\s+push\b")   # what an unreadable command may not name
-MARKS = re.compile(r"<!-- pulse:|Plan-ok|plan ok at|merge ok at")
+MARKS = re.compile(r"<!-- pulse:|Plan-ok|plan ok at|merge ok at|pulse (?:integration approval|removal approval|final approval policy|action) \{")
 MARKERS = {"PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"}
 QUOTED = re.compile(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([\w.-]+))")
@@ -860,7 +860,7 @@ def _pulse(args, ctx, depth):
             if len(name) >= 4 and ("--remove".startswith(name) or "--mode".startswith(name) and
                                    (value if eq else args[k + 1]) == "off"):
                 return True
-    return sub in ("approve", "approve-plan", "done", "defer", "resume", "discard", "delete") or sub == "auto" and bool({"on", "off"} & set(args)) or \
+    return sub in ("approve", "approve-plan", "revoke", "handoff", "retry", "done", "defer", "resume", "discard", "delete") or sub == "auto" and bool({"on", "off"} & set(args)) or \
         (sub, nxt) in (("claim", "--take"), ("release", "--take"))
 
 

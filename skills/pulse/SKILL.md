@@ -40,20 +40,21 @@ Take the first row that applies. In Codex, name each command as
 | Project-BA is a Draft | `/pulse-ba` in Validation Mode |
 | A new epic or feature is wanted | `/pulse-ba` for its Item-BA |
 | A validated Project-BA or an Item-BA exists, no epics or features registered yet | `/pulse-re` |
-| Specs are not approved yet (`pulse status`: "not approved") | spec approval for planning is automatic by default when `pulse go` runs. Show each spec's goal and scope. With an explicit manual spec setting, tell the person `pulse approve <n>` in their own terminal, or `a` in the map; it writes the approval and nothing else. The runner merges the spec's docs PR into the base once every spec passes R1 to R6, the diff changes only `_devprocess/`, and its checks pass. A missing or invalid spec goes to `/pulse-re`: a feature, improvement, or fix on the base must pass R2 to R6 (an epic needs R1 only). Implementation still waits for the completed PLAN's approval |
-| An approved spec waits for `pulse go` (`pulse status`: "spec in PR #m: pulse go merges it") | offer to start `pulse go`; on an explicit start request, execute [Start pulse go](#start-pulse-go). The run merges the docs PR, then plans; when it names why it did not merge it (a spec that breaks a rule, a file outside `_devprocess/`, checks that have not passed), fix that on the docs branch and push |
-| Items are approved but their spec does not pass R1 to R6 (`pulse check`) | `/pulse-re` on that spec |
-| A PLAN waits for a person (`pulse status`: "plan waits for you", or "plan changed since plan ok", "spec changed since plan ok") | show its goal, decisions, and risks, and tell the person how they approve it: `pulse approve <n>` in their own terminal, which binds the PLAN as origin has it and the spec on the base |
-| Approved items with a ready spec, or ready items, and free slots | offer `pulse go` to plan and build all ready items; on an explicit start request, execute [Start pulse go](#start-pulse-go). `/pulse-build <n>` builds one in this session (it plans first when there is no PLAN) |
-| A feature PR is ready (tests, review, and audit passed) | name it: it waits for the person's `pulse approve <n>`, or `a` in the map, which approves its merge at its head (gate 3); the next `pulse go` merges it and closes the item |
-| A draft feature PR names a red gate | fix the findings on its branch test-first, push them, and give the item back with `pulse release <n>`; the next `pulse go` runs the gates on it and marks it ready once all three pass |
-| A PR whose last commit has no review or no audit | run the missing gates on a yes, in a fresh subagent, as in Done of `/pulse-build`, and put the reports into the PR |
+| A published spec or Plan has structural findings | fix its R1-R6 or P1-P6 findings with `/pulse-re` or the pulse-plan skill; no person approval is needed to continue authorized preparation |
+| Published items need a Plan, or valid Plans are ready to build | offer `pulse go`; execute it when explicitly requested. `/pulse-build <n>` handles one item in this session |
+| A checked published result waits for integration approval | show its diff, head and base, tests, review and audit; tell the person `pulse approve <n>` in their terminal or `a` in the Map |
+| A result has red gates or stale head/base evidence | preserve its work, show the findings and next repair or revalidation step; approval cannot bypass them |
+| A local action says queued or syncing | report that state; only confirmed shared approval authorizes integration |
+| A local action says conflict or error | show its reason and refresh the item before proposing the next action |
+
 | Release pending | `/pulse-audit` |
 
 ## New work without a kind
 
-Ask exactly one question: "Is this a new feature, an improvement on an
-existing feature, or a fix for a bug?" A new feature with an unclear
+For an explicit `pulse go` request, pass the complete objective directly
+as [Start pulse go](#start-pulse-go) says; do not require a kind first.
+For other new-work requests, ask exactly one question: "Is this a new
+feature, an improvement on an existing feature, or a fix for a bug?" A new feature with an unclear
 problem goes to `/pulse-ba`, with a clear one to `/pulse-re`. An
 improvement or a fix goes to `/pulse-build`.
 
@@ -65,9 +66,9 @@ something:
 1. **Bug found while building:** stop, record a fix item
    ("Discovered in #n"), find the root cause, then fix it test-first.
 2. **Design proves wrong while building:** stop, amend the decision or
-   the PLAN, then continue.
+   the Plan, then continue.
 3. **Requirement gap while planning or building:** route it back to the
-   spec, re-check the PLAN covers every success criterion, continue.
+   spec, re-check the Plan covers every success criterion, continue.
 
 A loop back does not re-run later phases on its own. The user decides,
 and the item's spec records the decision.
@@ -104,33 +105,43 @@ their own terminal. Details:
 
 ## Start pulse go
 
-When the person explicitly asks to start `pulse go`, execute it from this
-interactive session in a persistent foreground TTY. In Codex use
-`exec_command` with `tty: true` and retain the returned session id; read
-its startup output, report its actual state, and use that session to stop
-it when the person asks. Before replying, read that retained TTY and a
-fresh `pulse status` or run report. A run that ended or is blocked needs
-its actual outcome, cause, and next step. During preparation name the
-current activity and say there are no active agents until an agent
-actually starts. The report exposes board loading, base checking, and
-worktree setup before the first claim. Run outside the sandbox when network access or
-shared Git writes require it. Keep all session markers. Never start
-`pulse go` automatically, from a runner agent or child session, through
-another terminal's keys, or with a detached shell. A person can also run
-it in their own terminal. It plans and builds every approved item in
-parallel with the configured cap (planned first when it has no PLAN),
-runs the RED check and tests, review,
-and audit, and opens a PR per item. Specs proceed to planning automatically
-by default; implementation waits for manual PLAN approval. Structurally
-invalid PLANs without a previous PLAN approval get bounded repair attempts.
-Explicit settings, expired delegation, risks, blockers and failing checks
-retain their holds. Startup reads current base and CI metadata,
-and the full `verify` runs once on the completed result. Starting it grants no approval and
-changes no auto switch. It needs `verify` and `[spec_tests]` on the base
-branch as origin has it; report missing configuration with the base and
-prepare the required config change. It ends when the ramp is empty or
-on Ctrl-C; `.git/pulse/go/report.json` holds the results. Details:
-<https://pssah4.github.io/pulse/guides/pulse-go>.
+When the person explicitly asks to start `pulse go`, execute that command
+with the session markers intact. Pulse runs in the foreground when the
+tool provides a TTY; without one it owns a managed process and returns a
+receipt with its run ID, PID, report and log. A second managed start finds
+the existing run. No Herdr, extra coordinator or shell detachment is
+required. Never use `nohup` or erase markers to force a start.
+
+Pass any free-text objective directly as the positional words after `pulse go`.
+Preserve the whole request, including combined instructions such as finishing
+Epic 4 and investigating a UI problem. Flags are optional shortcuts. Without
+an objective, process the queue; with one, process the queue plus that objective.
+Only an explicit restriction bounds the run. Do not replace a compound request
+with an epic flag that would drop the other instruction. The runner records
+new work as visible ordinary items and applies the same DIA workflow.
+Use `pulse go --pause`, `--resume` or `--steer "<additional direction>"`
+when requested. A saved control is pending until the runner applies it.
+
+Before replying, read the receipt and a fresh `pulse status` or run report.
+Name the current operation during preparation; there are no active agents
+until one actually starts. Report a finished or failed run truthfully,
+with its cause and next step. Use `pulse go --stop` when the person asks
+to stop it. Run outside the sandbox when network access or shared Git
+writes require it. A person can also start it in their own terminal.
+Never start `pulse go` automatically or from runner agents or child
+sessions; an unrequested status check starts nothing.
+
+The runner prepares published specs and valid Plans, builds test-first,
+and runs tests, review and audit. It needs `verify` and `[spec_tests]`
+on the fetched base; report missing configuration and prepare the change.
+Startup reads the fetched base and its configuration; full `verify` belongs to the
+completed result. It publishes on the item's branch, releases inactive
+claims and obtains final approval of exact result head and base. Automatic
+completion is the default; a person may choose manual final approval.
+Both use the same checks. A managed runner keeps waiting without a
+terminal and continues only after confirmed approval. Starting it grants no approval
+and changes no approval policy. The report remains after it ends.
+Details: <https://pssah4.github.io/pulse/guides/pulse-go>.
 
 ## Work the map
 
@@ -142,30 +153,32 @@ pass on (in Codex run it outside the sandbox; no output means
 `PULSE_MAP=off`, then ask the person to run `pulse map`); never run `pulse map` without `--ensure` in your shell or
 paste a frame. In the map `↑` `↓` pick a line, `Enter` opens an item,
 `Esc` goes back, `?` shows the help; an item's view offers only what
-its stage allows: the approval it waits for (`a`: approve spec, approve
-plan, approve merge, or try again), read spec (`o`), read plan or PR, each done with
-`Enter`; `pulse go` merges a ready pull request once a person approved its merge. These are the person's levers: tell the person
-to press `a` on the item in the Pulse map, or to run `pulse approve <n>`
-in their own terminal. The auto mode per gate is theirs as well: when the person
-asks how `pulse go` could pass a gate without asking them, name
-`pulse auto <plan|build|merge> on [--for 8h]` in their own terminal, or
-`1` `2` `3` in the map. Spec approval for planning is automatic by default;
-build and merge require manual approval or an explicit delegation.
-An explicit off or expired delegation stays off. Never switch it yourself. Never send text or keys into the map's pane, nor
-`pulse map` into another terminal: the map runs as the person, and the
-guard refuses it. Details:
+its stage allows: read spec (`o`), read Plan, inspect the result and checks,
+and approve integration (`a`) for a current verified result. The preview
+names the exact head and base; `Enter` confirms. Approval, defer, resume,
+revoke and handoff enter a durable local queue immediately. Show queued,
+syncing, confirmed, conflict or error honestly. A background synchronizer
+continues after the Map closes; a queued approval never permits a merge.
+Tell the person to press `a` on the result or use `pulse approve <n>`
+in their own terminal. These actions belong to the person. Never send text or keys into the
+Map's pane or another terminal to operate them. `pulse auto` displays the
+final integration approval policy. The person can configure it with `3`
+in the Map or `pulse auto merge on|off`; `--for 8h` limits an enabled setting.
+Settings enter the same durable local queue. Historical plan/build/merge
+switches do not authorize work. `pulse retry <operation>` retries a saved
+sync error without changing its binding. Details:
 <https://pssah4.github.io/pulse/guides/pulse-map>.
 
 ## Commands
 
 To pause open work as-is, tell the person to run `pulse defer <n>` in
 their terminal. `pulse resume <n>` explicitly continues it. Approvals,
-notes, code, specs, branches and PRs remain. An unreachable holder keeps
+notes, code, specs, branches and evidence remain. An unreachable holder keeps
 the stop pending; uncommitted work stays in its worktree.
 `pulse discard <n>` closes without rollback. `pulse delete <n>` instead
 requires a reviewed removal of code, specs and references before deleting
 the issue and comments. It requires typed confirmation and a separate
-removal merge approval. Never run these person-only commands for them.
+final integration approval. Never run these person-only commands for them.
 
 In the map, `m`, arrow keys and `Enter` save a shared order; prerequisites
 still come first. `Esc` cancels. The picker also reaches epics in the board.
@@ -174,6 +187,6 @@ still come first. `Esc` cancels. The picker also reaches epics in the board.
 |---|---|
 | `/pulse-ba` | business analysis: problem, users, scope |
 | `/pulse-re` | epic, features, success criteria, registered items |
-| `/pulse-build` | one item test-first (planned first when it has no PLAN), bugs, tests for existing code |
+| `/pulse-build` | one item test-first (planned first when it has no Plan), bugs, tests for existing code |
 | `/pulse-audit` | security audit |
 | `/pulse-realign` | take over an existing codebase or a DIA project |

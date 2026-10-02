@@ -17,7 +17,7 @@ import sys
 import time
 from pathlib import Path
 
-from pulse import auto, check, config, go, lifecycle, mapstart, merge, migrate, ready, setup, spec, state
+from pulse import auto, check, config, go, lifecycle, mapstart, migrate, ready, setup, spec, state
 from pulse import map as pmap
 
 
@@ -36,12 +36,23 @@ def _ctx():
 def cmd_status(args):
     """The map frame once, or its view model; it only reads, as the map does (ADR-06, FR-06 of #118): pulse go
     closes what it merged. With n, that item."""
+    welcome = getattr(args, "welcome", False)
+    help_hint = "pulse --help lists commands; pulse <command> --help explains when and how to use one."
     root = config.find_root()
-    if root is not None and config.load(root)["mode"] is None:      # asks GitHub nothing
+    mode = config.load(root)["mode"] if root is not None else None
+    if welcome and root is None:
+        print("Not inside a git repository. Open your project's Git directory, then use /pulse "
+              "(in Codex $pulse:pulse) for orientation or pulse setup to activate it.\n" + help_hint)
+        return 0
+    if root is not None and mode is None:      # asks GitHub nothing
         note = ("Pulse is not active here (no .pulse/config.toml): /pulse (in Codex $pulse:pulse) sets it up, "
                 "or pulse setup activates it.")
         print(json.dumps({"active": False, "note": note}) if args.json else note)
+        if welcome:
+            print(help_hint)
         return 0
+    if welcome and mode == "off":
+        print("Pulse is off here. pulse setup --mode on activates it when you choose to continue.")
     if args.n is not None:
         return _item(args)
     root, repo, run = _ctx()
@@ -50,12 +61,23 @@ def cmd_status(args):
         state.load(root, repo, run=run, fresh=args.fresh)
     except state.StateError as e:
         note = f"the board could not be read: {e}"
-    _fetch(root)               # waits, with a time limit: the ramp below counts every clone's PLANs
+    _fetch(root)               # waits, with a time limit: the ramp below counts every clone's Plans
     vm = pmap.gather(root)
     vm["error"] = vm["error"] or note
     vm["last_run"] = go.last_run(root)
-    print(json.dumps(vm, indent=2) if args.json else pmap.once(vm, sys.stdout.isatty()) + _last_run(vm["last_run"]))
-    return 2 if vm["error"] and not state.cache_path(root).is_file() else 0   # nothing known: no board to show
+    unknown = bool(vm["error"] and not state.cache_path(root).is_file())
+    if welcome and unknown:
+        print(ready.printable("No current board state is available; readiness is unknown. " + vm["error"]))
+    else:
+        print(json.dumps(vm, indent=2) if args.json else pmap.once(vm, sys.stdout.isatty()) + _last_run(vm["last_run"]))
+    if welcome:
+        if vm["error"]:
+            if not unknown:
+                print(ready.printable(vm["error"]))
+            print("pulse status --fresh retries the board read; resolve the reported error before starting work.")
+        print("pulse map opens the live view. pulse go processes permitted queue work; "
+              "add a goal, for example: pulse go Improve checkout.\n" + help_hint)
+    return 2 if unknown else 0   # nothing known: no board to show
 
 
 def _last_run(rep) -> str:
@@ -81,7 +103,7 @@ def _fetch(root, now=False):
         said = ready.fetch_said(root) if got is False else ""
         why = f"git fetch said: {said}" if said else \
             "offline: origin did not answer" if got is False else "no fetch: .git is read-only here"
-        print(why + "; the PLANs are those this clone fetched last", file=sys.stderr)
+        print(why + "; the Plans are those this clone fetched last", file=sys.stderr)
 
 
 def _unfetched(root) -> tuple:
@@ -106,14 +128,14 @@ def _unfetched(root) -> tuple:
 
 
 def _item(args):
-    """pulse status <n>: one open item, its stage in the words of the map, its PLAN, claim, and blockers."""
+    """pulse status <n>: one open item, its stage in the words of the map, its Plan, claim, and blockers."""
     root, repo, run = _ctx()
     items = state.load(root, repo, run=run, fresh=args.fresh)
     i = next((i for i in items if i["number"] == args.n), None)
     if i is None:
         print(f"#{args.n} is not an open issue")
         return 1
-    _fetch(root)               # as the board: the PLAN another clone pushed counts
+    _fetch(root)               # as the board: the Plan another clone pushed counts
     stages = {}                # the stage in the words of the map (#99 FR-14), without the board lines it never prints
     pmap.render(pmap.gather(root, board=False), color=0, stages=stages)
     p = ready.plans(root).get(args.n) or {}
@@ -128,14 +150,60 @@ def _item(args):
 
 
 def cmd_go(args):
-    """An explicitly requested foreground runner, also from an interactive skill's PTY."""
+    """An explicit runner request, owned by the terminal or by Pulse when no TTY exists."""
     if os.environ.get("PULSE_HOLDER") or os.environ.get("CLAUDE_CODE_CHILD_SESSION"):
         print("pulse go: no nested runner from a runner agent or child session")
         return 1
-    if not _tty():
-        print("pulse go: a foreground TTY is required; allocate a PTY in the skill or use your own terminal")
+    objective = " ".join(getattr(args, "objective", [])).strip()
+    epic, item = getattr(args, "epic", None), getattr(args, "item", None)
+    control = "steer" if getattr(args, "steer", None) is not None else \
+        next((name for name in ("pause", "resume", "stop") if getattr(args, name, False)), None)
+    if control and (objective or epic is not None or item is not None) or item is not None and item <= 0:
+        print("pulse go: use one control without a goal or selector; item numbers must be positive")
         return 1
     root = _root()
+    if getattr(args, "stop", False):
+        from pulse import runner
+        current = (go.last_run(root) or {}).get("run") or {}
+        if not current.get("id") or not current.get("running"):
+            print("pulse go: no active runner")
+            return 0
+        result = runner.stop(root, current.get("id", ""))
+        print(ready.printable(f"pulse go: {result['status']}; {result.get('why', '')}"))
+        return 1 if result["status"] == "conflict" else 0
+    if objective or epic is not None or item is not None or control:
+        from pulse import goals
+        try:
+            current = goals.read(root)
+            expected = (current or {}).get("revision")
+            if control:
+                if not current:
+                    raise state.StateError("no saved goal to " + control)
+                saved = goals.control(root, control, expected, text=getattr(args, "steer", None))
+            else:
+                selector = {"epic": epic} if epic is not None else {"item": f"#{item}"} if item is not None else None
+                saved = goals.submit(root, objective or None, selector=selector, expected=expected)
+        except state.StateError as error:
+            print(ready.printable(f"pulse go: {error}"))
+            return 1
+        print(f"pulse go: goal{' ' + control if control else ''} saved; runner applies it at the next transition")
+        print(ready.printable(f"  objective: {saved['objective']}"))
+        print(ready.printable(f"  scope: {saved['scope']['mode']}; revision: {saved['revision']}"))
+        if control in {"pause", "steer"}:
+            return 0
+    else:
+        print("pulse go: process the queue; optional goal example: pulse go Improve checkout")
+    if not _tty():
+        from pulse import runner
+        receipt = runner.start(root)
+        print(ready.printable(f"pulse go: {receipt['status']}; {receipt.get('why', '')}"))
+        for key in ("pid", "run_id", "report", "log"):
+            if receipt.get(key):
+                print(ready.printable(f"  {key}: {receipt[key]}"))
+        if receipt.get("goal"):
+            print(ready.printable(f"  runner goal revision: {receipt['goal'].get('revision', '')}"))
+        print("  pulse map shows progress; pulse go --stop requests a controlled stop")
+        return 1 if receipt["status"] == "error" else 0
     cfg = config.load(root)
     if cfg["verify"]:          # go.run refuses without it, before its first line
         if not (go.last_run(root) or {}).get("run", {}).get("running"):
@@ -146,10 +214,11 @@ def cmd_go(args):
               f"Ctrl-C stops it{'; ' + warn if warn else ''}", flush=True)
     rep = go.run(root)
     stopped = rep.get("run", {}).get("stopped")
-    # a PLAN that still fails P1 to P5 waits for a person, so the run is not clean
+    # a Plan that still fails P1 to P5 waits for a person, so the run is not clean
     rc = 128 + signal.Signals[stopped] if stopped else \
         1 if rep["failed"] or rep.get("halt") or any(j["why"].startswith("plan: ") for j in rep["skipped"]) else 0
-    verbs = {"plan": "planning", "build": "building", "merge": "merging the base into"}
+    verbs = {"spec": "specifying", "documents": "checking documents", "plan": "planning", "build": "building", "refresh": "rechecking",
+             "merge": "merging the base into"}
     for n in rep.get("took", []):
         print(f"  took over #{n} from a stopped run")
     for j in rep["started"]:           # branch names reach the terminal printable (#63)
@@ -160,9 +229,12 @@ def cmd_go(args):
     for j in rep["done"]:
         rounds = f" after {j['rounds']} fix round{'s' if j['rounds'] != 1 else ''}" if j["rounds"] else ""
         gates = ", ".join(f"{g} {j[g].split(':')[0]}" for g in go.GATES)
-        state_ = "waits for your merge" if all(j[g].startswith("pass") for g in go.GATES) \
-            else "draft, a gate is red"
-        print(f"  done   #{j['number']} -> {j['pr']} ({gates}{rounds}, {state_}{_spent(j)})")
+        policy = auto.read(root)
+        state_ = "integrated" if j["number"] in rep.get("merged", []) else \
+            "published work preserved; a gate is red" if not all(j[g].startswith("pass") for g in go.GATES) else \
+            "automatic integration pending" if auto.active(policy["policy"]) and not policy.get("blocked") else \
+            "waits for integration approval"
+        print(f"  done   #{j['number']} -> {j.get('head', '')[:12]} ({gates}{rounds}, {state_}{_spent(j)})")
     for j in rep["failed"]:
         print(ready.printable(f"  failed #{j['number']}: {j['why']} (worktree {j['worktree']}, log {j['log']})"))
     for j in rep["limited"]:
@@ -170,7 +242,7 @@ def cmd_go(args):
     for j in rep["skipped"]:
         print(ready.printable(f"  skipped #{j['number']}: {j['why']}"))
     for n in rep.get("merged", []):
-        print(f"  closed #{n}: its pull request was merged")
+        print(f"  closed #{n}: its approved result was integrated")
     for j in rep.get("stopped", []):
         print(ready.printable(f"  stopped #{j['number']} in {j['phase']} ({j['why']})"))
     for u in rep.get("unclean", []):
@@ -244,10 +316,10 @@ def cmd_migrate(args):
 def cmd_new(args):
     """A record for a spec every clone can read, or a draft claimed for the analysis and spec work;
     --issue makes an issue that links no spec that record or that draft (D-43). A spec an agent cannot plan
-    from is refused; on a spec branch the spec goes to origin and into the branch's docs PR (#116)."""
+    from is refused; a spec branch is published to origin before registration."""
     root, repo, run = _ctx()
     args.title = spec.with_id(args.spec, args.title)          # FEAT-04-02 Speech input, on the board too
-    pr, labels = None, []
+    labels = []
     if not args.draft:
         if not (root / args.spec).is_file():
             print(f"pulse new: write the spec first, {args.spec} does not exist in the repository")
@@ -275,8 +347,7 @@ def cmd_new(args):
             if pushed.returncode:
                 print(f"pulse new: git push said: {ready.git_error(pushed.stderr)}; nothing registered")
                 return 2
-            pr = state.docs_pr(root, repo, branch, base, f"docs: {args.title}", run=run)
-        else:                  # the base branch, or a build branch: its own PR brings the spec along
+        else:                  # the base or item branch must already be published
             why, behind = _unfetched(root)
             if behind is None or branch in behind:     # the ref that shows the spec on origin is not here
                 print(f"pulse new: {why}, so nothing shows {args.spec} on origin; nothing registered")
@@ -295,7 +366,7 @@ def cmd_new(args):
                   f"{same.get('claimed_by') or 'nobody'}; a free one or one of yours goes on with "
                   f"--issue {same['number']}, one another person holds stays theirs")
             return 1
-    rel = {"parent": args.parent, "blocked_by": args.blocked_by or [], "pr": pr, "labels": labels}
+    rel = {"parent": args.parent, "blocked_by": args.blocked_by or [], "labels": labels}
     if args.issue:
         ok, why = state.attach(root, repo, args.issue, args.type, args.spec, run=run, title=args.title, **rel)
         if not ok:
@@ -317,8 +388,8 @@ def cmd_new(args):
 
 def _spec_branch_here(root, branch, base) -> bool:
     """Whether the branch checked out is a spec branch: not the base, and against the base it changes something,
-    all of it under _devprocess/, and no item's build branch. Only such a branch is pushed and gets a docs PR
-    (#116); a build branch reaches the base with its own PR, after its gates, even while it holds only its PLAN."""
+    all of it under _devprocess/, and no item's build branch. Publishing makes its spec
+    available for automatic planning; final integration carries it onto the base."""
     if branch in ("", base):
         return False
     n = state.item_of(branch)
@@ -442,6 +513,8 @@ def _other_item(cmd, n):
 def cmd_lifecycle(args):
     if _person_only(args.cmd):
         return 1
+    if args.cmd in ("defer", "resume", "revoke", "handoff"):
+        return _local_action(args.cmd, [args.n])
     root, repo, run = _ctx()
     if args.cmd == "delete":
         from pulse import remove
@@ -461,57 +534,49 @@ def cmd_lifecycle(args):
 
 
 def cmd_approve(args):
-    """Write the approval each item waits for, and nothing else (#115): gate 1, gate 2 for its PLAN as origin has
-    it, gate 3 for the head of its ready PR (#118), or a new try after pulse:failed. pulse go acts on it: it merges
-    the docs PR, plans, builds, merges the PR."""
+    """Durably queue approval of the observed result and base; synchronization authenticates it."""
     if _person_only("approve"):
         return 1
-    root, repo, run = _ctx()
-    _fetch(root, now=True)     # the spec and PLAN as origin has them now: what a Plan-ok binds
-    items = {i["number"]: i for i in state.load(root, repo, run=run, fresh=True)}
-    who, code = state.who(root, run=run), 0    # the account, as the comment on each item names it (#111)
-    as_ = f" as {who}" if who else ""
-    for n in args.n:
-        gate, blobs, why = ready.waiting(root, items[n]) if n in items else (None, (), f"#{n} is not an open item")
-        if gate is None:
-            print(ready.printable(why))
+    return _local_action("approve", args.n)
+
+
+def _local_action(kind, numbers):
+    root, code = _root(), 0
+    items = {item["number"]: item for item in state.cached(root)}
+    for n in numbers:
+        item = items.get(n)
+        if item is None:
+            print(f"#{n}: open or refresh the Pulse map first; no observed item is cached")
             code = 1
             continue
-        if gate == 3:          # what waits for a person in it, named before the approval is written (L-2 of #118)
-            print(merge.seen(root, repo, items[n]["pr"]["number"], run, f"#{n}"))
-        state.approve(root, repo, n, gate, blobs, run=run)
-        print([f"#{n}: pulse:failed is off{as_}: the next pulse go tries it again",
-               f"approved #{n}{as_}" + (f" at {blobs[0][:12]} for {blobs[1]}" if gate == 1 and blobs else "") +
-               ": gate 1, the team wants it built",
-               f"approved the plan of #{n}{as_} at {' '.join(b[:12] for b in blobs)}: gate 2, agents may build it",
-               f"approved the merge of #{n}{as_} at {' '.join(b[:12] for b in blobs)}: gate 3, pulse go merges it"][gate])
+        try:
+            intent = pmap.action_preview(root, item, kind)
+        except state.StateError as error:
+            print(ready.printable(str(error)))
+            code = 1
+            continue
+        print("\n".join(intent["lines"]))
+        print(pmap.queue_action(root, intent))
     return code
 
 
 def cmd_auto(args):
-    """Your auto mode per gate (#124): without a gate, every login's switches; on says what then happens without
-    asking and asks once, off asks nothing. Only a person switches, in their own terminal or the Pulse map."""
+    """Show final approval policy or durably queue an explicit person setting."""
     if bool(args.gate) != bool(args.switch) or args.span and args.switch != "on":
-        print("pulse auto: <plan|build|merge> on [--for 8h|2d], or <gate> off; alone it shows the switches")
+        print("pulse auto: show policy, or use merge on|off with optional --for 8h|2d")
         return 2
     if args.switch and _person_only(f"auto {args.gate} {args.switch}"):
         return 1
-    root, repo, run = _ctx()
-    if not args.switch:
-        print(auto.show(root, repo, run))
-        return 0
-    until = auto.stamp(time.time() + args.span) if args.span else None
-    if args.switch == "on":
-        login = state.me(root, run=run)
-        print(auto.explain(args.gate, login, config.load(root)["base_branch"] or config.default_branch(root), until))
+    root = _root()
+    if args.switch:
         try:
-            yes = input(f"Switch on as {state.who(root, login)}? [y/N] ").strip().lower() in ("y", "yes")
-        except EOFError:
-            yes = False
-        if not yes:
-            print("nothing switched")
+            until = auto.stamp(time.time() + args.span) if args.span else None
+            print(pmap.queue_policy(root, args.switch == "on", until=until))
+        except state.StateError as error:
+            print(ready.printable(str(error)))
             return 1
-    print(auto.toggle(root, repo, args.gate, args.switch == "on", until, run))
+        return 0
+    print(auto.show(root, config.load(root).get("repo") or ""))
     return 0
 
 
@@ -527,12 +592,17 @@ def _said(result):
 
 
 def cmd_claim(args):
-    """The claim carries the files of the PLAN this clone has, so every ramp holds them without a fetch
+    """The claim carries the files of the Plan this clone has, so every ramp holds them without a fetch
     (WP-56). Running work and the ramp's next-item reservations refuse a conflicting claim (#46, #102)."""
     if args.take and _person_only("claim --take") or _other_item("claim", args.n):
         return 1
     root, repo, run = _ctx()
-    found = ready.plans(root)
+    sources = ready.plan_sources(root)
+    variants = [row for row in sources.get(args.n, []) if not row.get("superseded")]
+    if len({row["content"] for row in variants}) > 1:
+        paths = ready.printable(", ".join(sorted({row["path"] for row in variants})))
+        return _said((False, f"#{args.n}: plan versions differ; choose the preserved content in {paths}"))
+    found = ready.plans(root, sources=sources)
     plans = ready.plan_files(root, found)
     files = plans.get(args.n)
     if files:
@@ -588,6 +658,8 @@ def cmd_release(args):
     """--take also hands over another person's claim (D-13)."""
     if args.take and _person_only("release --take") or _other_item("release", args.n):
         return 1
+    if args.take:
+        return _local_action("handoff", [args.n])
     root, repo, run = _ctx()
     kept = [] if args.take else \
         ready.unpushed(root, args.n, config.load(root)["base_branch"] or config.default_branch(root))
@@ -603,9 +675,34 @@ def cmd_release(args):
     return _said(state.release(root, repo, args.n, run=run, take=args.take, take_person=args.take))
 
 
+def cmd_retry(args):
+    if _person_only("retry"):
+        return 1
+    try:
+        print(pmap.retry_action(_root(), args.operation))
+    except state.StateError as e:
+        print(ready.printable(str(e)))
+        return 1
+    return 0
+
+
+def cmd_publish_plan(args):
+    """Publish exactly the local Plan bytes selected by the person or interactive parent session."""
+    if os.environ.get("PULSE_HOLDER") or os.environ.get("CLAUDE_CODE_CHILD_SESSION"):
+        print("pulse publish-plan: no nested publication from a runner agent or child session")
+        return 1
+    root, repo, run = _ctx()
+    selection = {key: getattr(args, key) for key in ("worktree", "path", "content")}
+    result = go.publish_plan(root, repo, args.n, selection, gh_run=run)
+    print(ready.printable(f"pulse publish-plan: {result['status']}; {result.get('why', '')}"))
+    return 0 if result["status"] == "published" else 1
+
+
 def cmd_setup(args):
     """--cli and --codex-rules set up this machine, from anywhere; the rest sets up this project. Switching
     Pulse off or out takes the lever guard along: a person's (#106)."""
+    if args.check_plan:
+        return setup.main(args)
     if args.remove and _person_only("setup --remove") or args.mode == "off" and _person_only("setup --mode off"):
         return 1
     if args.cli or args.codex_rules:
@@ -624,48 +721,79 @@ def parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True, metavar="<command>", title="commands")
     plumbing = []
 
-    def add(name, fn, text, plumb=False):
+    def add(name, fn, text, plumb=False, when="", example=""):
         """A command; plumbing (for skills, hooks, and pulse go) is listed apart in the help."""
         if plumb:
             plumbing.append(f"  {name:<14}{text}")
-        c = sub.add_parser(name, description=text, **({} if plumb else {"help": text}))   # help= lists it
+        c = sub.add_parser(name, description=text, epilog=f"When: {when}\nExample: {example}",
+                           formatter_class=argparse.RawDescriptionHelpFormatter,
+                           **({} if plumb else {"help": text}))   # help= lists it
         c.set_defaults(func=fn)
         return c
 
-    c = add("status", cmd_status, "where things stand: the map, once, or one open item with its stage, spec, PLAN, "
-                                   "claim, and blockers; --json gives its data")
+    c = add("status", cmd_status, "where things stand: the map, once, or one open item with its stage, spec, Plan, "
+            "claim, and blockers; --json gives its data", when="Read the current work and its next steps.",
+            example="pulse status 12")
     c.add_argument("n", type=int, nargs="?")
     c.add_argument("--json", action="store_true")
     c.add_argument("--fresh", action="store_true", help="skip the cache")
-    c = add("approve", cmd_approve, "write the approval each item waits for: gate 1 (agents may plan it), gate 2 "
-                                     "(its pushed PLAN: agents may build it), or a new try after pulse:failed; "
-                                     "pulse go acts on it")
+    c = add("approve", cmd_approve, "queue final integration approval for the cached, reviewed result and base",
+            when="Manual final policy is selected and you have reviewed the current result.", example="pulse approve 12")
     c.add_argument("n", type=int, nargs="+")
 
-    for name, description in (
-            ("defer", "stop an open item and put its unchanged work in the paused backlog"),
-            ("resume", "explicitly resume an item deferred to the backlog, retaining its approvals"),
-            ("discard", "stop an item and close it as not planned, without removing code or specs"),
-            ("delete", "remove an item's code and specs through a reviewed PR, then delete its issue and comments")):
-        command = add(name, cmd_lifecycle, description)
+    c = add("retry", cmd_retry, "retry a saved action after a synchronization error; keep its original binding",
+            when="A saved action reports a synchronization error.", example="pulse retry operation-id")
+    c.add_argument("operation", help="the operation ID shown in Pulse's synchronization state")
+
+    for name, description, when in (
+            ("defer", "queue a stop and pause while preserving the item's work", "Pause work you want to keep."),
+            ("resume", "queue resumption of preserved work after its stop is confirmed", "Continue a deferred item."),
+            ("revoke", "queue withdrawal of the item's integration approval", "Withdraw a previous final approval."),
+            ("handoff", "queue an explicit claim handoff while preserving its work", "Give retained work to another writer."),
+            ("discard", "stop an item and close it as not planned, without removing code or specs",
+             "Abandon an item after reviewing the proposed closure."),
+            ("delete", "prepare removal of an item's code and specs, then delete its issue and comments",
+             "Remove an item after reviewing and confirming its removal scope.")):
+        command = add(name, cmd_lifecycle, description, when=when, example=f"pulse {name} 12")
         command.add_argument("n", type=int)
 
-    c = add("auto", cmd_auto, "your auto mode per gate: alone it shows every person's switches; <gate> on lets "
-                              "your own pulse go pass that gate for your items without asking you, off takes it back")
-    c.add_argument("gate", nargs="?", choices=auto.GATES, help="plan (gate 1), build (gate 2), merge (gate 3)")
+    c = add("auto", cmd_auto, "show or configure final integration approval; automatic by default",
+            when="Inspect the final policy, or deliberately choose automatic or manual integration.", example="pulse auto")
+    c.add_argument("gate", nargs="?", choices=auto.GATES, help="merge: final approval for verified regular results")
     c.add_argument("switch", nargs="?", choices=["on", "off"])
     c.add_argument("--for", dest="span", type=auto.span, metavar="8h|2d",
-                   help="with on: for so many hours or days, then off by itself")
+                   help="expire automatic final approval after this duration")
 
-    add("go", cmd_go, "plan and build every approved item in parallel, in the foreground of this terminal: "
-                      "worktree + headless agent each, at most cap of them, agents from agent (.pulse/config.toml)")
+    c = add("go", cmd_go, "process the queue, optionally with a saved goal; Pulse manages the runner without a terminal. "
+            "Example: pulse go Improve checkout. Use --epic or --item to restrict the run",
+            when="Start or continue permitted work through its checks and integration.", example="pulse go Improve checkout")
+    c.add_argument("objective", nargs="*", metavar="goal", help="optional goal words, added to queue work")
+    scope = c.add_mutually_exclusive_group()
+    scope.add_argument("--epic", metavar="EPIC-04", help="restrict work to this logical epic (or #4 for its issue)")
+    scope.add_argument("--item", type=int, metavar="12", help="restrict work to this item number")
+    controls = c.add_mutually_exclusive_group()
+    controls.add_argument("--pause", action="store_true", help="save a goal pause for the runner's next transition")
+    controls.add_argument("--resume", action="store_true", help="resume the saved goal and start or reuse the runner")
+    controls.add_argument("--steer", metavar="text", help="append direction to the saved goal without starting a runner")
+    controls.add_argument("--stop", action="store_true", help="request a controlled stop of this clone's current run")
 
-    c = add("map", cmd_map, "live map in the terminal: who does what, what goes out next")
+    c = add("publish-plan", cmd_publish_plan, "publish the selected retained Plan through normal project hooks",
+            when="The item view offers publication of a retained Plan.",
+            example="pulse publish-plan 12 --worktree /path/to/item --path _devprocess/plans/12-login.md --content saved-content-id")
+    c.add_argument("n", type=int)
+    for key in ("worktree", "path", "content"):
+        c.add_argument("--" + key, required=True, help="the selected Plan's " + key)
+
+    c = add("map", cmd_map, "live map in the terminal: who does what, what goes out next",
+            when="Watch progress or inspect an item's available actions.", example="pulse map")
     c.add_argument("--ensure", action="store_true", help="open a live map where you work unless this clone "
                    "has one; PULSE_MAP=off turns it off")
 
     s = add("setup", cmd_setup, "activate Pulse here: config, anchor blocks, labels; "
-                                "--cli and --codex-rules set up this machine")
+            "--cli and --codex-rules set up this machine", when="Activate Pulse or update project settings.",
+            example='pulse setup --agent codex --verify "python3 -m pytest"')
+    s.add_argument("--check-plan", action="store_true",
+                   help="only retry Plan commit compatibility against the current trusted base; change no setup files")
     s.add_argument("--mode", choices=["on", "off"], help="default: keep the current mode, else on")
     s.add_argument("--cap", type=int, help="agents pulse go runs at once (default: keep, else 4)")
     s.add_argument("--base-branch", help="default: keep, else the DIA source branch, else origin's default")
@@ -686,30 +814,32 @@ def parser() -> argparse.ArgumentParser:
                         "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
                    help="Codex runs pulse without asking and never a person's lever: approve, auto <gate>, "
-                        "done, claim --take, release --take, pulse -- <command>, "
+                        "defer, resume, revoke, handoff, done, claim --take, release --take, pulse -- <command>, "
                         "gh pr merge and ready, gh issue edit, close, and reopen")
     s.add_argument("--dry-run", action="store_true")
 
-    for name, fn, text, take in (
+    for name, fn, text, take, when in (
             ("release", cmd_release, "give an item back",
-             "also from another session of mine, or hand another person's claim over (with a comment)"),
-            ("claim", cmd_claim, "hold an item for this session; exit 1 names why: closed, not approved, "
+             "also from another session of mine, or hand another person's claim over (with a comment)",
+             "Your session has preserved its work and will stop writing this item."),
+            ("claim", cmd_claim, "hold an item for this session; exit 1 names why: closed, on hold, "
                                  "blocked, a file another item holds, or held by another person or session",
-             "take over from a session of mine that has ended")):
-        c = add(name, fn, text, plumb=name == "claim")
+             "take over from a session of mine that has ended", "Acquire exclusive ownership before item work.")):
+        c = add(name, fn, text, plumb=name == "claim", when=when, example=f"pulse {name} 12")
         c.add_argument("n", type=int)
         c.add_argument("--take", action="store_true", help=f"right after {name}: {take}")
 
     c = add("new", cmd_new, "create the record of an item on the board (a GitHub issue) for a spec, "
-                            "or a draft without one; print its number", plumb=True)
+            "or a draft without one; print its number", plumb=True,
+            when="Register an authorized work item before preparing its spec.",
+            example='pulse new feat "Improve checkout" --draft')
     c.add_argument("type", choices=state.TYPES)
     c.add_argument("title")
     c.add_argument("--parent", type=int)
     c.add_argument("--blocked-by", type=_numbers, help="comma-separated issue numbers")
     what = c.add_mutually_exclusive_group(required=True)
     what.add_argument("--spec", help="the spec file in the repository, committed and ready (R2 to R6); on a spec "
-                                     "branch pulse new pushes it and opens the branch's docs PR, or uses the open "
-                                     "one; the record on the board links spec and PR and carries its priority")
+                                     "branch pulse new publishes it; the record on the board links its spec and carries its priority")
     what.add_argument("--draft", action="store_true", help="no spec yet: a record claimed for the work on it")
     c.add_argument("--phase", choices=["analysis", "spec"], default="spec",
                    help="with --draft: the work (default: spec)")
@@ -717,19 +847,23 @@ def parser() -> argparse.ArgumentParser:
                    help="an open issue without a spec (a draft, an issue from the BA) instead of a new one: "
                         "with --spec it links the spec and takes <title> as its title, "
                         "with --draft it becomes the draft")
-    c = add("check", check.main, "drift a script can see: links, paths, state, caps, stubs", plumb=True)
+    c = add("check", check.main, "drift a script can see: links, paths, state, caps, stubs", plumb=True,
+            when="Validate a spec or Plan, or inspect project consistency.",
+            example="pulse check --plan _devprocess/plans/12-login.md")
     only = c.add_mutually_exclusive_group()
     only.add_argument("--spec", nargs="+", action="extend", metavar="PATH", help="only R1 to R6, on these spec "
-                   "files as they are here: what pulse go refuses before it merges them; asks GitHub nothing")
-    only.add_argument("--plan", nargs="+", action="extend", metavar="PATH", help="all P1 to P6 on local PLANs "
+                   "files as they are here: the structural checks before planning; asks GitHub nothing")
+    only.add_argument("--plan", nargs="+", action="extend", metavar="PATH", help="all P1 to P6 on local Plans "
                       "against the available base spec and config; offline, runs no tests and grants no approval")
-    c = add("number", cmd_number, "start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them")
+    c = add("number", cmd_number, "start each spec's file name with its ID (EPIC-04, FEAT-04-02): shows the moves, --apply makes them",
+            when="Preview logical IDs and path changes before applying them.", example="pulse number")
     c.add_argument("--apply", action="store_true", help="rename them, rewrite the paths to them, "
                                                         "and move their records along")
-    c = add("migrate", cmd_migrate, "DIA project -> Pulse: preview, then --local, then --issues", plumb=True)
+    c = add("migrate", cmd_migrate, "DIA project -> Pulse: preview, then --local, then --issues", plumb=True,
+            when="Bring an existing DIA project into Pulse while preserving its work.", example="pulse migrate --offline")
     step = c.add_mutually_exclusive_group()
     step.add_argument("--local", action="store_true",
-                      help="config, anchors, frontmatter; removes .dia's tracked files and DIA's git hooks")
+                      help="config, anchors, frontmatter; preserves project hooks and their DIA inputs")
     step.add_argument("--issues", action="store_true",
                       help="open backlog items -> records on the board; the backlog goes once every row is "
                            "carried over")
@@ -739,10 +873,24 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+def command_help() -> list[str]:
+    """Read the active parser's reference, including commands hidden from its ordinary list."""
+    sub = next(a for a in parser()._actions if isinstance(a, argparse._SubParsersAction))
+    listed = {a.dest for a in sub._choices_actions}
+    lines = []
+    for public, title in ((True, "Commands"), (False, "Plumbing (for skills, hooks, and pulse go)")):
+        lines += [title, ""]
+        for name, command in sub.choices.items():
+            if (name in listed) == public:
+                lines += command.format_help().splitlines() + [""]
+    return lines
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     p = parser()
-    args = p.parse_args(argv)
+    args = p.parse_args(argv if argv else ["status"])
+    args.welcome = not argv
     if getattr(args, "take", False) and argv[:2] != [args.cmd, "--take"]:
         # a Codex rule sees only how a command starts (setup.CODEX_RULES): elsewhere it would run unasked
         p.error(f"--take goes right after the command: pulse {args.cmd} --take <n>")

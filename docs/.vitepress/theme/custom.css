@@ -106,8 +106,7 @@
   }
 }
 
-/* Headline in solid petrol ink; text-wrap: balance breaks it as
-   "Multiplayer / is on." wherever it needs two lines */
+/* Headline in solid petrol ink, with balanced wrapping on narrow screens. */
 .VPHero .name {
   max-width: none;
   font-size: 40px;

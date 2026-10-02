@@ -1,5 +1,4 @@
-"""The review and the audit gate of pulse go: what the fresh sessions that check a feature before its PR
-is ready are told, and how their verdicts are read.
+"""The review and audit sessions of pulse go, their reports, and their local evidence.
 
 Two parts: the review (spec, PLAN, decisions, lean code; ADR-05) and the
 security audit of the branch, in one session, also for an item with
@@ -7,12 +6,12 @@ risk: [security] (#126). Whoever built the feature does neither. This
 module gathers their inputs, adds what a script can see, and keeps each
 verdict in config.evidence_dir, outside the git dir a Codex phase writes,
 stamped with the commit it looked at; a session that changes the branch
-gets no verdict. Once the branch has an
-open PR, the verdict goes there too, as a hidden marker, so whoever holds
-the item next finds it.
+gets no verdict. Item comments carry reports for the team and the next
+holder. Those reports never create this clone's integration evidence.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -22,6 +21,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pulse import config, ready, state
 
@@ -39,8 +39,7 @@ MANIFEST = re.compile(r"(^|/)(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|r
                       r"|poetry\.lock|uv\.lock|Pipfile(\.lock)?|go\.(mod|sum)|Cargo\.(toml|lock)|setup\.(py|cfg)"
                       r"|Gemfile(\.lock)?|composer\.(json|lock)|bun\.lockb?|npm-shrinkwrap\.json|\.npmrc)$")
 COVERAGE = re.compile(r"^Coverage:(.*)$", re.M | re.I)
-MARKER = re.compile(r"<!-- pulse:verdict (\{[^{}\[\]]*\}) -->")   # a verdict on the PR, for the next holder; flat
-FENCE = re.compile(r" {0,3}(```|~~~)")                          # a line that opens or closes a code block
+MARKER = re.compile(r"<!-- pulse:verdict (\{[^{}\[\]]*\}) -->")   # flat report metadata on an item comment
 INSTRUCTIONS = re.compile(r"(^|/)(CLAUDE\.md|AGENTS\.md|\.mcp\.json|\.(claude|codex|agents)/.*)$", re.I)   # read at start
 PROMPT = """You review {what} in a fresh session; you did not build it.
 Follow {skill}. Inputs: {inputs}the changes {changes}, the system map as the base has it ({map};
@@ -444,7 +443,7 @@ def _local(root: Path, n: int, kind: str):
 
 def last(root: Path, n: int, kind: str = "review", known: dict = None):
     """The kept verdict of #n and the commit it saw; without one in this clone, the newest one on
-    the item's open PR (the clone that made it handed the item over). None when #n never had
+    the item (the clone that made it handed the item over). None when #n never had
     this session, or when GitHub could not say whether the author of that newest one may push.
     known: the answers about authors, as state.writer keeps them, shared by the reads of one event."""
     found = _local(root, n, kind)
@@ -452,82 +451,167 @@ def last(root: Path, n: int, kind: str = "review", known: dict = None):
         return found
     try:                       # gh looked up per call so tests can swap it
         repo_name = state.repo(root, state.gh)
-        v = next((v for v in reversed(_published(_pr(root, n, repo_name, state.gh), repo_name, state.gh, known))
+        v = next((v for v in reversed(_published(_issue(n, repo_name, state.gh), repo_name, state.gh, known, n))
                   if v["gate"] == kind), None)
     except (state.StateError, OSError, ValueError):
         return None            # no answer from GitHub: no verdict, the hook asks for the gates
     return {"commit": v["commit"], "verdict": v["verdict"]} if v and "unchecked" not in v else None
 
 
-def _pr(root: Path, n: int, repo_name: str, run) -> dict:
-    """The open PR of the checked-out branch when it builds #n, with its comments; {} without one. A
-    fork's PR on a branch of the same name is none: no verdict goes on it or comes from it (#63)."""
-    # ponytail: gh pr list brings the first 100 comments of a PR; a marker after them goes unseen
-    # and the hook asks for the gates again. Paging the comments lifts that.
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
-    prs = json.loads(run(["pr", "list", "--repo", repo_name, "--head", branch, "--state", "open",
-                          "--json", "number,headRefName,closingIssuesReferences,comments,isCrossRepository"]) or "[]")
-    return next((p for p in prs if n in state.pr_items(p) and not p.get("isCrossRepository")), {})
+def _issue(n: int, repo_name: str, run) -> dict:
+    raw = json.loads(run(["issue", "view", str(n), "--repo", repo_name, "--json", "number,comments"]))
+    if not isinstance(raw, dict) or raw.get("number") != n:
+        raise state.StateError("review reports came from a different item")
+    return state.complete_comments(repo_name, raw, run)
 
 
-def _marks(body: str) -> list:
+def _marks(body: str, full=False) -> list:
     """The verdicts a comment carries, each on a line of its own as publish writes it: none in a quote, a code
     block, or a sentence, which may be someone else's text (audit L-1 of #74). A line ends only at a newline, never
     at U+2028 or the like, where Markdown goes on. Linear in the text, and flat: publish writes no array and no
     object into a marker (M-1)."""
-    out, code = [], False
-    for line in body.replace("\r", "").split("\n"):
-        if FENCE.match(line):
-            code = not code
+    out, code = [], None
+    lines = body.replace("\r", "").split("\n")
+    for index, line in enumerate(lines):
+        fence = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", line)
+        if code:
+            if re.fullmatch(r" {0,3}" + re.escape(code[0]) + "{" + str(code[1]) + r",}[ \t]*", line):
+                code = None
             continue
-        m = not code and MARKER.fullmatch(line)
+        if fence:
+            code = (fence[1][0], len(fence[1]))
+            continue
+        m = MARKER.fullmatch(line)
         try:
             v = json.loads(m.group(1)) if m else {}
             if v.get("verdict") in ("pass", "block"):
-                out.append({k: str(v[k]) for k in ("gate", "commit", "verdict")})
+                out.append({**{k: str(v[k]) for k in ("gate", "commit", "verdict")},
+                            **{k: v[k] for k in ("item", "digest") if k in v}})
+                if full:
+                    out[-1]["text"] = _marked_text(lines, index + 1)
         except (ValueError, KeyError, RecursionError):
             continue           # a marker nobody can read is no verdict
     return out
 
 
-def _published(pr: dict, repo_name: str, run, known: dict = None) -> list:
-    """The verdicts on a PR, oldest first, from people who may push (#74): anyone may comment on a PR, so the
+def _marked_text(lines, start):
+    """Only the immediately following fenced block belongs to this marker."""
+    opening = re.fullmatch(r"(`{3,})text", lines[start]) if start < len(lines) else None
+    if opening:
+        closing = re.compile(r"`{" + str(len(opening[1])) + r",}[ \t]*")
+        for end in range(start + 1, len(lines)):
+            if closing.fullmatch(lines[end]):
+                return "\n".join(lines[start + 1:end])
+    return None
+
+
+def _published(thread: dict, repo_name: str, run, known: dict = None, n=None, full=False) -> list:
+    """The reports on an item, oldest first, from people who may push: anyone may comment, so the
     comment of anyone else is not even read (audit M-1). A verdict whose author GitHub could not check carries
     its reason as "unchecked": it counts for nothing, and while it is the newest of its gate no older one counts
     in its place. known: as state.writer keeps it."""
     out, known = [], {} if known is None else known
-    for c in pr.get("comments") or []:
-        marks = _marks(c.get("body") or "") if c.get("authorAssociation") in state.WRITERS else []
+    for c in thread.get("comments") or []:
+        marks = _marks(c.get("body") or "", full=full) if c.get("authorAssociation") in state.WRITERS else []
+        if n is not None:
+            marks = [v for v in marks if v.get("item") == n and v["gate"] in KEPT
+                     and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", v["commit"])
+                     and isinstance(v.get("digest"), str) and re.fullmatch(r"[0-9a-f]{64}", v["digest"])]
+            if urlsplit(c.get("url") or "").path != f"/{repo_name}/issues/{n}":
+                continue
+            if c.get("edited") or c.get("lastEditedAt") or c.get("includesCreatedEdit"):
+                out += [{**v, "unchecked": "report comment was edited"} for v in marks]
+                continue
         ok = marks and state.writer(c, repo_name, run, known)      # asks only for an author of a marker
+        if ok is True and n is not None:
+            login = (c.get("author") or {}).get("login")
+            ok = state.pusher(repo_name, login, run, known)
+            if not ok and isinstance(known.get(login), str):
+                ok = known[login]
         if ok:
             out += marks if ok is True else [{**v, "unchecked": ok} for v in marks]
     return out
 
 
+def result_reports(root, n, head, *, thread=None, repo_name="", run=None, known=None, cached=None):
+    """Display exact-head reports without importing gate evidence or reading an issue.
+
+    Only the background reader supplies a thread and rights transport. Cached
+    projections and protected local reports remain available without network.
+    """
+    reports, known = {}, {} if known is None else known
+
+    def accept(kind, value, source):
+        text = value.get("text")
+        if (kind in KEPT and value.get("commit") == head and "unchecked" not in value
+                and isinstance(text, str) and _judged(text) == value.get("verdict")
+                and value.get("verdict") in {"pass", "block"}
+                and hashlib.sha256(text.encode("utf-8")).hexdigest() == value.get("digest")):
+            reports[kind] = {key: value[key] for key in ("commit", "verdict", "text", "digest")}
+            reports[kind]["source"] = source
+
+    if thread is None:
+        for kind, value in (cached or {}).items():
+            if isinstance(value, dict) and value.get("source") in {"comment", "local"}:
+                accept(kind, value, value["source"])
+    for kind in KEPT:
+        if kind in reports:
+            continue
+        path = _kept(root, n, kind)
+        try:
+            if not _present(path):
+                continue
+            binding, _, text = path.read_text(encoding="utf-8").partition("\n")
+        except (OSError, UnicodeError):
+            continue
+        text = text.strip()
+        if binding == f"Commit: {head}":
+            accept(kind, {"commit": head, "verdict": _judged(text), "text": text,
+                          "digest": hashlib.sha256(text.encode("utf-8")).hexdigest()}, "local")
+    if thread is not None:
+        for comment in thread.get("comments") or []:
+            # A newer unusable report must not leave an older green one displayed.
+            for value in _marks(comment.get("body") or ""):
+                if value.get("item") == n:
+                    reports.pop(value["gate"], None)
+            if run is not None:
+                for value in _published({"comments": [comment]}, repo_name, run, known, n, full=True):
+                    accept(value["gate"], value, "comment")
+    findings = [line.strip() for report in reports.values() for line in report["text"].splitlines()
+                if re.match(r"\s*[-*]\s+\[(?:block|note|[HML]-[0-9]+)\]", line, re.I)]
+    return {"reports": reports, "findings": findings if reports else None,
+            "missing": [kind for kind in KEPT if kind not in reports]}
+
+
 def publish(root: Path, n: int, run=state.gh, pr: int = None, repo_name: str = None) -> list:
-    """Put the verdicts of #n kept here for HEAD on the open PR of this branch, one marker per gate
-    and commit, all in one comment (D-49), so the next holder of the item finds them through
-    last(). `pr` is the PR pulse go just opened or rewrote after its gates ran at HEAD: not looked
-    up again, its verdicts go on as new; pulse go names its repository too, which it asked gh once
-    for (D-49). Returns the gates it published; an error of gh passes
-    through as StateError and changes nothing kept here."""
+    """Publish local HEAD reports on item n, once per content digest. The old pr argument is ignored.
+
+    These comments support team handover and human review; they grant no local gate authority.
+    Errors leave the protected local reports intact for retry.
+    """
     head = _git(root, "rev-parse", "HEAD").strip()
     kept = {k: v["verdict"] for k in KEPT for v in [_local(root, n, k)] if v and v["verdict"] and v["commit"] == head}
     if not kept:
         return []
     repo_name = repo_name or state.repo(root, run)
-    pr = {"number": pr} if pr else _pr(root, n, repo_name, run)
-    on = {(v["gate"], v["commit"]) for v in _published(pr, repo_name, run) if "unchecked" not in v} | \
-        {(v["gate"], v["commit"]) for c in pr.get("comments") or [] if c.get("viewerDidAuthor")
-         for v in _marks(c.get("body") or "")}              # mine, whatever GitHub says of me (#74)
-    new = [k for k in kept if (k, head) not in on] if pr else []
+    thread = _issue(n, repo_name, run)
+    own = [v for c in thread.get("comments") or [] if c.get("viewerDidAuthor") and not c.get("edited")
+           and urlsplit(c.get("url") or "").path == f"/{repo_name}/issues/{n}"
+           for v in _marks(c.get("body") or "") if v.get("item") == n]
+    on = {(v["gate"], v["commit"], v["verdict"], v.get("digest"))
+          for v in [*_published(thread, repo_name, run, n=n), *own] if "unchecked" not in v}
+    reports = {k: _kept(root, n, k).read_text(encoding="utf-8").partition("\n")[2].strip() for k in kept}
+    digests = {k: hashlib.sha256(text.encode("utf-8")).hexdigest() for k, text in reports.items()}
+    new = [k for k in kept if (k, head, kept[k], digests[k]) not in on]
     body = []
     for k in new:
         at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_kept(root, n, k).stat().st_mtime))
-        mark = json.dumps({"gate": k, "commit": head, "verdict": kept[k], "at": at})
-        body.append(f"Pulse {k}: {kept[k]} for {head[:12]}.\n<!-- pulse:verdict {mark} -->")
+        mark = json.dumps({"item": n, "gate": k, "commit": head, "verdict": kept[k], "at": at, "digest": digests[k]})
+        fence = "`" * max(3, 1 + max((len(m[0]) for m in re.finditer(r"`+", reports[k])), default=0))
+        body.append(f"Pulse {k}: {kept[k]} for {head}.\n<!-- pulse:verdict {mark} -->\n"
+                    f"{fence}text\n{reports[k]}\n{fence}")
     if body:
-        run(["pr", "comment", str(pr["number"]), "--repo", repo_name, "--body", "\n\n".join(body)])
+        run(["issue", "comment", str(n), "--repo", repo_name, "--body", "\n\n".join(body)])
     return new
 
 
@@ -548,4 +632,3 @@ def gate_template(cfg: dict, agent=None) -> str:
     allow = config._allow(cfg["verify"])
     tree = " ".join(f"'Bash(git -C tree {g}:*)'" for g in ("diff", "log", "show", "status"))
     return template(cfg, agent).replace(allow, f"{allow} {tree}")
-

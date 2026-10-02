@@ -226,18 +226,21 @@ def at(root: Path, ref: str) -> str:
 
 def load(root: Path, ref: str = None) -> dict:
     """.pulse/config.toml of this clone, with defaults; with `ref` (the base on origin), EXECUTABLE and
-    [agents] as that commit holds them, defaults where it holds none. While a pulse go run lives in this
-    process, the config it started with: a branch checked out meanwhile changes nothing (audit of #44, H-1)."""
+    [agents] as that commit holds them, defaults where it holds none. Without an explicit ref, a running
+    pulse go keeps its pinned config; an explicit trusted revision always takes precedence."""
     pinned = PINNED.get(str(Path(root).resolve()))
-    if pinned is not None:
+    if pinned is not None and ref is None:
         return {**pinned, "agents": dict(pinned["agents"])}
     cfg = dict(DEFAULTS)
     pulse, dia = root / ".pulse" / "config.toml", root / ".dia" / "config.toml"
     if pulse.is_file():
         data = _parse(pulse.read_text(encoding="utf-8"), pulse)
         cfg.update({k: data[k] for k in DEFAULTS if k in data})
-        if {"plan_approval", "go_autostart"} & set(data):       # read past since #115; gate 2 is a switch (#125)
-            _warn("plan_approval is ignored: pulse auto build on switches gate 2 for your items")
+        if "plan_approval" in data:
+            _warn("plan_approval is ignored: valid published specs and Plans need no early approval; "
+                  "pulse auto merge on|off selects the final integration policy")
+        if "go_autostart" in data:
+            _warn("go_autostart is ignored: only an explicit pulse go request starts the runner")
         cfg["agents"] = {**AGENTS, **(data.get("agents") or {})}
     elif dia.is_file():
         data = _parse(dia.read_text(encoding="utf-8"))

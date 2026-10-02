@@ -1,7 +1,7 @@
 ---
 name: pulse-build
 description: >
-  Implements a ready item test-first against its PLAN, captures bugs,
+  Implements a ready item test-first against its Plan, captures bugs,
   writes tests for existing code, and closes only with fresh evidence. Use
   for "implement", "build", "code", "fix this bug", "I found a bug",
   "realize the plan", "write tests", "tests missing", "test coverage", "the
@@ -15,7 +15,7 @@ nothing is done until the evidence says so.
 
 ## Start
 
-1. `pulse status <n>`: title, stage (what it waits for), spec, PLAN and
+1. `pulse status <n>`: title, stage (what it waits for), spec, Plan and
    the branch it lives on, blockers. Blocked items do not start. Without
    a number, take the first item `pulse status` shows as "starts next".
 2. Claim it unless an orchestrator already did: `pulse claim <n>`. The
@@ -23,23 +23,19 @@ nothing is done until the evidence says so.
    - is closed: pick the next item from `pulse status`.
    - was held while claiming: stop; the person deferred the item or set a hold while the claim was in flight.
    - is on hold: keep the work paused; only the person resumes deferred work.
-   - is not approved: tell the person the item waits for their
-     approval and how they give it: `pulse approve <n>` in their own
-     terminal, or `a` in the map (a spec still on its branch of origin is
-     merged into the base branch first). Claim again once they have.
    - is blocked by an open item: that item comes first.
    - names a file another item holds (`<file> is in use by #m`): #m
      comes first; pick the next item.
    - is held by another person or another session, one of your own
      included: pick the next item. The refusal names the command that
      frees it. `pulse release --take <n>` hands another person's claim
-     over (their assignee and marks go, a comment names who did it), also
+     over after its writer stops and preserved work is recorded, also
      from a session of your own that has ended; `pulse claim --take <n>`
      would hold the item for the terminal it is typed in. Neither is
      yours to run: when the user wants the item, tell the person the
      release command for their own terminal, then claim again and start
      from the item branch on origin, where the last holder pushed the
-     work (the refusal names it): step 3.
+     work or preserved worktree (the refusal names it): step 3.
    - went to a session that claimed at the same moment: pick the next
      item.
 3. Start from the start point `pulse claim` names: the item's branch on
@@ -50,32 +46,30 @@ nothing is done until the evidence says so.
    rest of the line says why: branch only after `pulse claim <n>`, run
    again, names a start point, and show the person that line while it
    does not. When it names a branch only this clone has, push that
-   first. A feature whose
-   one blocker has a ready pull request but is not merged yet branches
-   from the blocker's branch instead, and its PR targets that branch.
+   first. A dependent waits for its blocker to be integrated; it never
+   branches from the blocker's unfinished work.
+
    When several items run in parallel, each gets its own worktree;
    `pulse go` sets each of its worktrees up with `setup` from the config,
    so its agents install no dependencies.
-4. No PLAN? Run the pulse-plan skill in this session first, then
-   return with a valid PLAN. Spec approval for planning is automatic by
-   default; implementation waits for manual PLAN approval. A supervised
-   planning job returns its PLAN to the runner. Show the goal, decisions,
-   risks and files, and tell the person `pulse approve <n>` in their own
-   terminal. An explicit build delegation may allow the runner to bind a
-   valid PLAN automatically; expired delegation, risks and unmet
-   prerequisites keep their checks. Build only against the recorded
-   PLAN and spec.
+4. No Plan? Run the pulse-plan skill here first, validate it with
+   `pulse check --plan <path>`, commit it alone and publish it on the
+   same item branch. Continue the authorized build without an early
+   approval stop. A supervised planner returns its result to the runner.
+   Build only against the published spec and valid Plan.
 
 ## Spec tests first
 
-Before the first task, write the spec tests of the PLAN's wave 1: one test
+Before the first task, write the spec tests of the Plan's wave 1: one test
 per FR, named after its id (for example `test_fr_01_...`), from the EARS
 line and its examples, at the boundary the Activation Path names. Run them
 once: each fails for the stated reason. Commit them alone as
 `test: spec tests for #<n>`. From then on they are frozen: change the code,
-never these tests. If one is wrong, stop: the spec changes first, and the
-person who approved it approves it again. `pulse go` sends a changed spec
-test back as a blocking finding.
+never these tests. If one is wrong, change its requirement first, record
+why in the Plan change log, and show the exact test diff to the user
+before editing it. A changed requirement is never permission to silently
+weaken a test. `pulse go` sends a changed spec test back as a blocking
+finding.
 
 ## Build, wave by wave
 
@@ -88,7 +82,7 @@ of its own, in parallel, in the same worktree: the files are disjoint
 (P4). Commit their results one after another, then run the wave's check
 once. Without subagents, go task by task as below.
 
-For each task of the PLAN:
+For each task of the Plan:
 
 1. **Reuse first.** Search for an existing helper, pattern, or
    dependency before writing anything new.
@@ -96,14 +90,14 @@ For each task of the PLAN:
    it, quote the output, then the minimal code that passes, then
    refactor green.
 3. **Stay in budget.** A task that runs over twice its diff budget gets
-   one PLAN change-log line saying why.
+   one Plan change-log line saying why.
 4. **Run the task's check** before the next task: the tests the task
    touches, not the whole suite.
 
 After each step, run the tests that step affects, not the whole suite;
 use targeted checks. Under `pulse go`, the supervisor runs the full
 `verify` once on the completed result. Its build and fix agents run
-targeted checks and additional PLAN checks that `verify` does not cover,
+targeted checks and additional Plan checks that `verify` does not cover,
 then return the result to the supervisor. In an interactive build, run
 `verify` once before review and audit, and again only after a relevant change.
 
@@ -125,7 +119,7 @@ with the user.
 
 When the work learns something, stop the code edit and route it first:
 
-- **Work that has to be built first** and is not in the PLAN: one short
+- **Work that has to be built first** and is not in the Plan: one short
   title per line under `needs:` in the frontmatter of
   `_devprocess/plans/<n>-needs.md`. Commit and push it, and stop the
   build: `pulse go` makes each title a draft item this one waits for.
@@ -133,14 +127,11 @@ When the work learns something, stop the code edit and route it first:
   `pulse release <n>`.
 - **A new bug:** record it as under Bugs below, with "Discovered in
   #<n>". Fix it test-first on this branch with `Refs: #<n>, #<new>`. The
-  pull request names both with `Closes`; where it goes into another base
-  than the default branch, tell the person to close the fix record in
-  GitHub after the merge.
-- **A decision or a spec that no longer holds:** amend it and add a PLAN
-  change-log line. A changed spec, or a changed PLAN a person approved,
-  goes back to that person: push it, show what changed and tell them how
-  they approve it, `pulse approve <n>` in their own terminal. Headless,
-  keep the PLAN as it is and name it in the summary.
+  result names both items and their evidence; completion follows integration.
+- **A decision or a spec that no longer holds:** amend it within the
+  authorized scope, add a Plan change-log line, revalidate and publish.
+  Preserve frozen test boundaries. A headless session that cannot settle
+  a necessary product decision preserves its work and reports it.
 
 **The system map.** As the last task, update `_devprocess/SYSTEM-MAP.md`
 where it exists (a build never creates it) when the item changes what it
@@ -158,14 +149,13 @@ an item is invisible; `pulse check` finds it.
 **Found by the user, no fix wanted yet:** write the fix spec
 `_devprocess/requirements/fixes/{slug}.md` from `templates/FIX-TEMPLATE.md`,
 with the symptom and what is known about the cause, and `parent:` set;
-`pulse number --apply` names it `FIX-{ee}-{ff}-{nn}-{slug}.md`. Commit it on a docs
-branch from `refs/remotes/origin/<base>` after `git fetch origin` and push it, then register it:
-`pulse new fix "<symptom>" --parent <feature> --spec <path>`, which opens
-the docs PR of that branch. Commit what it wrote and push again; the docs
-PR follows. Ask whether to fix it now; if so, tell the person how they
-approve it: `pulse approve <n>` in their own terminal, which merges the
-docs PR that `pulse new` opened into the base branch first. Once it is
-approved, build it here.
+`pulse number --apply` gives it its logical ID. Register a draft to obtain
+the item number, publish on `fix/<n>-<slug>`, then attach the spec with
+`pulse new fix "<symptom>" --parent <feature> --spec <path> --issue <n>`.
+Commit and push its metadata changes. If the user requested a fix,
+continue with the Plan and tests; a request to record it alone ends with
+the published finding. There is no early spec approval or separate spec
+merge.
 
 **Fixing one:** a test that reproduces the bug comes first. Then the
 regression cycle: the test passes with the fix, fails with the fix
@@ -196,7 +186,7 @@ Read-only work (a coverage report, a gap analysis) needs no item.
    shown first, change tests because the spec changed, or stop. Loop until
    green or until the user stops.
 4. A test changes only with its requirement, and only with all three: the
-   success criterion amended with a one-line reason, the PLAN change log
+   success criterion amended with a one-line reason, the Plan change log
    naming the test path, and the test diff shown to the user before the
    edit. "The test is inconvenient" is a code bug.
 5. Commit `test: <what>` with `Refs: #<n>`; the body names accepted
@@ -236,7 +226,7 @@ everything else temporary is deleted.
 
 In a supervised build, finish the assigned phase after its targeted
 checks and report the result. The runner owns the full verification,
-review, audit, pushes, and PR. Do not repeat those phases in its agent.
+review, audit, publication, and integration. Do not repeat those phases in its agent.
 The following completion evidence and gates apply to the supervisor or
 to an interactive build that owns the whole item.
 
@@ -244,18 +234,20 @@ Nothing closes on a claim. Before calling the item done, in this turn:
 
 | Claim | Evidence |
 |---|---|
-| Tests and build pass | one run of the configured `verify` (`.pulse/config.toml`; the PLAN's verify commands only when there is none), exit 0, 0 failures |
+| Tests and build pass | one run of the configured `verify` (`.pulse/config.toml`; the Plan's verify commands only when there is none), exit 0, 0 failures |
 | Every requirement is proven | each FR's spec test is green and unchanged since `test: spec tests for #<n>` |
 | New symbols are reachable | a caller outside the definition file and outside tests (`references/reachability.md`) |
 | Feature works for its user | every Activation Path entry matches an identifier in the code |
 | Bug fixed | the red-green regression cycle ran |
 
-Then, without asking between the steps, the gates in this order; a red
-gate gets a fix (test first, commit), and after it the tests run again
-and only the gates that were red, with one fix round per item: a gate
-still red after it leaves the PR a draft that names the open findings.
+Then run, without asking between the steps, the gates in this order.
+There is one fix round per item (test first, commit), followed by tests
+and the red gates. Green review or audit evidence may carry to a new
+commit only when its Git tree is identical. If contents change, rerun
+both review and audit.
+A gate still red preserves the result and names the open findings.
 
-1. PLAN change log: deviations, if any. Commit `feat|fix|refactor: <what
+1. Plan change log: deviations, if any. Commit `feat|fix|refactor: <what
    and why>` with `Refs: #<n>`.
 2. **Tests:** that one run of the configured `verify`, exit 0,
    0 failures: the evidence "Tests and build pass" above, not a second
@@ -268,20 +260,23 @@ still red after it leaves the PR a draft that names the open findings.
    `AUDIT.md` at the worktree root before it starts: it writes both there
    anew, each with its own verdict; the audit blocks while a Critical or
    High finding is open. Neither report is committed:
-   paste their text into the PR body, then delete both files. After a
-   fix round only the red part runs again; the table of the PR names the
-   commit each gate saw.
-4. Push and open one draft PR for the feature: `gh pr create --draft
-   --base <base branch>`, body "Closes #<n>", the state of the three
-   gates, the review and audit reports, and `## Deviations from the PLAN`
-   when the build departed from it. A red gate names what is open. When
-   all three passed (each on the commit it saw: a gate that stayed green
-   after a fix did not run again), tell the person the PR is ready
-   for them: they mark it ready (`gh pr ready <pr>`) and merge it, an
-   agent does neither; the Pulse guard refuses both, and a PR opened
-   without `--draft`. The merge is the user's; after it,
-   the item closes (GitHub closes it on the default branch; on another
-   base, the next `pulse go` closes it).
-5. After the merge, sweep the PLAN's decisions: the ones with a
+   preserve their text with the result's evidence and return their paths
+   to the supervisor. After a fix, rerun the checks that need fresh
+   evidence; every verdict names the commit it checked.
+4. Publish the item branch and result summary: exact head and base,
+   tests, review, audit, remaining findings and deviations from the Plan.
+   The runner records the shared result after its gates. An interactive
+   builder publishes and releases the item so `pulse go` can verify and
+   record it. Release inactive claims while retaining work and evidence.
+   When manual approval is explicitly configured and a verified result is current,
+   tell the person `pulse approve <n>`
+   in their terminal or `a` in the Map. That final approval binds head and
+   base. Pulse checks it afresh, integrates with normal hooks and a
+   fast-forward-only remote update, then records completion. A changed
+   head or base needs revalidation and a new approval. The default automatic
+   final policy uses the same gates and bindings; the agent never
+   changes that person-owned setting.
+
+5. After integration, sweep the Plan's decisions: the ones with a
    `read-when` a future agent will hit become decision records
    (the pulse-plan skill, kind `post-hoc`).

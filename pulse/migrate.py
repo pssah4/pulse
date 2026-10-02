@@ -1,21 +1,19 @@
 """pulse migrate: a DIA project becomes a Pulse project.
 
 Two steps, each its own commit on its own branch, each shown before it runs.
-A DIA file goes once its content has a new home and git history keeps it;
-what history cannot bring back stays in place and is named:
+Project hooks, backups and their DIA inputs remain in place throughout migration:
 
   local    .dia/config.toml -> .pulse/config.toml (DIA mode off stays off),
            DIA anchor blocks replaced in place, work state dropped from
-           _devprocess frontmatter (a BA's status becomes validity); .dia's
-           tracked files and the git hooks DIA installed in this clone go.
+           _devprocess frontmatter (a BA's status becomes validity). Existing
+           commit gates also check the migration itself; incompatibility stays visible.
   issues   every open backlog item becomes a GitHub issue, or reuses the
            one DIA created ("FEAT-01-02: ..." or "[EPIC-01] ...") or this
            migration made before (the legacy id in its body and its
            pulse:<kind> label), each only from an author with write access
            or the gh user; epic ->
            parent, depends-on -> blocked-by; specs get issue: and legacy-id:.
-           Nothing is approved (the preview marks what DIA had ready, a person
-           approves), and a record it creates holds only its spec link and
+           No integration approval is imported, and a record holds only its spec link and
            legacy id. Done items stay history. The backlog goes only when
            every row got a record or is done.
 """
@@ -25,7 +23,6 @@ import datetime
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -91,32 +88,15 @@ def _backlog(root: Path) -> Path | None:
     return None
 
 
-def _dia_hook(p: Path) -> bool:
-    """DIA's install-git-hooks.sh wrote it: DIA's header is its second line."""
-    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()[:2]
-    return len(lines) == 2 and lines[1].startswith(tuple(f"# DIA {h} hook" for h in DIA_HOOKS))
-
-
-def _dia_leftovers(root: Path) -> tuple:
-    """(tracked, installed, keep) besides the backlog. tracked: .dia's files, git history keeps them.
-    installed: what DIA's install-git-hooks.sh put into .git; the hooks would run DIA's checks on every
-    commit, the migration's own included. keep: (path, why) for what neither covers."""
+def _dia_kept(root: Path) -> list:
+    """Keep project gates and all DIA inputs: their runtime dependencies cannot be inferred safely."""
     top, git_dir = root.resolve(), config.common_dir(root)
     listed = lambda *opt: [top / f for f in _git(root, "ls-files", "-z", *opt, "--", ".dia").split("\0") if f]
-    keep = [(p, "not tracked by git, so its history cannot bring it back") for p in listed("-o")]
-    installed = [p for p in (git_dir / "hooks-data", git_dir / "consistency-check.last-run.json")
+    hooks = [git_dir / "hooks" / (name + suffix) for name in DIA_HOOKS for suffix in ("", ".bak")]
+    installed = [p for p in [git_dir / "hooks-data", git_dir / "consistency-check.last-run.json", *hooks]
                  if os.path.lexists(p)]
-    hooks = git_dir / "hooks"
-    for name in DIA_HOOKS:
-        hook, bak = hooks / name, hooks / f"{name}.bak"
-        dias = [p for p in (hook, bak) if p.is_file() and _dia_hook(p)]
-        if hooks.is_symlink():
-            keep += [(p, "DIA's hook in a hooks folder other clones share") for p in dias]
-            continue
-        installed += dias
-        if hook in dias and bak.is_file() and bak not in dias:
-            keep.append((bak, f"the hook DIA's installer set aside; rename it to {name} to use it again"))
-    return listed(), installed, keep
+    return [(p, "retained for existing project checks; migration does not remove hooks or their inputs")
+            for p in dict.fromkeys([*listed(), *listed("-o"), *installed])]
 
 
 def _own_file(row: dict) -> bool:
@@ -368,13 +348,13 @@ def detect(root: Path) -> dict:
     rows = parse_backlog(bl.read_text(encoding="utf-8"))[1] if bl else []
     fates = [_fate(r) for r in rows if kind_of(r)]
     backlog = bl.relative_to(root).as_posix() if bl else None
-    tracked, installed, keep = _dia_leftovers(root)
+    keep = _dia_kept(root)
     skipped = _skipped(root, plan(root, []))
     why = bl and _backlog_stays(root, bl, skipped)
     return {"dia_mode": mode, "anchors": anchors,
             "pulse_config": (root / ".pulse" / "config.toml").exists(), "backlog": backlog,
             "open_items": fates.count("open"), "done_items": fates.count("done"),
-            "removes": [_shown(root, p) for p in tracked + installed] + ([backlog] if bl and not why else []),
+            "removes": [backlog] if bl and not why else [],
             "keeps": [f"{_shown(root, p)}: {w}" for p, w in keep] + ([f"{backlog}: {why}"] if why else []),
             "skipped": skipped}
 
@@ -420,17 +400,10 @@ def apply_local(root: Path) -> dict:
     base = _toml_str(text, "source_branch") or config.default_branch(root)
     config.write(root, mode=mode, base_branch=base)
     audit = re.search(r"^\[audit\.supply_chain\].*?(?=^\[|\Z)", text, re.M | re.S)
-    if audit:
+    if audit and not re.search(r"^\[audit\.supply_chain\]", (root / ".pulse/config.toml").read_text(), re.M):
         with open(root / ".pulse" / "config.toml", "a", encoding="utf-8") as f:
             f.write("\n" + audit.group(0).strip() + "\n")
-    tracked, installed, keep = _dia_leftovers(root)     # the settings live in .pulse/config.toml now
-    if tracked:
-        _git(root, "rm", "-r", "-q", "--", ".dia")         # history keeps them; untracked files stay
-    for p in installed:
-        if p.is_dir() and not p.is_symlink():
-            shutil.rmtree(p)
-        else:
-            p.unlink()
+    keep = _dia_kept(root)
     anchors = []
     for t in setup.EVERY:
         p = root / t.path
@@ -457,7 +430,7 @@ def apply_local(root: Path) -> dict:
             touched += 1
     branch = _commit(root, "chore: migrate DIA to Pulse (config, anchors, frontmatter)", base)
     return {"branch": branch, "mode": mode, "base_branch": base, "anchors": anchors, "frontmatter": touched,
-            "removed": [_shown(root, p) for p in tracked + installed],
+            "removed": [],
             "kept": [f"{_shown(root, p)}: {w}" for p, w in keep]}
 
 

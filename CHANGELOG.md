@@ -5,6 +5,33 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-02
+
+### Changed
+
+- Pulse owns the workflow from spec to integration. Each item keeps one published branch through its Plan and implementation, with no pull requests or early approval stops. Regular results complete automatically after tests, review and security audit; manual final approval remains an explicit policy option.
+- Shared Git state serializes claims and integration across clones. Final approval binds the exact result and base, and completion requires proof that the result reached the remote base. Local approve, defer, resume, revoke and handoff actions enter a durable outbox before background synchronization.
+- Checks follow the changed inputs: ordinary specs and Plans receive offline artifact validation; documentation and method changes use relevant checks. Code and uncertain changes retain full verification. The runner verifies each completed result once and reports check durations.
+
+### Added
+
+- `pulse go` accepts a free-text objective alongside the queue, for example `pulse go finish Epic 4 and investigate the UI problem`. Goals, scope, progress and steering survive restarts. Required epics, features, improvements and fixes enter the visible Pulse workflow before agents start them. Explicit scope restrictions limit the run.
+- Explicit starts without a terminal create or reuse a managed runner and return its report. Pause, resume, steering and controlled stop preserve work. A stalled additional objective leaves independent queue work available.
+- The Map has a visible `?` help entry with the workflow and command usage. Plain `pulse` explains the current state and possible next actions.
+- New homepage and coordination-tool comparison explain teams working across developers and machines, with dated sources and clear limits of planned file reservations.
+
+### Fixed
+
+- Valid local Plans remain visible across registered worktrees after a blocked commit or push. Status distinguishes validation, publication and retained work, so restart reuses the Plan without granting premature build authority. Setup can test actual project commit gates with a valid Plan before planning starts.
+- Runner activity, preserved failures, publication errors and integration refusals remain visible after claims are released. Idle claims no longer stand in for progress; people can request safe handoff across accounts after the writer stops and its work is preserved.
+- Own claim receipts survive separate CLI processes and interrupted responses. Changed specs, conflicting Plans, held work and foreign worktrees retain their ownership and validation boundaries.
+
+### Upgrade notes
+
+Update Pulse in Claude Code and Codex, run `pulse setup --codex-rules` again, then start new sessions and review changed Codex hooks. Update all participating clones before resuming shared work. Run `pulse setup --check-plan` once per project and resolve migration findings. Keep existing item branches and worktrees.
+
+Regular checked results now integrate automatically. A person with repository write access can select manual final approval with `pulse auto merge off` before starting the runner. Legacy approvals and PR checks grant no current authority; repository rules requiring PRs need an administrator's policy decision. See [Upgrading Pulse](https://pssah4.github.io/pulse/guides/upgrading).
+
 ## [0.2.6] - 2026-10-01
 
 ### Added

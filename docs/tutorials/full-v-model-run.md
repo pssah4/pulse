@@ -31,7 +31,7 @@ The [first business analysis tutorial](./first-business-analysis) shows this ste
 - `_devprocess/analysis/EXPLORE-retrospectives.md`: the Exploration Board, for a proof of concept or an MVP
 - no Item-BA yet: the first epic of a new project comes straight from the Project-BA; a later epic gets an Item-BA of its own, which inherits the personas by reference
 
-The skill pushed the BA on its docs branch from its first commit, so Alice and Bob could read it while it grew. Sebastian approves it, and the skill goes on with requirements in the same session.
+The skill pushes the Project-BA's discovery branch after each commit, so Alice and Bob can read it while it grows. It records validated claims when the evidence supports them, asks Sebastian to close the completed discovery draft, and continues authorized requirements work in the same session.
 
 ::: tip Methods the BA agent will propose
 During this phase the agent stops the interview whenever a gap appears
@@ -67,7 +67,7 @@ The BA becomes an epic and its features, each a file in the repository:
 - `requirements/features/FEAT-01-01-anonymous-cards.md`, `FEAT-01-02-vote-and-rank.md`, `FEAT-01-03-action-items.md`: user stories, success criteria without technology ("a participant adds a card in under 10 seconds"), and an Activation Path that names how a user reaches the feature
 - `requirements/handoff/architect-handoff.md`: what the plan must respect
 
-Each item is on the board from the moment `/pulse-re` names it, as a draft (`pulse new feat "Vote and rank" --draft` returns #3), so Alice and Bob see a spec in progress and who writes it. Once the specs pass validation, `/pulse-re` runs `pulse number --apply`, which starts each file name with its ID (`EPIC-01`, `FEAT-01-02`: the second feature of the first epic), commits them on the docs branch, and attaches each spec to its draft with `pulse new`, which checks the spec, pushes the branch, and opens its docs PR on the first call:
+Each item is visible from the moment `/pulse-re` reserves its draft: `pulse new feat "Vote and rank" --draft` returns #3. The skill creates `feat/3-vote-and-rank` from the fetched base, writes and validates its spec, assigns its logical ID with `pulse number --apply`, then commits and pushes. Spec, Plan and build stay on that branch. It attaches each published spec to the reserved draft, parents first, on that item's branch:
 
 ```bash
 pulse new epic "Retro board" --spec _devprocess/requirements/epics/EPIC-01-retro-board.md --issue 1
@@ -78,15 +78,15 @@ pulse new feat "Action items" --parent 1 --blocked-by 3 --spec _devprocess/requi
 
 The numbers are examples: the Project-BA's draft from step 1 took a number too, so on your board they differ.
 
-Then it commits what `pulse new` wrote into the specs and pushes again; the docs PR follows. Each feature is cut so that its merge reads well on its own: one feature, one traceable merge. Action items need the ranking first, so #4 waits for #3. The team agrees in the sync call that all three are specified well enough. Sebastian runs `pulse approve 2 3 4`, which writes the approvals and nothing else; the next `pulse go` merges the docs PR into `develop` first, because agents plan from the specs as the base branch has them, and puts them on the ramp.
+Commit and push the metadata registration writes on the same item branch. Keep each parent's spec available so relative links resolve. Each feature produces one traceable integration. Action items need ranking first, so #4 names #3 as a blocker. Valid published specs can be planned immediately; no spec merge or approval separates them from planning.
 
 ## Step 3: Plan
 
-Here planning runs inside the build commands, because the team approved in the sync call, after the RE session: `pulse go` plans each approved feature before it builds it, and `/pulse-build` plans an item it starts without a PLAN. A feature you approve in the `/pulse-re` session is planned right there, in the same session; an epic gets no PLAN. One PLAN per feature in `_devprocess/plans/`: the tasks, the files each task touches, and the decisions made on the way with the options that lost. Tasks that touch different files share a wave and can run at once. A decision that later changes must respect ("cards are stored without author") becomes a decision record behind the router in `_devprocess/decisions/README.md`.
+Planning runs inside `/pulse-re`, `/pulse-build` and `pulse go`. Here `/pulse-re` plans the published features while their requirements are fresh; an epic gets no implementation Plan. One Plan per feature in `_devprocess/plans/` records tasks, files and decisions, including rejected alternatives. Disjoint tasks share a wave. A constraint future changes must respect, such as "cards are stored without author", becomes a decision record behind `_devprocess/decisions/README.md`.
 
 The files lists matter beyond the item: the ramp compares them to keep parallel work apart.
 
-Every PLAN waits for a person before its build. Once the PLANs of #2 to #4 are pushed, Sebastian reads them and runs `pulse approve 2 3 4` again, which approves each PLAN as origin has it, with the spec on the base branch; a PLAN changed afterwards waits again.
+Each Plan passes `pulse check --plan <path>`, is committed alone as `docs(plan): #<n>`, and is pushed on its item branch. A valid Plan permits the authorized build when prerequisites, file reservations and base checks allow it. #4 can be planned while #3 is open, but cannot build until #3 is integrated.
 
 ## Step 4: Build in parallel (`pulse go`)
 
@@ -100,7 +100,11 @@ The ramp starts with #2 and #3, because their files do not overlap. #4 waits for
 pulse go
 ```
 
-It creates a second checkout for #3 in the repository under `.worktrees/`, on the branch `feat/3-vote-and-rank`, starts an agent there, and runs three gates when the build is done: the project's tests, then a review and a security audit in one fresh session. All three pass, so #3 gets a ready pull request against the base branch (`develop` here) with `Closes #3`, the gate table, and both reports. #4 keeps waiting for #3. `pulse map` shows all of it live: Sebastian's agents with a green light, Alice's item as in progress, #4 on the ramp with `waits for #3`. Sebastian reads the pull request of #3 and merges it. The next `pulse go` run closes #3 (GitHub does that on its own only for the default branch) and builds #4 from `develop`, with the code of #3, and its pull request targets `develop` too, where he merges it.
+Pulse prepares #3's worktree under `.worktrees/`, reusing its published `feat/3-vote-and-rank` branch. It checks the frozen spec tests fail before implementation, runs the build, then verifies the result and requests review and security audit in one fresh session. The Map shows preparation, actual agent phases and result evidence.
+
+After publication, Pulse rechecks the exact head, base and evidence, integrates with normal hooks and a fast-forward push, and records completion. Only then may #4 build from the updated base. Its result receives its own checks and integrates automatically when they pass.
+
+A person who wants manual final approval first selects it with `pulse auto merge off`. They can then review a result and approve its exact head and base with `a` in the Map or `pulse approve 3` in their terminal. The action is queued locally and becomes authoritative after synchronization. Destructive removal always keeps its separate confirmations. Without a terminal, an explicit `pulse go` starts or reuses a managed process; `pulse go --stop` requests a controlled stop.
 
 Each build follows [`/pulse-build`](../guides/pulse-build): read the code first, write a failing test, make it pass, and prove the Activation Path exists before the item may close. A bug found on the way gets its own fix spec and record ("Discovered in #3") before anyone fixes it.
 
@@ -110,11 +114,11 @@ Each build already proved its own requirements: one spec test per requirement, w
 
 ## Step 6: Security audit (`/pulse-audit`)
 
-Every feature branch already passed an audit of its own changes before its pull request was ready. Before the release, `/pulse-audit` looks at the whole codebase: OWASP Top 10, the OWASP Top 10 for LLM applications where it applies, static analysis, dependencies, supply chain, and Zero Trust. The report lands in `_devprocess/analysis/AUDIT-retrospectives-<date>.md`. Findings the team does not fix now become fix items that point at the report; nothing stays in a silent "later" state.
+Every feature branch already passed an audit of its own changes before its result became eligible for final approval. Before the release, `/pulse-audit` looks at the whole codebase: OWASP Top 10, the OWASP Top 10 for LLM applications where it applies, static analysis, dependencies, supply chain, and Zero Trust. The report lands in `_devprocess/analysis/AUDIT-retrospectives-<date>.md`. Findings the team does not fix now become fix items that point at the report; nothing stays in a silent "later" state.
 
 ## Integrate and release
 
-Each merge lands on the base branch, and `pulse go` checks every new commit of it before it builds on it: the project's CI, `setup`, and `verify` in a scratch checkout. On a red base it starts nothing but the fix you mark with `pulse:base`. The release itself (version, tag, publish) belongs to the project.
+Each integration updates the shared base. Pulse fetches its current commit and reads the configuration there before starting further work. CI status is not a start or integration gate. Startup does not repeat the full local suite; the supervisor verifies each completed result before integration. Release steps such as versioning, tagging and publishing belong to the project.
 
 ## What you end up with
 
@@ -122,12 +126,12 @@ Each merge lands on the base branch, and `pulse go` checks every new commit of i
 _devprocess/
   analysis/       BA-retrospectives.md, EXPLORE-retrospectives.md, Item-BAs, AUDIT-*.md
   requirements/   epics/, features/, fixes/, handoff/architect-handoff.md
-  plans/          one PLAN per feature
+  plans/          one Plan per feature
   decisions/      README.md (router) and the records it routes to
 ```
 
-On the board: one record per feature (#2 to #4, plus any fixes), closed by the pull requests that delivered them; `pulse go` closes the epic #1 with the last of them it merges; merged on GitHub, the epic stays open until you close it there. Every line of code traces back to the BA through the spec, the PLAN, the commit (`Refs: #3`), and the pull request (`Closes #3`).
+On the board: one record per feature (#2 to #4, plus any fixes), completed once its result reaches the shared base. `pulse go` closes the epic #1 with the last of them it merges. Every line of code traces back through the checked result, commit (`Refs: #3`), Plan and spec to the BA. A publication that succeeded before an interrupted closure is recovered without integrating twice.
 
 ## Pausing and resuming
 
-Say "stop" at any time. Nothing gets lost: the specs are in the repository and the state is on the board. Later, `/pulse` reads both and recommends the next step.
+Say "stop" at any time; `pulse go --stop` stops a managed run cooperatively. Branches, uncommitted work, specs and evidence remain. To pause one item, use `pulse defer <n>` and later `pulse resume <n>` in your terminal or the Map. Waiting work needs no idle claim. `/pulse` reads the retained state and names the next step.

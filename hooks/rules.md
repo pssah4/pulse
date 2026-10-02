@@ -4,11 +4,16 @@ Always on, in every session and every subagent of a project that runs
 Pulse. Where the project's own AGENTS.md or CLAUDE.md says otherwise,
 the project wins, except for branch names: an item's branch is
 `<type>/<n>-<slug>` (`feat`, `imp`, `fix`), because `pulse` finds its
-PLAN and pull request by that name.
+Plan and published result by that name.
 
 ## Start
 
-Defer, resume, discard, and delete are person's levers. An agent never invokes them or confirms them through the Map. Defer preserves code, specs, PRs, approvals and notes; auto mode does not resume it. An explicitly commissioned removal PR may be prepared by an agent, but merge approval and irreversible issue deletion remain the person's. Never replace these commands with direct record edits, force pushes or history resets.
+Defer, resume, revoke, handoff, discard and delete are person's levers.
+An agent never invokes them or confirms them through the Map. Defer
+preserves work and evidence until an explicit resume. An authorized
+removal may be prepared by an agent; integration approval and irreversible
+issue deletion remain the person's. Never replace these commands with
+direct record edits, force pushes or history resets.
 
 1. Read the code first: trace the flow, its callers, and its tests.
 2. Read the one decision that applies: `_devprocess/decisions/README.md`
@@ -45,10 +50,10 @@ be green now", or "this should fix it" without having run the check.
 After each step, run the tests that step affects, not the whole suite;
 use targeted checks while building. Under `pulse go`, the supervisor runs
 the full `verify` once on the completed result; its agents run targeted
-checks and additional PLAN checks that `verify` does not cover. In an
+checks and additional Plan checks that `verify` does not cover. In an
 interactive build, run `verify` once before review and audit. Repeat it
-only after a relevant change. Startup reads the current base SHA and CI
-metadata without running a full local test suite before planning.
+only after a relevant change. Startup reads the current base SHA and
+project configuration without running a full local test suite before planning.
 
 ## Tests first
 
@@ -64,53 +69,58 @@ re-read the flow before trying a fourth.
 ## Work state
 
 Every epic, feature, improvement, and fix is a spec in the repository.
-Its state (draft, approved, taken, blocked, done) is a small record on
-the board on GitHub that only `pulse` writes: `pulse new ... --draft` or
-`--spec <path>`, `claim`, `release`, `approve`.
-Approving
-says the team wants an item built; only a person decides that, in their
-own terminal or the map: an agent session never runs `pulse approve`,
-`done`, `claim --take`, `release --take`,
-`setup --remove`, or `setup --mode off`, nor `gh pr merge` or `gh pr ready`, and the command
-line and the Pulse guard refuse them.
-Where one waits, tell the person which gate waits and how they pull the
-lever. An interactive session may start `pulse go` when the person explicitly
-requests it, in a persistent foreground TTY with its session markers intact.
-Runner agents and child sessions never start another runner. Starting it
-grants no approval and switches no auto gate. Content
-never goes into the record, and nobody edits it with `gh` directly.
-Work on the board is visible to the team: drafts show a BA or spec in
-progress and who writes it, a claim carries its phase and, while
-`pulse go` runs it, a heartbeat, and a note stays on an item after a
-stopped run. A claim belongs to the session that made it: another session, even under
-the same login, gets exit 1 and picks other work; the refusal names the
-command that frees the item. A stopped `pulse go` leaves its work on the
-item branch and a note on the item; whoever goes on builds on that
-branch. Push after every commit, on an item branch and a docs branch
-alike: work only this clone has is invisible to the team and lost to
-whoever takes over, and the stop hook names a missing push (an agent of
-`pulse go` leaves the push to its run). A project hook that refuses a
-commit or push is a finding: never skip it with `--no-verify`; fix the
-cause or tell the person. A session told that it no longer
-holds its item (`pulse claim` or `pulse release` names another holder)
-stops the work on it, pushes nothing of it, and tells the person.
-`pulse release <n>` refuses while the item's branch has commits only
-this clone has: push them first. `pulse release --take <n>`
-hands a claim over, another person's or one of an ended session of
-yours: their assignee and marks go, and a comment names who did it.
-`pulse claim --take <n>` takes over from a session of your own that has
-ended and holds the item for the terminal it is typed in. Both are
-a person's: tell the person the command for their own terminal, then
-claim as usual. Work starts from origin, never from the local
-base branch, which may lag behind what others pushed: `pulse claim`
-fetches and names the start point, and a docs branch starts from
-`refs/remotes/origin/<base>` after `git fetch origin`. When Codex refuses a command
-with "blocked by policy", or the Pulse guard denies one ("Gate levers
-belong to a person"), it is a person's lever: tell the person which gate
-waits and the command for their own terminal, and look for no other
-way. A plain `claim` or `release` that Codex refuses or asks about means
-the Codex rules are older than this Pulse: the person runs
-`pulse setup --codex-rules` again.
+The board identifies the item; Pulse's shared state records its claim,
+hold, published result and final approval. Only Pulse writes that state.
+Use `pulse new ... --draft` or `--spec <path>`, `claim` and `release`.
+
+Approval authorizes integration of a reviewed result at its exact head
+and base commits. Regular checked results complete automatically by default.
+A person with repository write access may choose manual final approval.
+Destructive removal requires its own confirmation. Settings belong to the person,
+in their terminal or the Map. Tell the person the command for their own terminal: `pulse approve`,
+`revoke`, `done`, `claim --take`, `release --take`, `setup --remove`, or
+`setup --mode off`. Agent sessions cannot operate these commands or the
+Map's person-only actions.
+Queued local actions are not shared authority: only a confirmed action
+can authorize integration. Defer and revoke block locally at once while
+synchronization proceeds. The Map and CLI show queued, syncing,
+confirmed, conflict or error; a conflict requires a fresh preview.
+
+An interactive session may execute an explicitly requested `pulse go`
+with its source markers intact. In a terminal it runs in the foreground;
+without a TTY Pulse starts or reuses its managed process. Read its receipt
+and current report before describing it as running. `pulse go --stop`
+requests a controlled stop of the current run. Runner agents and child
+sessions never start another runner. Starting it grants no approval.
+
+Work is visible to the team: drafts show their author, runner phases carry
+a heartbeat, and a note records preserved work after a stop. A stopped
+`pulse go` leaves its work on the item branch or in its retained worktree.
+A claim belongs to its session and reserves only the files actually
+claimed. Another holder means pick other work. Push after every commit on the item's branch; agents of `pulse go` leave pushes to their
+supervisor. Before an ordinary release, publish committed work. Never
+remove dirty or unpublished work to make a release succeed. Waiting for
+final approval, a dependency or a later retry does not need an idle claim.
+Keep the branch, worktree, note and evidence; use the safe release or
+stopped-work handoff Pulse provides. A person can request a cross-account
+handoff with `pulse release --take <n>`; it stops the current writer and
+preserves its work before ownership changes. It grants no integration
+approval. Agents never take another session's claim themselves.
+
+Work starts from origin, never from the local base branch: continue the
+published item branch, else use the fetched
+`refs/remotes/origin/<base>` start point that `pulse claim` names.
+Specs, Plan and implementation continue on that one branch. A session
+told it no longer holds the item stops, pushes nothing and reports it.
+A project hook that rejects a commit, merge or push is a finding: keep
+real hooks enabled, fix the cause or report it. Never use `--no-verify`,
+an empty `core.hooksPath`, force-push or history resets to get past it.
+If Codex says "blocked by policy" or the Pulse guard denies a person's
+lever ("Gate levers belong to a person"), name the command
+for the person's terminal and do not seek another route. A plain
+`claim` or `release` refused by old Codex rules needs
+`pulse setup --codex-rules` in the person's terminal.
+
 Ask, do not read: `pulse status`
 (all open work in the order it goes out, what each item waits for, and what
 starts next; `pulse status <n>` for one item; `--json` for the same as
@@ -123,67 +133,54 @@ Commits name their item: `Refs: #<n>`.
 
 ## Flow
 
-Pulse stops for a person at these points and runs on everywhere else:
-the business analysis is approved; the completed PLAN is approved before
-implementation; an explicit manual spec setting or an expired plan
-delegation asks the person to read and approve the spec; an item
-`pulse go` gave up on (the label
-`pulse:failed`, with a comment that says why): no run takes it until the
-person takes the label off with `pulse approve <n>` in their own terminal;
-the merge of each feature's pull request into the base branch. Between these
-points, do not ask whether to go on: finish the phase and start the
-next one.
+Pulse prepares the authorized work through analysis, spec, Plan, build
+and checks without routine approval stops between those phases. Ask only
+for missing decisions that the current request does not settle. The sole
+integration approval comes after a published result has passed its gates
+and is automatic by default. Show its diff, tests, review, audit and
+remaining findings. With an explicit manual final approval policy, name
+`pulse approve <n>` or `a` in the Map for the person. The approval binds
+both result head and base. A changed head or base needs revalidation and a new approval;
+old spec approvals, Plan approvals and PR state authorize nothing.
 
-The runner merges a spec's docs PR into the base before planning once
-every spec in it passes R1 to R6 and its checks pass. An invalid PLAN
-without a prior PLAN approval can receive bounded planning repairs;
-its existing risks and manual decisions stay in effect.
+A published spec that passes R1 to R6 can be planned directly from its
+item branch. Before handing over a Plan, run `pulse check --plan <path>`
+and resolve all P1-P6 findings. A valid published Plan permits building
+when dependencies, files and project checks allow it. Bounded planning
+repairs preserve the Plan's risks. GitHub CI status does not gate planning
+or building. Pulse verifies the completed result before integration.
 
-Spec approval for planning is automatic by default; build waits for
-manual PLAN approval. Before handing over a PLAN, run
-`pulse check --plan <path>` and resolve all P1-P6 findings. The person's
-`pulse approve <n>` binds the pushed PLAN and spec. An explicit
-`pulse auto build on` delegates that decision; an explicit off or expired
-build delegation stays off. Automatic merge requires opt-in.
-Pending CI permits planning and holds ordinary builds;
-a current red base permits only its repair items. A changed PLAN a
-person approved returns to that person.
+Record consequential choices (a new dependency, a changed schema,
+persisted format or public interface, compatibility and destructive
+operations) under `risk:`. The existing task authorization determines
+what may be implemented; a risk flag adds no routine Plan approval.
+An irreversible action outside that authorization still needs the
+person's decision. Work that must come first belongs under `needs:` in
+the Plan or `_devprocess/plans/{n}-needs.md`; the runner records blockers
+and draft items for it. A headless agent never asks: it preserves work
+and reports a decision it cannot resolve within the task.
 
-Steps that would need a person's OK (a new dependency, a changed
-schema, persisted format, or public interface, broken backward
-compatibility, a departure from a current decision, anything destructive
-such as deleting data, force-push, or rewriting history) belong in the
-PLAN under `risk:`, which asks the person who approves the PLAN for a closer look, and an approved PLAN covers them. Work that has to be built first goes under `needs:`,
-in the PLAN or, found while building, in `_devprocess/plans/{n}-needs.md`:
-`pulse go` makes each entry a blocker and a new title a draft item, and
-never holds a PLAN for it. When the build meets a step the PLAN does not
-cover, ask the user. A session without a person (an agent `pulse go`
-started) never asks: it leaves that step undone and names it in its
-summary.
+The item's only Plan is `_devprocess/plans/{n}-{slug}.md`, committed on
+its branch. Plan mode displays that file and keeps no separate plan.
+One feature, one branch, one traceable integration. Build the Plan's
+tasks test-first, then run tests, review and security audit. Review and
+audit run in one fresh session, also with `risk: [security]`. There is
+one fix round per item; after a relevant fix run tests and the gates
+that need fresh evidence. Green review or audit evidence may carry to a
+new commit only when its Git tree is identical. If contents change, rerun
+both review and audit. A red gate preserves the work and findings
+and cannot receive integration approval. Record deviations in the Plan
+change log and the result's review evidence.
 
-An item's plan is its PLAN file `_devprocess/plans/{n}-{slug}.md`,
-committed on the item's branch. A plan mode, where the agent has one, only shows that
-PLAN for approval and keeps no plan of its own: a plan outside the
-repository does not count.
-
-One feature, one branch, one pull request. On its branch the build works
-through the PLAN's tasks; then three gates run in order: the project's
-tests (`verify` in `.pulse/config.toml`; `pulse go` does not start
-without it), a review, and a security audit of the branch, the last
-two in one fresh session, also with `risk: [security]`. A red gate gets
-one fix round per item, and after it the tests run again and only the
-gates that were red. A session opens the pull request as a draft; when all three
-passed (each on the commit its gate table names: a gate that stayed green
-after a fix did not run again), `pulse go` marks its own ready, and in a
-session you tell the person, who marks it ready and merges it. A red
-gate keeps it draft, and its body names what is open.
-A departure from the PLAN does not: it goes into the pull request under
-`## Deviations from the PLAN`, for the person who merges. A feature
-whose blocker is not merged yet waits for that merge; nothing builds on
-a blocker's branch.
-
-Cut features so that each merge reads well on its own: one feature, one
-traceable merge, never a monolith.
+Pulse publishes the result and evidence and releases inactive claims.
+It obtains final approval under the current policy, automatically by default.
+Integration serializes the shared base update,
+checks the exact approved head and base again, and uses regular Git
+merge and push with the project's hooks. A withdrawal or changed state
+prevents publication. Completion follows proof that the result reached
+the remote base; restarting after that proof does not merge it twice.
+Dependencies wait for completed integration, never build on a blocker's
+branch. Cut features so each integration can be reviewed on its own.
 
 ## Asking the user
 

@@ -1,16 +1,7 @@
-"""Work state in GitHub issues, read through a local cache.
+"""Issue identity and cached board views, overlaid with canonical shared workflow state.
 
-GitHub is the only store (ADR-02). Reads come from one cached
-`gh issue list` in the shared git dir, refreshed at most every TTL seconds;
-every write goes straight to GitHub and drops the cache. Callers pass
-`run` to replace gh in tests.
-
-A claim is the assignee plus a claim mark: a comment that names the agent
-session holding the item. All agents of one person share a login, so the
-mark is what keeps a second session off an item the first one holds. The
-oldest mark of an assignee holds the item. The mark also tells the phase
-of the work and the last sign of life (its beat); a release may leave a
-note for whoever takes the item next.
+Claims, holds, result bindings and approvals live on the shared state branch.
+Issue comments authenticate person intent and preserve legacy history only.
 """
 from __future__ import annotations
 
@@ -26,15 +17,16 @@ import shlex
 import subprocess
 import stat
 import time
+import uuid
 from contextlib import contextmanager
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from pulse import config
 
-TTL = 30                 # a full reload at least this often: PR checks move without a new tag
+TTL = 30                 # refresh issue structure; canonical state is read independently
 POLL = 2                 # seconds between the free conditional checks for a change
-FORMAT = 17              # of the issue cache, raised when an item gains a field or load attaches differently
+FORMAT = 18              # of the issue cache, raised when an item gains a field or load attaches differently
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
 FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments,author"
@@ -510,7 +502,8 @@ def normalize(issue: dict, trusted=_owner, lifecycle_trusted=None) -> dict:
                      if n.get("state") == "OPEN"],
         "edges": [[n["number"], n.get("title") or ""] for n in (issue.get("blockedBy") or {}).get("nodes", [])],
         "spec": spec.group(1) if spec else None,
-        "pr": None,            # attached in load(): the open PR that closes this item
+        "pr": None,            # historical compatibility; PRs no longer steer workflow
+        "approval": None, "result": None, "revision": "", "shared_revision": "",
         "url": issue.get("url"),
         "updated": issue.get("updatedAt"),
     }
@@ -595,24 +588,6 @@ def cached(root: Path) -> list:
         return []
 
 
-FAILED = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
-
-
-def checks(rollup: list):
-    """A PR's checks in one word: fail beats pending beats pass; None without checks."""
-    def one(c):
-        if c.get("__typename") == "StatusContext":
-            return c.get("state") or "PENDING"
-        return (c.get("conclusion") or "PENDING") if c.get("status") == "COMPLETED" else "PENDING"
-
-    if not rollup:
-        return None
-    states = {one(c) for c in rollup}
-    if states & FAILED:
-        return "fail"
-    return "pending" if states & {"PENDING", "EXPECTED"} else "pass"
-
-
 def changed(repo_name: str, etag: str, run=gh) -> tuple:
     """(changed, etag): did any issue or pull request move since etag? GitHub answers an
     unchanged state with 304, which does not count against the rate limit."""
@@ -645,11 +620,29 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
     order_info, when supplied, receives the shared order and conflicts even on an empty board."""
     from pulse import order
 
-    def loaded(items, seen):
+    def loaded(items, seen, threads=None):
         if order_info is not None:
             order_info.clear()
             order_info.update({**seen, "positions": {int(number): position
                                                     for number, position in seen["positions"].items()}})
+        items = _overlay(root, items)
+        from pulse import review
+        authors = {}
+        for item in items:
+            result = item.get("result")
+            if result:
+                item.update(review.result_reports(root, item["number"], result["head"],
+                    thread=threads.get(item["number"]) if threads is not None else None,
+                    repo_name=repo_name, run=run, known=authors, cached=item.get("reports")))
+            else:
+                for key in ("reports", "findings", "missing"):
+                    item.pop(key, None)
+        # The last displayed bindings are available to a later local CLI action.
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            _keep(path, {**saved, "items": items})
+        except (OSError, ValueError):
+            pass
         return items
 
     path, now = cache_path(root), time.time()
@@ -679,56 +672,156 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
         for record in items:
             record.update(manual_position=seen["positions"].get(record["number"]),
                           order_revision=seen["revision"], order_issue=seen["issue"], order_conflict=seen["why"])
-    prs = json.loads(run(["pr", "list", "--repo", repo_name, "--state", "open", "--limit", "200",
-                          "--json", "number,headRefName,baseRefName,isDraft,closingIssuesReferences,"      # files:
-                                    "statusCheckRollup,reviewRequests,files,changedFiles,isCrossRepository,"
-                                    "headRefOid,updatedAt,autoMergeRequest"]))   # #62; #70; #99; #118
-    closes = {n: {"number": pr["number"], "branch": pr["headRefName"], "base": pr.get("baseRefName"),
-                  "draft": pr["isDraft"], "checks": checks(pr.get("statusCheckRollup") or []),
-                  "head": pr.get("headRefOid"), "fork": bool(pr.get("isCrossRepository")),    # built on never (#63)
-                  "updated": pr.get("updatedAt"),       # a verdict posted since: the map reads the PR again (#99)
-                  **({"auto": True} if pr.get("autoMergeRequest") else {}),    # pulse go turns it off (#118 H-1)
-                  "reviewers": [r["login"] for r in pr.get("reviewRequests") or [] if r.get("login")]}
-              for pr in sorted(prs, key=lambda p: not p.get("isCrossRepository"))   # an own PR wins over a fork's
-              for n in pr_items(pr)}
-    carry = [{"number": pr["number"], "branch": pr["headRefName"], "base": pr.get("baseRefName"),
-              "draft": pr["isDraft"], "docs": docs_only(pr), "head": pr.get("headRefOid"),   # gate 1 binds it
-              "files": [f.get("path", "") for f in pr.get("files") or []]}
-             for pr in prs if not pr.get("isCrossRepository")]         # a fork's PR blocks no approval (L-3)
-    for i in items:
-        i["pr"] = closes.get(i["number"])
-        i["spec_prs"] = [c for c in carry if i.get("spec") in c["files"]]      # pulse go merges it (#115)
     _keep(path, {"repo": repo_name, "format": FORMAT, "fetched_at": now, "checked_at": now, "etag": etag,
                  "items": items, "order": seen})
-    return loaded(items, seen)
+    return loaded(items, seen, {record["number"]: record for record in raw})
 
 
-def pr_items(pr: dict) -> set:
-    """The items a PR builds: its branch name, and what GitHub links. GitHub links "Closes #n"
-    only in a PR against the default branch; against develop or a blocker's branch the branch
-    name is all there is. A PR whose files are all under _devprocess/ (a spec, a plan) builds
-    nothing by its name alone (FIX-02-06-04); files are known only where a call asks for them,
-    and only a complete list counts: gh lists 100 at most, sorted by path. Nor does a fork's PR:
-    whoever owns the fork names its branch (#63). A call that asks for no isCrossRepository reads
-    every PR as one of this repository."""
-    n = None if docs_only(pr) or pr.get("isCrossRepository") else item_of(pr.get("headRefName"))
-    return {ref["number"] for ref in pr.get("closingIssuesReferences") or [] if "number" in ref} | \
-        ({n} if n else set())
+def _overlay(root, entries):
+    from pulse import auto, shared
+    revision, snapshot = shared.read(root)
+    policy = shared.policy(snapshot)
+    try:
+        auto._cache(root, policy)
+    except StateError:
+        pass                                # a read-only board still shows its fresh canonical state
+    rows = []
+    for original in entries:
+        if original["number"] == (policy.get("proof") or {}).get("issue") or (
+                original.get("title") == auto.CONTROL and not original.get("type")):
+            continue
+        entry = dict(original)
+        current = snapshot["items"].get(str(entry["number"]))
+        if current is None:
+            entry.update(approval=None, result=None, revision="", shared_revision="",
+                         migration_required=bool(entry.get("claimed_by") or entry.get("hold") or entry.get("failed")))
+        else:
+            claim = current.get("claim") or {}
+            entry.update({key: current.get(key) for key in
+                          ("revision", "result", "approval", "claim", "stop", "work", "removal", "revoked")})
+            entry.update(shared_revision=revision, migration_required=False, hold=current["hold"],
+                         failed=current.get("failed", False), failure=current.get("failure", ""),
+                         claimed_holder=claim.get("session") or claim.get("holder"), claim_token=claim.get("holder"),
+                         claimed_by=claim.get("actor") or claim.get("holder"), claimed_files=claim.get("files", []),
+                         claimed_phase=(current.get("work") or {}).get("phase"),
+                         assignees=[claim["actor"]] if claim.get("actor") else [], done=current["done"])
+            stop = current.get("stop") or {}
+            entry["lifecycle"] = {"action": "defer", "phase": "requested" if stop.get("status") == "requested"
+                                  else "paused" if current["hold"] else "resumed", "work": stop.get("work") or {}} \
+                if stop or current["hold"] else None
+        rows.append(entry)
+    return rows
 
 
-def docs_only(pr: dict) -> bool:
-    """Every file the PR changes is under _devprocess/, as far as gh says: a complete list only. gh
-    names a moved file by its new path; approve checks with git before it merges (#69)."""
-    files = pr.get("files") or []
-    return bool(files) and len(files) == pr.get("changedFiles", len(files)) \
-        and all(f.get("path", "").startswith("_devprocess/") for f in files)
+def _action_body(operation):
+    payload = {key: value for key, value in operation["payload"].items() if key != "proof"}
+    if operation["kind"] == "approve":
+        if set(payload) != {"head", "base"}:
+            raise StateError("integration approval needs the displayed head and base")
+        value = {"operation": operation["id"], "item": operation["item"], **payload}
+        prefix = "pulse integration approval "
+    else:
+        value = {"operation": operation["id"], "item": operation["item"], "kind": operation["kind"],
+                 "expected": operation["expected"], "payload": payload}
+        prefix = "pulse action "
+    return prefix + json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def merge(root: Path, repo_name: str, pr: int, head: str, run=gh, method: str = "merge") -> None:
-    """Merge PR #pr in the repository's method, only while head is its head: what was checked is what lands. Never
-    --auto, which GitHub keeps after a push (audit H-1 of #118), never --admin."""
-    run(["pr", "merge", str(pr), "--repo", repo_name, f"--{method}", "--match-head-commit", head])
+def _action_proof(repo_name, operation, actor, run, *, issue=None, body=None):
+    issue = operation["item"] if issue is None else issue
+    body = _action_body(operation) if body is None else body
+    comments = pages(run, f"repos/{repo_name}/issues/{issue}/comments?per_page=100")
+    matches = []
+    for comment in comments:
+        text = comment.get("body") or ""
+        prefix = next((p for p in ("pulse integration approval ", "pulse action ", "pulse final approval policy ")
+                       if text.startswith(p)), None)
+        try:
+            value = json.loads(text[len(prefix):]) if prefix else {}
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, dict) and value.get("operation") == operation["id"]:
+            matches.append(comment)
+    if len(matches) > 1:
+        raise StateError("action has ambiguous person proofs")
+    comment = matches[0] if matches else json.loads(run(
+        ["api", "-X", "POST", f"repos/{repo_name}/issues/{issue}/comments", "-f", "body=" + body]))
+    ident = comment.get("id")
+    if type(ident) is not int or ident < 1:
+        raise StateError("action comment has no authenticated identity")
+    comment = json.loads(run(["api", f"repos/{repo_name}/issues/comments/{ident}"]))
+    user = comment.get("user") or {}
+    if comment.get("id") != ident or comment.get("issue_url") != \
+            f"https://api.github.com/repos/{repo_name}/issues/{issue}" or \
+            user.get("login") != actor or user.get("type", "User") != "User" or \
+            not comment.get("created_at") or comment.get("updated_at") != comment["created_at"] or \
+            any(comment.get(key) for key in ("edited", "lastEditedAt", "includesCreatedEdit")) or \
+            comment.get("body") != body:
+        raise StateError("action person proof was edited or does not match this item and intent")
+    return {"comment": ident, "author": actor, "operation": operation["id"]}
+
+
+def sync_action(root, operation, run=None):
+    """Authenticate durable person intent, then apply exactly its stable operation."""
+    from pulse import auto, shared
+    run = gh if run is None else run
+    factual = operation.get("kind") == "stopped"
+    if not factual and (not holder()["id"].startswith("terminal:") or not auto.person(os.environ, True)):
+        raise StateError("person actions cannot be synchronized from an agent source")
+    if operation.get("kind") not in {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}:
+        raise StateError("unknown person action")
+    shared._operation(operation)
+    repo_name = repo(root, run=run)
+    actor = run(["api", "user", "--jq", ".login"]).strip()
+    if not can_push(repo_name, actor, run):
+        raise StateError("repository push permission is required")
+    if operation["kind"] == "policy":
+        proof = auto.proof(root, repo_name, operation, actor, run)
+        receipt = shared.update(root, {**operation, "payload": {**operation["payload"], "proof": proof}})
+        auto._cache(root, shared.policy(shared.read(root)[1]))
+        return receipt
+    if factual:
+        _, snapshot = shared.read(root)
+        token = operation["payload"].get("holder")
+        claims = [(record["result"]["data"].get("claim") or {}) for record in snapshot["operations"].values()
+                  if record["operation"]["item"] == operation["item"]]
+        if not any(claim.get("holder") == token and claim.get("actor") == actor for claim in claims):
+            raise StateError("stop acknowledgement requires its original writer account and claim generation")
+        saved = snapshot["operations"].get(operation["id"])
+        if saved:
+            prior = saved["operation"]
+            if any(prior[key] != operation[key] for key in ("item", "kind", "payload")):
+                raise StateError("stop acknowledgement identity changed")
+            return shared.update(root, prior)
+        current = snapshot["items"].get(str(operation["item"]), {})
+        # This factual acknowledgement grants no new work: matching the unique
+        # stopped generation remains mandatory, including across a replacement.
+        return shared.update(root, {**operation, "expected": current.get("revision", "")})
+    proof = _action_proof(repo_name, operation, actor, run)
+    _, snapshot = shared.read(root)
+    current = snapshot["items"].get(str(operation["item"]))
+    if current is None:
+        entries = load(root, repo_name, run=run, fresh=True)
+        _migrate(root, repo_name, [entry for entry in entries if entry["number"] == operation["item"]], run)
+        # Migration may advance the revision. The original expectation then
+        # conflicts visibly; legacy reservations and holds stay preserved.
+    elif operation["kind"] == "resume" and operation["id"] not in snapshot["operations"] and \
+            operation["expected"] == current["revision"]:
+        from pulse import lifecycle
+        stop = current.get("stop") or {}
+        work = stop.get("work") or {}
+        if stop.get("status") == "completed" and work:
+            claims = [(record["result"]["data"].get("claim") or {})
+                      for record in snapshot["operations"].values()
+                      if record["operation"]["item"] == operation["item"] and
+                      record["result"]["status"] == "confirmed"]
+            owners = {claim["actor"] for claim in claims
+                      if claim.get("holder") == stop.get("holder") and claim.get("actor")}
+            lifecycle._resume_work(root, {"work": work, "retained": not work.get("remote"),
+                "holder": {"author": next(iter(owners)) if len(owners) == 1 else ""}}, actor)
+    receipt = shared.update(root, {**operation, "payload": {**operation["payload"], "proof": proof}})
     drop_cache(root)
+    return receipt
 
 
 def me(root: Path, run=gh, ttl=60) -> str:
@@ -796,45 +889,22 @@ def create(root: Path, repo_name: str, kind: str, title: str, parent=None, block
     return int(url.rstrip("/").rsplit("/", 1)[-1])
 
 
-def docs_pr(root: Path, repo_name: str, branch: str, base: str, title: str, run=gh) -> int:
-    """The docs PR of a spec branch into the base: the open one of this branch, else a new one (#116), so all
-    specs of one RE run go in together. Ready, and without Closes: its merge brings specs, no item is done. A
-    PR from a fork on a branch of the same name is none of mine (#63)."""
-    prs = json.loads(run(["pr", "list", "--repo", repo_name, "--head", branch, "--base", base, "--state", "open",
-                          "--json", "number,isCrossRepository"]) or "[]")
-    mine = next((p["number"] for p in prs if not p.get("isCrossRepository")), None)
-    if mine:
-        return mine
-    url = run(["pr", "create", "--repo", repo_name, "--base", base, "--head", branch, "--title", title,
-               "--body", f"Specs from `{branch}`, registered with `pulse new`."])
-    drop_cache(root)
-    return int(url.strip().splitlines()[-1].rstrip("/").rsplit("/", 1)[-1])
-
-
-def approve(root: Path, repo_name: str, n: int, gate: int, blobs=(), run=gh, by=None) -> None:
-    """Write the approval n waits for and nothing else (#115); pulse go acts on it. Gate 1: the label and a comment,
-    `gate 1 ok at <head> <spec path>` when blobs names the head of the docs PR that carries the spec and its path,
-    which pulse go merges at that head only (M-1); gate 2: the line `Plan-ok: <plan blob> <spec blob>` and the
-    comment `plan ok at` with the same blobs, which counts only from someone who may push; gate 0: pulse:failed
-    goes, a new try for pulse go (#114). The comment names the account (#111), or by: pulse go's auto lever (#125)."""
-    by = by or who(root, run=run)
-    if gate == 3:          # a PR head, which pulse go merges only while it or a clean merge of the base on it leads
-        said = f"merge ok at {blobs[0]}: gate 3 approved by {by}"
-    elif gate == 2:
-        _set_line(root, repo_name, n, PLAN_OK_LINE, f"Plan-ok: {' '.join(blobs)}", run)
-        said = f"plan ok at {' '.join(blobs)}: gate 2 approved by {by}"
-    else:
-        run(["issue", "edit", str(n), "--repo", repo_name, "--add-label", APPROVED] +
-            (["--remove-label", FAIL] if gate == 0 else []))
-        said = (f"gate 1 ok at {' '.join(blobs)}: " if blobs else "") + f"gate 1 approved by {by}" + \
-            ("; pulse:failed is off, pulse go tries it again" if gate == 0 else "")
-    run(["issue", "comment", str(n), "--repo", repo_name, "--body", said])
-    drop_cache(root)
+def approve(root: Path, repo_name: str, n: int, gate: int, blobs=(), run=gh, by=None) -> dict:
+    """Accept final head/base approval using the already displayed board revision."""
+    from pulse import actions
+    if gate != 3 or len(blobs) != 2:
+        raise StateError("only final integration approval exists; show the result and base first")
+    observed = next((entry for entry in cached(root) if entry["number"] == n), None)
+    if not observed or not observed.get("revision"):
+        raise StateError("read the current result before approving integration")
+    accepted = actions.submit(root, n, "approve", dict(zip(("head", "base"), blobs)), observed["revision"])
+    actions.start(root)
+    return accepted
 
 
 def _view(repo_name, n, run):
     raw = json.loads(run(["issue", "view", str(n), "--repo", repo_name,
-                         "--json", "state,labels,assignees,blockedBy,comments,parent"]))
+                         "--json", "state,body,labels,assignees,blockedBy,comments,parent"]))
     return complete_comments(repo_name, {**raw, "number": n}, run)
 
 
@@ -845,7 +915,7 @@ def holder(env=None) -> dict:
     try:
         given = json.loads(env.get("PULSE_HOLDER") or "null")
         if isinstance(given, dict) and given.get("id"):
-            return {"id": str(given["id"])}
+            return {"id": str(given["id"]), "claims": dict(given.get("claims") or {})}
     except ValueError:
         pass
     for kind, var in (("codex", "CODEX_THREAD_ID"), ("claude", "CLAUDE_CODE_SESSION_ID")):
@@ -951,10 +1021,20 @@ def _lead(v, who: dict) -> tuple:
     return held, "" if held else (_people(v, mine["author"]) or "nobody")
 
 
-def holds(repo_name: str, n: int, run=gh, who=None) -> tuple:
-    """(True, "") while this session holds n; else (False, who holds it now), with "" for no mark of
-    this session on n. Asked before work leaves the clone: a lost claim pushes nothing (#77)."""
-    return _lead(_view(repo_name, n, run), who or holder())
+def holds(repo_name: str, n: int, run=gh, who=None, *, root=None) -> tuple:
+    """Verify this acquisition's generation immediately before protected work."""
+    from pulse import actions, shared
+    root = root or config.find_root()
+    if root is None:
+        raise StateError("claim verification needs a repository root")
+    if actions.held(root, n):
+        return False, "local stop requested"
+    current = shared.read(root)[1]["items"].get(str(n), {})
+    claim = current.get("claim")
+    token = _claim_id(who or holder(), n, root)
+    if claim and claim["holder"] == token and not current.get("hold"):
+        return True, ""
+    return False, (claim.get("actor") or claim.get("session") or claim["holder"]) if claim else "claim released"
 
 
 def taken(v, login: str, trusted=_owner) -> str:
@@ -993,12 +1073,6 @@ def _give_way(repo_name: str, n: int, marks: list, who: dict, run) -> None:
             _unmark(repo_name, m["cid"], run)            # after the assignee
 
 
-def _other_session(v, who: dict):
-    """The mark of another session of mine that holds the item, if one does."""
-    marks = _marks(v)
-    return marks[0] if marks and marks[0]["mine"] and marks[0]["id"] != who["id"] else None
-
-
 def docs_branch(root: Path, n: int) -> str:
     """The docs branch of draft n on origin as the last fetch left it (named as spec_branch says, or
     docs/<n>-<slug>), where its analysis and spec are (#99 FR-05, #116); "" without one."""
@@ -1026,163 +1100,311 @@ def _work(root: Path, n: int, v: dict) -> str:
     return "; the work is on " + ready.printable(shlex.quote(f"origin/{b}")) if named else ""
 
 
+_CLAIMS = {}               # a process remembers only generations it actually acquired
+
+
+def _claim_id(who, number, root=None):
+    known = (who.get("claims") or {}).get(str(number))
+    if root is None:
+        return known or _CLAIMS.get((who["id"], number), who["id"])
+    if not known:
+        saved = _claim_receipt(root, who, number)
+        known = _receipt_claim(saved)["holder"] if saved else None
+    return known or who["id"]
+
+
+def _receipt_claim(operation):
+    return operation["payload"]["claim"] if operation["kind"] == "migrate" else operation["payload"]
+
+
+def _claim_receipt(root, who, number):
+    from pulse import actions, shared
+    saved = actions.claim_receipt(root, who["id"], number)
+    if saved is not None:
+        try:
+            shared._operation(saved)
+            payload = _receipt_claim(saved)
+            if (not isinstance(payload, dict) or saved["kind"] not in {"claim", "migrate"} or saved["item"] != number
+                    or payload.get("session") != who["id"]
+                    or not shared.ID.fullmatch(str(payload.get("holder", "")))
+                    or not LOGIN.fullmatch(str(payload.get("actor", "")))
+                    or shared._files(payload.get("files")) != payload["files"]):
+                raise ValueError()
+        except (StateError, ValueError, TypeError, KeyError):
+            raise StateError("invalid local claim receipt") from None
+    return saved
+
+
+def _prepare_claim(root, who, number, payload, snapshot, current, kind="claim"):
+    """Persist our exact operation before push; identical simultaneous callers share it."""
+    from pulse import actions, shared
+    saved = _claim_receipt(root, who, number)
+    if kind == "claim":
+        payload = {**payload, "files": shared._files(payload["files"])}
+    proposed = {"id": uuid.uuid4().hex, "item": number, "kind": kind,
+                "expected": current.get("revision", ""), "payload": payload}
+
+    def scope(operation):
+        claim = _receipt_claim(operation)
+        claim = {k: v for k, v in claim.items() if k != "holder"}
+        return {**operation["payload"], "claim": claim} if operation["kind"] == "migrate" else claim
+
+    def same(candidate):
+        return (candidate and candidate["kind"] == kind and candidate["item"] == number
+                and candidate["expected"] == proposed["expected"]
+                and scope(candidate) == scope(proposed))
+
+    prior = snapshot["operations"].get(saved["id"]) if saved else None
+    if saved and (not prior or prior["result"]["status"] == "confirmed" and same(saved)):
+        if not same(saved):
+            if saved["expected"] != proposed["expected"]:
+                raise StateError("pending claim's revision changed; release its obsolete local intent, then retry")
+            raise StateError("pending claim has another account or scope; repeat the original claim before releasing")
+        proposed = saved
+    chosen = actions.claim_receipt(root, who["id"], number, proposed, previous=saved)
+    if not same(chosen):
+        raise StateError("local claim preparation changed; read current state and retry")
+    return chosen
+
+
+def _forget_claim(root, who, number, token=None):
+    from pulse import actions
+    saved = _claim_receipt(root, who, number)
+    if saved and (token is None or _receipt_claim(saved)["holder"] == token):
+        actions.claim_receipt(root, who["id"], number, None, previous=saved)
+
+
+def _own_legacy(repo_name, number, claim, who, login, run):
+    """The exact old claim still belongs to this authenticated writer and session."""
+    from pulse import shared
+    raw = _view(repo_name, number, run)
+    observed = normalize({"title": "", **raw})
+    if (observed["claimed_by"] != login or observed["claimed_holder"] != who["id"]
+            or claim.get("actor") != login or claim.get("session") != who["id"]
+            or shared._files(observed["claimed_files"] or ["."]) != claim["files"]):
+        return False
+    marks = [mark for mark in _marks(raw) if mark["author"] in observed["assignees"]]
+    if not marks:
+        return False
+    cid = marks[0]["cid"]
+    original = next(c for c in raw["comments"] if COMMENT.search(c.get("url") or "")
+                    and COMMENT.search(c["url"]).group(1) == cid)
+    proof = json.loads(run(["api", f"repos/{repo_name}/issues/comments/{cid}"]))
+    if (proof.get("id") != int(cid) or (proof.get("user") or {}).get("login") != login
+            or proof.get("issue_url") != f"https://api.github.com/repos/{repo_name}/issues/{number}"
+            or not proof.get("created_at") or proof.get("body") != original["body"]):
+        return False
+    if proof["created_at"] == proof.get("updated_at"):
+        return True
+    if not proof.get("node_id"):
+        return False
+    query = "query($id:ID!){node(id:$id){... on IssueComment{databaseId body updatedAt " + \
+            "author{login} editor{login} issue{number repository{nameWithOwner}}}}}"
+    latest = json.loads(run(["api", "graphql", "-f", "query=" + query, "-f", "id=" + proof["node_id"]]))
+    node = (latest.get("data") or {}).get("node") or {}
+    return (node.get("databaseId") == int(cid) and node.get("body") == proof["body"]
+            and node.get("updatedAt") == proof.get("updated_at")
+            and (node.get("author") or {}).get("login") == login
+            and (node.get("editor") or {}).get("login") == login
+            and node.get("issue") == {"number": number, "repository": {"nameWithOwner": repo_name}})
+
+
+def _remember(who, number, token):
+    who.setdefault("claims", {})[str(number)] = token
+    _CLAIMS[(who["id"], number)] = token
+
+
+def _change(root, number, kind, payload, expected):
+    from pulse import shared
+    return shared.update(root, {"id": uuid.uuid4().hex, "item": number, "kind": kind,
+                                "expected": expected, "payload": payload})
+
+
+def _migrate(root, repo_name, entries, run, who=None, login=None):
+    """Import restrictive legacy claims/holds during an authenticated mutation.
+
+    Unknown legacy reservation scope conservatively covers the whole project.
+    No old spec, PLAN or PR approval becomes an integration approval.
+    """
+    from pulse import shared
+    for entry in entries:
+        if not entry.get("migration_required"):
+            continue
+        number = entry["number"]
+        if str(number) in shared.read(root)[1]["items"]:
+            continue
+        claimed = entry.get("claimed_by")
+        legacy = {"holder": uuid.uuid4().hex, "files": shared._files(entry.get("claimed_files") or ["."]),
+                  "actor": claimed, "session": entry.get("claimed_holder") or "legacy:" + claimed} if claimed else None
+        payload = {"claim": legacy, "hold": bool(entry.get("hold")),
+                   "hold_origin": "legacy" if entry.get("hold") else "",
+                   "failed": bool(entry.get("failed")),
+                   "failure": "Legacy work failed; explicit resume is required" if entry.get("failed") else ""}
+        if who and legacy and legacy["session"] == who["id"] and legacy["actor"] == login:
+            if not _own_legacy(repo_name, number, legacy, who, login, run):
+                raise StateError(f"#{number}: original own legacy claim could not be authenticated")
+            operation = _prepare_claim(root, who, number, payload, shared.read(root)[1], {}, kind="migrate")
+            _remember(who, number, _receipt_claim(operation)["holder"])
+            receipt = shared.update(root, operation)
+        else:
+            receipt = _change(root, number, "migrate", payload, "")
+        if receipt["status"] != "confirmed":
+            raise StateError(f"legacy claim #{number} needs review: {receipt.get('reason', 'state changed')}")
+
+
 def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, blockers=True,
-          phase=None, files=None, labels=None) -> tuple:
-    """Assign me and mark this session. Another session is refused, even under my login;
-    of two concurrent claims the older mark wins. `blockers=False` for planning, which does
-    not wait for blockers; building does. A draft
-    is claimed for its spec work: no approval, no blockers. `files` go on the mark, so every
-    ramp holds them without a fetch. A claim again of the session that holds n only puts new files
-    (a PLAN written since) or a new phase on its mark, whatever approval and blockers say by now.
-    A claim again of an item with an open blocker refuses a build: the planner pushes the PLAN and gives the item
-    back (#99 fix round 1). `labels` gets the labels of n as the claim read them."""
+          phase=None, files=None, labels=None, expected_spec=...) -> tuple:
+    """Acquire one serialized generation, including its file reservations."""
+    from pulse import actions, ready, shared
     who = who or holder()
-    v = _view(repo_name, n, run)
-    open_blockers = [b["number"] for b in (v.get("blockedBy") or {}).get("nodes", []) if b.get("state") == "OPEN"]
-    names = {l["name"] for l in v.get("labels", [])}
-    if labels is not None:
-        labels.update(names)
-    if v.get("state") != "OPEN":
-        return False, f"#{n} is closed"
-    from pulse import lifecycle
-    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
-        return False, f"#{n} is held; complete its stop and explicitly resume it first"
-    login, marks = me(root, run=run), _marks(v)
-    mine = next((m for m in marks if m["mine"] and m["id"] == who["id"]), None)
-    again = mine is not None and marks[0] is mine and login in [a["login"] for a in v.get("assignees", [])]
-    if not again and not {APPROVED, LEGACY_READY, DRAFT} & names:
-        return False, f"#{n} is not approved"
-    if blockers and open_blockers and DRAFT not in names:
-        refs = ", ".join(f"#{b}" for b in open_blockers)
-        return False, f"#{n} is blocked by {refs}" + (f": its build waits for {refs}; push the PLAN, then give it back: "
-                                                       f"pulse release {n}" if again else "")
-    whom = _others(v, login)
-    if whom:
-        return False, f"#{n} is held by {whom}; to hand it over: pulse release --take {n}" + _work(root, n, v)
-    other = _other_session(v, who)
-    if other and not take:
-        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse claim --take {n}" + \
-            _work(root, n, v)
-    for m in marks:
-        if m["mine"] and m["id"] != who["id"]:
-            _unmark(repo_name, m["cid"], run)            # taken over on purpose
-    posted, key = None, (root, repo_name, n, who["id"])
-    if mine:
-        new = {**mine, "phase": phase or mine["phase"], "files": files or mine["files"]}
-        if new != mine:        # a PLAN written since the claim, or the next phase
-            _rewrite(repo_name, new, who, new["phase"], run)
-            drop_cache(root)
-        mine = new
+    if actions.held(root, n):
+        return False, f"#{n} has a local stop request"
+    initial = shared.read(root)[1]["items"].get(str(n), {}).get("claim")
+    same_files = initial and (files is None or sorted(set(files)) == initial["files"])
+    continuing = initial if same_files and initial["holder"] == _claim_id(who, n, root) else None
+    if continuing:
+        # No new reservation: check this issue now, without reloading unrelated
+        # metadata. First acquisition and every file change still migrate the
+        # complete fresh board, including legacy holders on other items.
+        raw = _view(repo_name, n, run)
+        if raw.get("state") != "OPEN":
+            return False, f"#{n} is closed or unavailable"
+        known = {}
+        trusted = lambda entry: writer(entry, repo_name, run, known)
+        entries = _overlay(root, [normalize({"title": "", **raw}, lambda entry: trusted(entry) is True,
+                                            lifecycle_trusted=trusted)])
     else:
-        posted = COMMENT.search(run(["issue", "comment", str(n), "--repo", repo_name, "--body",
-                                     _mark(who, phase, files)]).strip())
-        mine = posted and {"cid": posted.group(1), "files": files or []}
-    if again:
-        _KEPT[key] = mine
-        return True, f"claimed #{n}"
-    try:
-        run(["issue", "edit", str(n), "--repo", repo_name, "--add-assignee", "@me"])   # a no-op when set
-    except StateError:
-        if posted:
-            _unmark(repo_name, posted.group(1), run)      # a mark without the assignee would hold the item
-        raise
-    # ponytail: two reads right after two writes; if GitHub serves a stale read, both claimers
-    # can lose (safe) or, rarely, both win. A short wait before this read would narrow it.
-    v = _view(repo_name, n, run)
-    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
-        return False, f"#{n} was held while claiming; no work may start"
-    try:
+        entries = load(root, repo_name, run=run, fresh=True)
+    observed = next((entry for entry in entries if entry["number"] == n), None)
+    if observed is None:
+        return False, f"#{n} is closed or unavailable"
+    if expected_spec is not ... and observed.get("spec") != expected_spec:
+        return False, f"#{n}: spec changed before {phase or 'claim'}; refresh the item and its Plan"
+    if labels is not None:
+        labels.update(label for label, enabled in ((DRAFT, observed.get("draft")), (HOLD, observed.get("hold")),
+                                                 (FAIL, observed.get("failed")), (BASE, observed.get("base_fix"))) if enabled)
+    if observed.get("hold"):
+        return False, f"#{n} is held; complete its stop and explicitly resume it first"
+    if blockers and observed.get("blocked_by") and not observed.get("draft"):
+        return False, f"#{n} is blocked by " + ", ".join(f"#{other}" for other in observed["blocked_by"])
+    login = run(["api", "user", "--jq", ".login"]).strip()
+    if not can_push(repo_name, login, run):
+        raise StateError("repository push permission is required")
+    _migrate(root, repo_name, entries, run, who=who, login=login)
+    snapshot = shared.read(root)[1]
+    current = snapshot["items"].get(str(n), {})
+    previous = current.get("claim")
+    if continuing and (previous != continuing or current.get("hold") or current.get("failed")):
+        # A handoff/release cannot turn this narrow phase check into a fresh
+        # acquisition without the complete legacy reservation check.
+        return False, f"#{n}: claim changed while checking its phase; retry from current state"
+    if previous:
+        if previous.get("actor", login) != login:
+            return False, f"#{n} is held by {ready.printable(previous['actor'])} (another account); nothing changed"
+        if previous["holder"] != _claim_id(who, n, root):
+            return False, f"#{n} is held by {previous.get('actor') or previous['holder']}; a person may release it"
+        _remember(who, n, previous["holder"])
+        if (files is None or sorted(set(files)) == previous["files"]) and \
+                (not phase or phase == (current.get("work") or {}).get("phase")):
+            return (False, f"#{n} has a local stop request") if actions.held(root, n) else (True, f"claimed #{n}")
+    token = previous["holder"] if previous else uuid.uuid4().hex
+    # Retain the proposed generation in this caller across a lost push response.
+    # A different process must carry the generation explicitly; session alone
+    # never borrows a newer acquisition after a person's handoff.
+    payload = {"holder": token, "session": who["id"], "actor": login,
+               "files": previous["files"] if files is None and previous else files or [],
+               **({"phase": phase} if phase else {})}
+    if previous:
+        operation = {"id": uuid.uuid4().hex, "item": n, "kind": "claim",
+                     "payload": payload, "expected": current["revision"]}
+    else:
+        operation = _prepare_claim(root, who, n, payload, snapshot, current)
+        token = operation["payload"]["holder"]
+    _remember(who, n, token)
+    receipt = shared.update(root, operation)
+    if receipt["status"] != "confirmed":
+        return False, f"#{n}: {receipt.get('reason', 'claim changed')}"
+    _remember(who, n, token)
+    current = shared.read(root)[1]["items"].get(str(n), {})
+    if (current.get("claim") or {}).get("holder") != token:
+        return False, f"#{n} changed holder while claiming; no work started"
+    if current.get("hold") or actions.held(root, n):
+        # A local or shared defer may arrive during the claim push. No writer
+        # started, so acknowledge the stop without requiring a new worktree.
+        if (current.get("claim") or {}).get("holder") == token:
+            stop = current.get("stop") or {}
+            kind = "stopped" if stop.get("holder") == token and stop.get("status") == "requested" else "release"
+            _change(root, n, kind, {"holder": token, "work": current.get("work") or {},
+                                   "reason": "stop arrived before work started"}, current["revision"])
         drop_cache(root)
-    except OSError:
-        pass                   # the board decides the claim; a cache out of reach is stale for POLL s
-    held, marks = [a["login"] for a in v.get("assignees", [])], _marks(v)
-    if marks and marks[0]["mine"] and marks[0]["id"] == who["id"] and _in_flight(v, marks[0]["cid"]):
-        time.sleep(WAIT)       # a claim in flight before mine: its assignee may show in a moment (#77)
-        v = _view(repo_name, n, run)
-        held, marks = [a["login"] for a in v.get("assignees", [])], _marks(v)
-    if marks and marks[0]["mine"] and marks[0]["id"] == who["id"] and login in held:
-        if mine:
-            _KEPT[key] = mine
-        return True, f"claimed #{n}" + (_work(root, n, v) if other else "")
-    _give_way(repo_name, n, marks, who, run)
-    return False, f"#{n} went to {_name(marks[0]) if marks else 'nobody; try again'}"
-
-
-def _rewrite(repo_name: str, mark: dict, who: dict, phase, run) -> None:
-    run(["api", "-X", "PATCH", f"repos/{repo_name}/issues/comments/{mark['cid']}",
-         "-f", "body=" + _mark(who, phase, mark["files"])])
-
-
-# ponytail: kept per process, so pulse go beats with one write; another process looks the mark up
-# first. An agent of the run that claims with other files in its own
-# process loses them to the next beat; the agents are told not to touch GitHub.
-_KEPT = {}                 # (root, repo, n, holder id) -> my mark on n as I last wrote or read it: cid, files
+        return False, f"#{n} received a stop while claiming; no work started"
+    return True, f"claimed #{n}"
 
 
 def beat(root: Path, repo_name: str, n: int, phase: str, run=gh, who=None) -> bool:
-    """A sign of life: my mark on n names this phase and the time now; it keeps its age. False,
-    and nothing written, when this session holds no mark on n, or its mark no longer leads (#77;
-    holds says who does). Once my claim or a first beat found the mark, a beat is one write; a
-    mark gone since is looked up once more."""
+    """Publish phase transitions once; unchanged heartbeats only verify ownership."""
+    from pulse import actions, shared
     who = who or holder()
-    key = (root, repo_name, n, who["id"])
-    mine = _KEPT.pop(key, None)
-    try:
-        if mine:
-            _rewrite(repo_name, mine, who, phase, run)
-    except StateError as e:
-        if "HTTP 404" not in str(e):
-            raise
-        mine = None            # released and claimed anew, or taken over
-    if not mine:
-        v = _view(repo_name, n, run)
-        if not _lead(v, who)[0]:
-            return False
-        mine = next(m for m in _marks(v) if m["mine"] and m["id"] == who["id"])
-        _rewrite(repo_name, mine, who, phase, run)
-    _KEPT[key] = mine
-    drop_cache(root)
+    if actions.held(root, n):
+        return False
+    current = shared.read(root)[1]["items"].get(str(n), {})
+    claim = current.get("claim") or {}
+    if claim.get("holder") != _claim_id(who, n, root) or current.get("hold") or current.get("failed"):
+        return False
+    if (current.get("work") or {}).get("phase") == phase:
+        return True
+    receipt = _change(root, n, "claim", {**claim, "phase": phase}, current["revision"])
+    if receipt["status"] != "confirmed":
+        return False
     return True
 
 
-def _others(v, login: str) -> str:
-    """Who holds the item when it is assigned and I am not among its assignees; empty otherwise."""
-    held = [a["login"] for a in v.get("assignees", [])]
-    return _people(v, login) if held and login not in held else ""
-
-
 def release(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, take_person=False,
-            note="") -> tuple:
-    """Unassign me, then take my marks back; in this order, no claim can adopt a half-released item.
-    `take` frees what another session of mine holds; `take_person` also what another person holds:
-    a person hands the item over, their assignee and marks go, and a comment says who did it.
-    Without it, a person assigned next to me keeps their part. A note (why, where the work is)
-    goes on the item once the claim is gone, for whoever takes it next."""
+            note="", work=None, expected=None, previous_holder=None) -> tuple:
+    """Release idle own work, or authenticate a person's explicit foreign handoff."""
+    from pulse import shared
     who = who or holder()
-    v = _view(repo_name, n, run)
-    login = me(root, run=run)
-    whom = _others(v, login)
-    if whom and not take_person:
-        by = taken(v, login, pushers(repo_name, run))
-        if by:                 # a person took it from me: nothing of it is mine to give back (#99 FR-04)
-            return True, f"#{n} was handed over with pulse release --take and went to {by}: nothing to give back"
-        return False, f"#{n} is held by {whom}; to hand it over: pulse release --take {n}" + _work(root, n, v)
-    gone = [a["login"] for a in v.get("assignees", []) if a["login"] != login] if take_person else []
-    other = _other_session(v, who)
-    if other and not (take or take_person):
-        return False, f"#{n} is held by {_name(other)}; if that session has ended: pulse release --take {n}" + \
-            _work(root, n, v)
-    run(["issue", "edit", str(n), "--repo", repo_name, "--remove-assignee", ",".join(gone + ["@me"])])
-    if gone:
-        run(["issue", "comment", str(n), "--repo", repo_name, "--body", TAKE.format(", ".join(gone), login, n)])
-    for m in _marks(v):
-        if m["mine"] or m["author"] in gone:
-            _unmark(repo_name, m["cid"], run)
-    if note:
-        leave_note(repo_name, n, note, login, who, run)
-    drop_cache(root)
-    return True, f"released #{n}" + (f" from {', '.join(gone)}" if gone else "") + \
-        (_work(root, n, v) if gone or other else "")
+    if take or take_person:
+        if not holder()["id"].startswith("terminal:"):
+            raise StateError("only a person may explicitly release another claim")
+        login = run(["api", "user", "--jq", ".login"]).strip()
+        if not can_push(repo_name, login, run):
+            raise StateError("repository push permission is required")
+        entries = load(root, repo_name, run=run, fresh=True)
+        _migrate(root, repo_name, [entry for entry in entries if entry["number"] == n], run)
+    snapshot = shared.read(root)[1]
+    current = snapshot["items"].get(str(n), {})
+    existing = current.get("claim")
+    if not existing:
+        saved = _claim_receipt(root, who, n)
+        if saved and saved["id"] not in snapshot["operations"] and saved["expected"] == current.get("revision", ""):
+            return False, f"#{n}: claim outcome is still unknown; retry its original claim before releasing"
+        _forget_claim(root, who, n)
+        return True, f"#{n} has no claim to release"
+    observed = current.get("revision", "") if expected is None else expected
+    token = previous_holder or existing["holder"]
+    if take or take_person:
+        operation = {"id": uuid.uuid4().hex, "item": n, "kind": "handoff", "expected": observed,
+                     "payload": {"holder": token, "reason": note or "Person requested a claim handoff",
+                                 "work": work or current.get("work") or {}}}
+        receipt = sync_action(root, operation, run=run)
+    else:
+        if not (who.get("claims") or {}).get(str(n)) and _claim_receipt(root, who, n):
+            login = run(["api", "user", "--jq", ".login"]).strip()
+            if not can_push(repo_name, login, run):
+                raise StateError("repository push permission is required")
+            if existing.get("actor") != login:
+                return False, f"#{n} was acquired by another account; nothing released"
+        if existing["holder"] != _claim_id(who, n, root):
+            return False, f"#{n} is held by {existing.get('actor') or existing['holder']}; nothing released"
+        receipt = _change(root, n, "release", {"holder": existing["holder"], "reason": note,
+                          "work": work or current.get("work") or {}}, observed)
+    if receipt["status"] != "confirmed":
+        return False, f"#{n}: {receipt.get('reason', 'claim changed')}"
+    _forget_claim(root, who, n, existing["holder"])
+    _CLAIMS.pop((who["id"], n), None)
+    who.get("claims", {}).pop(str(n), None)
+    return True, f"released #{n}; work is preserved"
 
 
 def leave_note(repo_name: str, n: int, text: str, by: str, who: dict, run=gh) -> None:
@@ -1194,9 +1416,9 @@ def leave_note(repo_name: str, n: int, text: str, by: str, who: dict, run=gh) ->
 def attach(root: Path, repo_name: str, n: int, kind: str, path=None, parent=None, blocked_by=(),
            run=gh, who=None, title=None, pr=None, labels=()) -> tuple:
     """Make an open issue that links no spec (a draft, an issue from the BA) a record of this kind,
-    as create makes a new one: its type, parent, blockers, labels, and the spec at path (in docs PR pr) with its
-    title. Without a path it becomes a draft. A draft that gets its spec is one no more, and my claim for its spec
-    work goes back."""
+    as create makes a new one: its type, parent, blockers, labels, and spec path with its title.
+    Without a path it becomes a draft. Attaching a spec changes no claim; its current writer
+    releases that generation explicitly when the work stops."""
     have = spec_of(repo_name, n, run)
     if have:
         return False, f"#{n} already links {have}"
@@ -1216,23 +1438,5 @@ def attach(root: Path, repo_name: str, n: int, kind: str, path=None, parent=None
         run(["issue", "edit", str(n), "--repo", repo_name, *edit])      # rerun goes through (#116 fix round 1)
     if path:
         _set_line(root, repo_name, n, SPEC, spec_line(path, pr), run)
-    if path and DRAFT in on and me(root, run=run) in [a["login"] for a in v.get("assignees", [])]:
-        release(root, repo_name, n, run=run, who=who, take=True)
     drop_cache(root)
     return True, f"#{n} links {path}" if path else f"#{n} is a draft"
-
-
-def done(root: Path, repo_name: str, n: int, run=gh, who=None, take=False) -> tuple:
-    """Close the item; `take` closes it whoever holds it (a merged pull request, a person's call)."""
-    from pulse import lifecycle
-    v = _view(repo_name, n, run)
-    if lifecycle.blocked(v, lifecycle.trusted(repo_name, run)):
-        return False, f"#{n} is held; automatic completion is disabled"
-    if not take:
-        other = _other_session(v, who or holder())
-        whom = _others(v, me(root, run=run)) or (_name(other) if other else "")
-        if whom:
-            return False, f"#{n} is held by {whom}; to close it all the same: pulse done --take {n}"
-    run(["issue", "close", str(n), "--repo", repo_name, "--reason", "completed"])
-    drop_cache(root)
-    return True, f"closed #{n}"

@@ -1,8 +1,8 @@
 """Spec files: readiness (R1 to R6), frontmatter edits, parent links, the Items list.
 
 Readiness asks one thing: can an agent write a complete PLAN from this spec
-alone? The rules read text only; the caller decides which version of the
-file counts (the base branch, which every worktree starts from).
+alone? The rules read text only; published() selects the item's published
+version without making an arbitrary choice between competing branches.
 
 The tree epic > feature > fix or improvement lives in the repository too:
 every spec names its `parent:` as a relative path, and the epic lists its
@@ -53,6 +53,43 @@ def on_base(root: Path, path: str, ref: str = None):
     out = subprocess.run(["git", "-C", str(root), "show", f"{ref or config.base_ref(root)}:{path}"],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     return out.stdout if out.returncode == 0 else None
+
+
+def published(root: Path, path: str, number: int, branch: str = None, base: str = None) -> tuple:
+    """(text, ref, why) from fetched refs only. An explicit item branch wins, otherwise exactly one
+    numbered item branch, then the base. A legacy unnumbered branch is accepted only when it is the
+    sole carrier of a spec absent from the base. Competing branches require an explicit binding."""
+    from pulse import state
+
+    if not isinstance(path, str) or not path or "\n" in path or "\r" in path:
+        return None, None, "no published spec path"
+    base = base or config.base_ref(root)
+    refs = [line for line in _git_out(root, "for-each-ref", "--format=%(refname)",
+                                     "refs/remotes/origin").split("\n")
+            if line and line != "refs/remotes/origin/HEAD"]
+    own = [ref for ref in refs if number is not None and
+           state.item_of(ref.removeprefix("refs/remotes/origin/")) == number]
+    if branch:
+        ref = f"refs/remotes/origin/{branch}"
+        if state.item_of(branch) not in (None, number):
+            return None, None, f"branch {branch} belongs to another item"
+        if ref not in refs:
+            return None, None, f"item branch {branch} is not published"
+    elif len(own) > 1:
+        return None, None, f"multiple published branches for #{number}: bind its item branch"
+    elif own:
+        ref = own[0]
+    elif on_base(root, path, base) is not None:
+        ref = base
+    else:
+        carried = carriers(root, path)
+        if len(carried) != 1:
+            why = "multiple published branches carry its spec" if carried else "its spec is not published"
+            return None, None, why
+        ref = f"refs/remotes/origin/{carried[0]}"
+    text = on_base(root, path, ref)
+    shown = ref.removeprefix("refs/remotes/")
+    return text, shown, "" if text is not None else f"spec missing on {shown}"
 
 
 _found: dict = {}          # the item view asks every 2 s (#68): git again only once a branch moved
@@ -150,19 +187,17 @@ def _terms() -> list:
 
 
 def refusal(text, kind: str, number, base: str, fix: str = "") -> str:
-    """Why pulse approve and the map's key a refuse #number, or "": its spec is not on the base
-    branch (R1, D-43), or for a work item it breaks R2 to R6 there, which pulse check would hold
-    against every commit. An epic needs R1 only. base names where the text comes from, fix what to do."""
+    """The spec's structural findings, or "". An epic needs R1 only; base names the version read."""
     wrong = [f for f in findings(text, kind, number) if f.startswith("R1 ") or kind in SECTIONS]
     if not wrong:
         return ""
-    return f"{'; '.join(wrong)} ({base}); " + (fix or "fix its spec with /pulse-re and merge it there first")
+    return f"{'; '.join(wrong)} ({base}); " + (fix or "fix its spec with /pulse-re and publish the item branch")
 
 
 def findings(text, kind: str, number=None) -> list:
     """['R2 missing section: Scope', ...]; [] means an agent can plan from this spec."""
     if text is None:
-        return ["R1 spec missing on the base branch"]
+        return ["R1 published spec missing"]
     fm, sec, out = front(text), sections(text), []
     if number is not None and str(fm.get("issue", "")).lstrip("#") != str(number):
         out.append(f"R1 issue: {fm.get('issue', 'missing')} in the spec, item is #{number}")

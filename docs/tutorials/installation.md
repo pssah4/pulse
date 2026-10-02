@@ -300,7 +300,7 @@ git commit -m "chore: switch on Pulse"
 git push -u origin chore/setup-pulse
 ```
 
-The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Then open a pull request for `chore/setup-pulse` and merge it.
+The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Integrate `chore/setup-pulse` into the shared base through the project's normal merge and push process with its hooks enabled; Pulse requires no pull request.
 
 After the merge, switch back to the base branch and pull, so the next branch starts with the settings: `git switch main && git pull` (your base branch in place of `main`).
 
@@ -308,7 +308,7 @@ Outside Herdr, `pulse setup` also writes the task "Pulse map" to `.vscode/tasks.
 
 ### Fewer prompts in Claude Code
 
-In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for the whole project, an epic, a feature, an improvement, or a fix), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, `pulse new`, and `gh pr create`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. The `deny` rules keep the levers of a person from the agent, as the [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) does in every session: `approve`, `pulse auto` with a gate, a handover with `--take`, `pulse -- <command>`, `gh pr merge` and `gh pr ready`, and edits of the records with `gh issue`. You run these in your own terminal:
+In its default mode, Claude Code asks before each file it writes, until you allow edits for the rest of the session, and before every shell command outside a small read-only set such as `git status`. In the Pulse flow that means `pulse status` (in `/pulse`, in `/pulse-re`, and before the first question of every `/pulse-ba` for the whole project, an epic, a feature, an improvement, or a fix), the new branch, `mkdir`, `git add`, `pulse check`, each commit and push, and `pulse new`. These rules in your project's `.claude/settings.local.json` let it run these steps without asking. The `deny` rules keep the levers of a person from the agent, as the [Pulse guard](../concepts/parallel-work#levers-belong-to-a-person) does in every session: `approve`, `pulse auto` with a gate, a handover with `--take`, `pulse -- <command>`, `gh pr merge` and `gh pr ready`, and edits of the records with `gh issue`. You run these in your own terminal:
 
 ```json
 {
@@ -320,11 +320,13 @@ In its default mode, Claude Code asks before each file it writes, until you allo
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git push *)",
-      "Bash(gh pr create *)",
       "Bash(mkdir -p _devprocess/*)"
     ],
     "deny": [
       "Bash(pulse approve *)",
+      "Bash(pulse revoke *)",
+      "Bash(pulse handoff *)",
+      "Bash(pulse retry *)",
       "Bash(pulse approve-plan *)",
       "Bash(pulse defer *)",
       "Bash(pulse resume *)",
@@ -349,7 +351,7 @@ In its default mode, Claude Code asks before each file it writes, until you allo
 
 The rules for `approve-plan` and `done`, commands an older Pulse had, match the Codex rules. If the file exists, add the rules to its `permissions`. They hold for you alone; in `.claude/settings.json` they hold for everyone who clones the project, once each person trusts the folder. Claude Code keeps `.claude/settings.local.json` out of git only when it creates the file itself. If you create it by hand, `git status` lists it as untracked and a `git add -A` would commit it: add the line `.claude/settings.local.json` to your `.gitignore`. `/permissions` lists the rules in effect.
 
-A rule matches the command as the agent writes it: with `pulse` off your PATH, the Pulse hooks point the agent at the full path of the plugin copy, and `Bash(pulse *)` does not match it. Claude Code also asks before a command its own checks flag, even when a rule allows it, such as a `gh pr create` whose body has a Markdown heading inside quotes, or a `mkdir` with braces (`{epics,features}`). Allow it when asked.
+A rule matches the command as the agent writes it: with `pulse` off your PATH, the Pulse hooks point the agent at the full path of the plugin copy, and `Bash(pulse *)` does not match it. Claude Code also asks before a command its own checks flag, even when a rule allows it, such as a `mkdir` with braces (`{epics,features}`). Allow it when asked.
 
 ### Take it out of a project
 

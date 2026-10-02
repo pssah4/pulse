@@ -74,6 +74,22 @@ def blocked(raw, trusted=state._owner) -> bool:
         bool(current and current.get("phase") != "resumed")
 
 
+def current(root, repo, number, run=state.gh):
+    """Canonical stop state, with conservative legacy history before migration."""
+    from pulse import shared
+    item = shared.read(root)[1]["items"].get(str(number))
+    if item is None:
+        return operation(_read(repo, number, run), trusted(repo, run))
+    claim, stop = item.get("claim") or {}, item.get("stop") or {}
+    stopped_claim = claim if claim.get("holder") == stop.get("holder") else {}
+    requested = stop.get("status") == "requested"
+    return {"action": "defer", "phase": "requested" if requested else "paused" if item["hold"] else "resumed",
+            "holder": {"id": stopped_claim.get("session") or stop.get("holder", ""),
+                       "claim": stop.get("holder", ""), "author": stopped_claim.get("actor", "")},
+            "work": stop.get("work") or item.get("work") or {}, "revision": item["revision"],
+            "retained": bool(stop.get("work") or item.get("work")), "error": ""}
+
+
 def _actor(repo, run):
     login = run(["api", "user", "--jq", ".login"]).strip()
     if not state.can_push(repo, login, run):
@@ -114,7 +130,7 @@ def _remote(root, branch, head):
         return False
 
 
-def _work(root, worktree, branch):
+def _work(root, worktree, branch, remote=True):
     path = Path(worktree)
     if not path.is_absolute() or path.is_symlink() or str(path.resolve()) != str(path) or \
             not branch or branch.startswith("-"):
@@ -127,7 +143,26 @@ def _work(root, worktree, branch):
     head = _git(path, "rev-parse", "HEAD")
     dirty = bool(_git(path, "status", "--porcelain", "--untracked-files=all"))
     return {"worktree": str(path), "common": str(common), "branch": branch, "head": head,
-            "dirty": dirty, "remote": not dirty and _remote(root, branch, head)}
+            "dirty": dirty, "remote": bool(remote and not dirty and _remote(root, branch, head))}
+
+
+def queue_stop(root, number, who, worktree, branch):
+    """Keep a factual acknowledgement after the caller confirmed physical process end."""
+    from pulse import actions
+    token = state._claim_id(who, number, root)
+    rows = [row for row in actions.pending(root) if row["item"] == number]
+    existing = next((row for row in rows if row["kind"] == "stopped" and
+                     row["payload"].get("holder") == token), None)
+    if existing:
+        actions.start(root)
+        return existing
+    if state.item_of(branch) != number:
+        raise state.StateError("the preserved branch must belong to this item")
+    work = _work(root, worktree, branch, remote=False)
+    observed = next((row for row in state.cached(root) if row["number"] == number), {})
+    accepted = actions.submit(root, number, "stopped", {"holder": token, "work": work}, observed.get("revision", ""))
+    actions.start(root)
+    return accepted
 
 
 def _resume_work(root, current, actor):
@@ -135,9 +170,10 @@ def _resume_work(root, current, actor):
     if not work:
         return {}
     if work.get("common") == str(config.common_dir(Path(root)).resolve()):
-        if current.get("retained") and current.get("holder", {}).get("author") != actor:
+        preserved = _work(root, work.get("worktree", ""), work.get("branch", ""))
+        if (current.get("retained") or not preserved["remote"]) and current.get("holder", {}).get("author") != actor:
             raise state.StateError("the original holder must resume its retained worktree")
-        return _work(root, work.get("worktree", ""), work.get("branch", ""))
+        return preserved
     if current.get("retained") or not work.get("remote") or \
             not _remote(root, work.get("branch", ""), work.get("head", "")):
         raise state.StateError("another clone needs a secured remote handover; preserve the original worktree")
@@ -165,6 +201,20 @@ def preview(root, repo, number, action, run=state.gh) -> dict:
         raise state.StateError("a repository and positive item number are required")
     if action not in ACTIONS:
         raise state.StateError("unknown lifecycle action")
+    if action in {"defer", "resume"}:
+        actor = _actor(repo, run)
+        entry = next((entry for entry in state.load(root, repo, run=run, fresh=True)
+                      if entry["number"] == number), None)
+        if not entry:
+            raise state.StateError("only open work can be deferred or resumed")
+        if entry.get("type") not in state.WORK:
+            raise state.StateError("select a feature, improvement or fix; no epic cascade")
+        return {"repo": repo, "number": number, "action": action, "actor": actor,
+                "revision": entry.get("revision", ""), "confirmation": action,
+                "record": entry, "work": entry.get("work") or {},
+                "lines": [f"#{number}: {entry['title']}",
+                          "Defer requests a stop and preserves work." if action == "defer" else
+                          "Resume waits for the writer to stop and preserves other holds."]}
     actor = _actor(repo, run)
     raw = _read(repo, number, run)
     if raw.get("number") != number or raw.get("state") not in ("OPEN", "CLOSED"):
@@ -193,12 +243,10 @@ def preview(root, repo, number, action, run=state.gh) -> dict:
         raise state.StateError("the current stop request must finish first")
     if action == "defer":
         work = _interactive_work(root, raw, current, actor)
-    prs = json.loads(run(["pr", "list", "--repo", repo, "--state", "all", "--limit", "200", "--json",
-                          "number,headRefName,headRefOid,state,isCrossRepository,closingIssuesReferences"]))
     parents = []
     if (raw.get("parent") or {}).get("number"):
         parents.append(_read(repo, raw["parent"]["number"], run))
-    bound = {"item": raw, "prs": [pr for pr in prs if number in state.pr_items(pr)],
+    bound = {"item": raw,
              "parents": parents, "actor": actor, "hold": hold, "work": work, "action": action, "repo": repo}
     snapshot = hashlib.sha256(json.dumps(bound, sort_keys=True).encode()).hexdigest()
     consequences = {"defer": "Stop work and keep code, specs, PRs, approvals and notes as-is in the paused backlog.",
@@ -288,6 +336,11 @@ def apply(root, repo, planned, confirmation, run=state.gh) -> str:
     if repo != planned.get("repo") or confirmation != planned.get("confirmation"):
         raise state.StateError("confirmation does not match the preview")
     number, action = planned["number"], planned["action"]
+    if action in {"defer", "resume"}:
+        from pulse import actions
+        accepted = actions.submit(root, number, action, {}, planned.get("revision", ""))
+        actions.start(root)
+        return f"#{number} {action} queued locally ({accepted['id']}); shared confirmation pending"
     fresh = preview(root, repo, number, action, run)
     if fresh != planned:
         raise state.StateError("state changed after the preview; confirm a fresh preview")
@@ -332,6 +385,21 @@ def acknowledge(root, repo, number, who, worktree, branch, run=state.gh) -> str:
         raise state.StateError("the original holder identity is required")
     if state.item_of(branch) != number:
         raise state.StateError("the preserved branch must belong to this item")
+    from pulse import shared
+    canonical = shared.read(root)[1]["items"].get(str(number))
+    if canonical is not None:
+        token = state._claim_id(who, number, root)
+        stop = canonical.get("stop") or {}
+        if stop.get("holder") != token:
+            raise state.StateError("only the original claim generation may acknowledge its stop")
+        if stop.get("status") == "completed":
+            return f"#{number} already paused"
+        work = _work(root, worktree, branch)
+        receipt = state._change(root, number, "stopped", {"holder": token, "work": work}, canonical["revision"])
+        if receipt["status"] != "confirmed":
+            raise state.StateError(receipt.get("reason") or "stop state changed")
+        state.drop_cache(Path(root))
+        return f"#{number} paused; work is preserved"
     actor = _actor(repo, run)
     raw = _read(repo, number, run)
     if any(assignee.get("login") != actor for assignee in raw.get("assignees", [])):

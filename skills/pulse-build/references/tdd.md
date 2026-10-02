@@ -3,7 +3,7 @@
 TDD is the DEFAULT for every implementation task in `/pulse-build`;
 the Pulse rules carry the short form into every session. Opt-out
 exists only for the three exceptions below, each requiring explicit
-user confirmation and a PLAN Change Log entry naming the exception.
+user confirmation and a Plan Change Log entry naming the exception.
 The user can opt out for a session by starting `/pulse-build` with a
 `--no-tdd` hint; that too lands in the Change Log.
 
@@ -45,7 +45,7 @@ reproduces the bug, then the fix (see the debugging protocol and the
 regression test cycle).
 
 **Exceptions (only with explicit user confirmation, logged in the
-PLAN Change Log):**
+Plan Change Log):**
 
 - Throwaway prototypes
 - Generated code

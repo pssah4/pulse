@@ -20,7 +20,7 @@ item per deferred `H-N`, `M-N`, or `L-N` finding
 
 The third gate of every feature branch in [`pulse go`](./pulse-go)
 and [`/pulse-build`](./pulse-build), after the tests, in one fresh
-session with the review, also when the spec or the PLAN has
+session with the review, also when the spec or the Plan has
 `risk: [security]`. It asks nobody and runs in two steps:
 
 1. **Pulse runs the scan itself.** `pulse go` runs
@@ -50,7 +50,7 @@ It blocks while a Critical or High finding is open, and a report
 without a Coverage line is no verdict at all ([the Coverage
 rule](#the-coverage-rule)). The builder fixes blocking findings; then
 the tests run again and the audit looks again. Medium and Low findings
-go into the PR body as notes.
+stay with the published result and its audit evidence.
 
 ### Periodic full-codebase audit
 

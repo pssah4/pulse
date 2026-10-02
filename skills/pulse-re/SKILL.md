@@ -62,13 +62,13 @@ the same one.
    session of yours still holds: tell the person to free it in their own
    terminal with `pulse release --take <n>` (a `pulse claim --take <n>`
    there would hold it for that terminal), then claim it here.
-3. Write on the docs branch the BA pushed, else start one from
-   `refs/remotes/origin/<base>` after `git fetch origin`, named as `spec_branch` in
-   `.pulse/config.toml` says with the draft's `{n}`, `{slug}`, and
-   `{type}` (default `docs/{n}-{slug}`; for a Project-BA `docs/<slug>`).
-   Push the docs branch after every commit, from the first one: the
-   team sees the specs grow, and whoever takes the draft over starts
-   from them.
+3. Continue the BA's item branch, else create `<type>/<n>-<slug>` from
+   the draft's number and fetched `refs/remotes/origin/<base>`. Publish
+   after every commit. Spec, Plan and implementation stay on this branch;
+   an epic or Project-BA can use a documentation branch. Register each
+   independently buildable child as its own item and branch.
+
+Push the item branch after every commit, from the first one.
 
 ## Inputs and outputs
 
@@ -104,7 +104,7 @@ gives every spec the ID of its place, renames the files, and rewrites
 every path to them. Never pick a number by hand; `pulse number` knows the
 numbers other branches and worktrees took. `pulse check` (C10) reports a
 spec whose name lacks its ID. The issue number stays the ID of the record.
-State (approved, claimed, blocked, done) lives on the board, never in a
+State (claimed, held, awaiting integration approval, done) lives on the board, never in a
 spec. Templates live in `templates/`.
 
 ## Hypothesis statements as full prose
@@ -127,7 +127,7 @@ template placeholders.
 
 ## What you do NOT create
 
-- Implementation tasks (the PLAN, written in planning)
+- Implementation tasks (the Plan, written in planning)
 - Architecture decisions (planning)
 - Code (`/pulse-build`)
 
@@ -202,8 +202,8 @@ Dialogue template:
 Read Project-BA and the matching Item-BA, plus optional
 `_devprocess/analysis/BA-*-full.md` (the extended BA) and
 `_devprocess/analysis/EXPLORE-{PROJECT}.md`. Show what you recognized,
-then run the clarifying interview on what is missing; the specs come up
-for approval at the end:
+then run the clarifying interview on what is missing. Publish the completed
+specs and continue authorized planning:
 
 ```
 Recognized information:
@@ -299,8 +299,9 @@ Other ingredients:
   default. Dependencies on other items also go in as `--blocked-by`.
 - **Open questions** only when the user keeps one open on purpose.
 - **Risk flags** in frontmatter (`risk: [auth, security, data-migration,
-  public-api, new-dependency]`): any flag means a person approves the
-  PLAN before anything is built.
+  public-api, new-dependency]`): preserve them in the Plan and result
+  review. A flag adds no early approval stop; resolve decisions outside
+  the authorized task with the person.
 - **Subtype** in frontmatter: `subtype: user-facing | library`. Default
   `user-facing`. `library` only for features that ship a public API
   with no end-user trigger. A feature that builds a backend module
@@ -335,53 +336,32 @@ Spot-check before handoff:
 - Every requirement is an `FR-nn` line with SHALL; no placeholder and no
   `[CLARIFY]` remains unless the user keeps it open.
 
-`pulse check` runs the same rules (R1 to R6) mechanically for every
-approved item, on the spec as the base branch has it.
+Pulse checks the same rules (R1 to R6) mechanically on the published
+spec before planning, including a spec on its item branch.
 
 ### 6. Register the items
 
-The specs are written and validation passes. Run `pulse number --apply`
-so the specs carry their IDs, then commit them on the docs branch, with
-the parent BA when this run changed it (its promotion further down, or
-its `issue:`), message `docs(re): <epic title>` with `Refs: #<epic>`;
-NFR summary, critical ASRs, open architecture questions, constraints,
-and the forbidden-terms confirmation go into the body as short bullets.
-Then attach each spec to its draft, epic first; `pulse new` pushes the
-docs branch and opens its docs PR into the base branch, or uses the open
-one:
+The specs are written and validation passes. Run `pulse number --apply`,
+commit on each item's branch with `docs(re): <title>` and `Refs: #<n>`,
+then push. Attach each spec to its existing draft, parents first:
 
 ```bash
 pulse new epic "<title>" --spec _devprocess/requirements/epics/EPIC-<nn>-<slug>.md --issue <epic>
 pulse new feat "<title>" --parent <epic> --spec _devprocess/requirements/features/FEAT-<ee>-<nn>-<slug>.md --issue <n>
-# when one feature needs another first
-pulse new feat "<title>" --parent <epic> --blocked-by <feat> --spec ... --issue <n>
 ```
 
-`pulse new` refuses a spec that breaks R2 to R6 and names the findings:
-fix them, commit, and run it again. `pulse go` refuses to merge its docs PR for the same findings. Each call links spec and docs PR
-on the record, sets the label `P0` to `P2` from `priority:`, puts the ID
-in front of the title, ends the draft and gives its claim back, and
-writes `issue:` and `parent:` into the spec and a line into the epic's
-`## Items`. Dependencies between items become `--blocked-by`, never
-prose. Commit what `pulse new` wrote and push again; the docs PR follows.
+Use `--blocked-by <n>` for a prerequisite. `pulse new` checks the spec,
+links it to the record, applies its priority and logical ID, and writes
+`issue:`, `parent:` and the parent's item link. Commit and push those
+metadata changes on the same branch. Keep the parent's spec available
+there so relative links resolve. `pulse new` refuses a spec that breaks R2 to R6; fix its reported
+findings before attaching it; publication creates no integration approval.
 
-Its merge follows the approval, because agents plan from the
-spec as the base branch has it (rule R1). The runner grants spec approval
-for planning automatically by default. With an explicit manual spec
-setting, the person records the decision with `pulse approve <n>` in
-their own terminal, or `a` in the map, which writes the approval only,
-and `pulse go` merges the docs PR into the base branch first, before it
-plans the item; nobody merges it on GitHub. `pulse approve` refuses
-while the spec is neither on the base branch nor in an open pull
-request, and while a spec on the base branch breaks R2 to R6 for a work
-item. `pulse go` merges only a docs PR that changes nothing outside
-`_devprocess/`, whose specs all pass R1 to R6, and whose checks pass,
-and names why it did not. Items
-still under discussion stay unapproved. When `pulse go` says that the
-docs PR does not merge cleanly (another feature of the epic merged
-first, and both added their line at the end of its `## Items`), merge
-`refs/remotes/origin/<base>` into the docs branch, keep both lines, commit, and push;
-the next run merges it.
+A valid published spec can be planned directly. No separate spec merge,
+PR or person approval precedes planning. Keep unfinished requirements
+as drafts until the missing input is resolved; they are not buildable.
+Where branches both extend an epic's item list, preserve both entries
+when bringing in the base.
 
 ## Activation Path format
 
@@ -416,49 +396,35 @@ against this path before an item may close.
 | XL | over one week | epic scope; split into features first |
 
 XL is a smell at feature scope. Split it before implementation starts.
-L is allowed; effort alone adds no manual PLAN stop. Explicit manual
-build approval or `risk:` still requires a person's decision.
+L is allowed; effort and risk flags add no routine early approval stop.
 
-Cut features so that each one ends in one pull request whose merge back
-to the base branch a reviewer follows in one reading: one feature, one
+Cut features so that each produces one result whose integration into
+the base branch a reviewer follows in one reading: one feature, one
 traceable merge, never a monolith. A feature that needs another's code
 names it as its blocker; Pulse builds it once that blocker is merged.
 
 ## Parent BA status promotion
 
-Before the commit in step 6 of the workflow, promote the parent BA if
-its `validity` is `Draft` or `Draft (reverse-engineered, ...)`, so the
-promotion goes out with the specs. On `Validated` or other non-Draft
-values, skip silently (idempotent). Locate the parent BA via `ba-ref:`
-(preferred), then `source-ba:` in the architect handoff, then the
-matching Item-BA, then the Project-BA. If not located, report
-`Parent BA: not located, status promotion skipped` and continue. If
-Draft, ask one question ("Promote to Validated" / "Keep Draft" / free
-text). On promotion, set `validity: Validated`, `validated-by`,
-`validated-via` and append a `## Validation Log` row. Full prompt text
-and report lines: `references/status-promotion-prompt.md`.
+Before the commit in step 6 of the workflow, find the parent BA via `ba-ref:`, then
+`source-ba:` in the handoff, the Item-BA, or the Project-BA. Promote the parent BA
+from Draft to Validated only when the RE dialog and cited evidence settled its
+claims. Record `validated-by`, `validated-via` and a Validation Log row.
+Otherwise retain its Draft marker and name the unresolved input. This
+records evidence quality; it creates no additional approval gate.
 
 ## Handoff
 
-1. Report what you produced: epic, features, architect handoff, issue
-   numbers, ASR counts, one Parent-BA status line, and the pushed branch.
-2. Present each epic and feature: per spec its goal, scope, success criteria, and open
-   questions in a few lines, with the path to read it in full. A
-   correction goes into the spec (commit, push) before it counts as
-   approved. Spec approval for planning is automatic by default in
-   `pulse go`. With explicit manual spec approval, tell the person which
-   specs wait: `pulse approve <n>` in their own terminal, or `a` in the map.
-   `pulse go` merges each approved spec into the base branch first.
-   Once approved, continue with planning (the pulse-plan
-   skill, which has no command) for the approved features,
-   improvements, and fixes, in this session, without asking; the
-   pulse-plan skill claims each, and an item it cannot claim (an open
-   blocker, another holder) stays for `pulse go`, whose planning does not
-   wait for blockers. The others stay unplanned until they are approved.
-   An epic gets no PLAN. Spec approval for planning is automatic by
-   default in the runner; explicit plan off remains manual. A valid PLAN,
-   checked with `pulse check --plan <path>` and pushed, waits for manual
-   build approval by default. That decision binds the PLAN and spec blobs;
-   explicit delegation, risks and prerequisites keep their checks. For an item approved
-   later, tell the person: `pulse go` in their own terminal plans and
-   builds every approved item; or `/pulse-build <n>` for one.
+1. Report the specs, architect handoff, issue numbers, BA validity and
+   published branches. Summarize each goal, scope, criteria and unresolved
+   input with a link to the full spec.
+2. Continue authorized planning for ready features, improvements and
+   fixes with the pulse-plan skill in this session. It claims each item;
+   an item another holder owns stays for that holder. Planning can run
+   while prerequisites are open; building waits for their integration.
+   An epic gets no implementation Plan.
+3. Validate and publish each Plan with `pulse check --plan <path>`, then
+   continue the authorized build. Use `/pulse-build <n>` for one item or
+   an explicitly requested `pulse go` for the ready backlog. The only
+   routine approval is for the final checked result at exact head and base
+   commits. It is automatic by default; a person may explicitly choose
+   manual approval for regular integration. Removal keeps its own confirmations.

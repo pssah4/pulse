@@ -23,7 +23,9 @@ Every persona, insight, need, and touchpoint is proposed as a draft and confirme
 
 ## On the board
 
-Before the first question, the skill makes the analysis visible to the team, so nobody starts the same one twice. It looks for open drafts and items on the topic (`pulse status --json`) and asks whether this BA continues one of them. An issue you name, an idea from the backlog for example, becomes the draft: `pulse new <type> "<title>" --draft --phase analysis --issue <n>`. Otherwise the skill registers a new one, for an epic `pulse new epic "<title>" --draft --phase analysis`. Either way the board and the [map](./pulse-map) show a BA in progress and who writes it, the number goes into the BA as `issue:`, and the BA is written on the branch `docs/<n>-<slug>`, or the one `spec_branch` in `.pulse/config.toml` names. A Project-BA is no item, but it holds a draft while it is written, so nobody writes a second one: `pulse new epic "Project BA: <product>" --draft --phase analysis`. Its number stays out of the BA file, its branch is `docs/<slug>`, named after the project, and once the approved BA is pushed, the skill asks you to close the draft on GitHub.
+Before the first question, the skill looks for overlapping drafts and items with `pulse status --json` and asks whether this BA continues one of them. A named item is adopted with `pulse new <type> "<title>" --draft --phase analysis --issue <n>`; otherwise it reserves a draft, for example `pulse new epic "<title>" --draft --phase analysis`. The number goes into the Item-BA as `issue:`. Its BA, spec, Plan and implementation use the same `<type>/<n>-<slug>` branch, starting from the fetched base.
+
+A Project-BA registers `pulse new epic "Project BA: <product>" --draft --phase analysis` so nobody writes a second one. Its number stays out of the BA frontmatter; discovery can use `docs/<slug>`. After publishing the completed BA, the skill asks you to close its draft on GitHub. RE creates the separate work items it identifies.
 
 ## Scope adaptation
 
@@ -209,7 +211,11 @@ archives, not in the active Project-BA.
 
 ## Handoff
 
-The skill commits the BA on its docs branch (`docs(ba): <title>`, with `Refs: #<n>` for its draft, a Project-BA's included) and pushes the branch, as after every commit from the first one, so the team sees the BA while it is written. Then it asks you to approve it, the first stop of the Pulse flow. A correction goes into the BA, and the question comes again. Once you approve, the BA gets `validity: Validated`, committed and pushed. Then [`/pulse-re`](./pulse-re) starts in the same session, on the same branch, with the draft number. RE turns the HMW into the epic hypothesis, the critical hypotheses into the epic's leading indicators, needs and jobs to be done into user stories, and the idea potential into priorities, and attaches each spec to its draft once the spec is pushed. State never goes into the BA file; the item's record carries it.
+The skill commits and pushes after every commit, from the first one, so the team can read the work. An Item-BA uses its item branch; a Project-BA may use `docs/<slug>`. Commits name `Refs: #<n>`, including the Project-BA's draft.
+
+At handoff it summarizes the problem, audience, scope, evidence and open questions. It sets `validity: Validated` only when the claims are supported and required input is complete, commits and pushes that evidence, then continues authorized work with [`/pulse-re`](./pulse-re) in the same session. An Item-BA passes its draft number and branch. For a Project-BA, the person closes the published discovery draft and RE registers each work item. Missing input holds only the dependent work; there is no routine BA approval stop.
+
+RE turns the HMW into the epic hypothesis, the critical hypotheses into the epic's leading indicators, needs and jobs to be done into user stories, and the idea potential into priorities. It attaches each spec after publication. Workflow state remains on the board; BA validity records the quality of its evidence.
 
 ## Phase 6: Post-Release Review (BA as living document)
 

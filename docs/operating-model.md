@@ -72,7 +72,7 @@ it stated values and not procedures, Pulse values:
 **Shared artifacts over status meetings.** A coding agent has no memory
 between sessions. A teammate does not know what you built yesterday.
 Written artifacts are the only synchronisation that works for both
-audiences. A spec, a decision record, a pull request. Not a standup,
+audiences. A spec, a decision record, a checked result. Not a standup,
 not a Teams message.
 
 **Team coherence over individual speed.** Each pair is fast. Speed
@@ -85,7 +85,7 @@ becoming work without passing through a deliberate filter. That filter
 separates a product team from a feature factory.
 
 **Structural governance over approval gates.** Nobody wants to wait
-for someone to sign off a PR at 11pm. People decide what gets built
+for routine phase sign-offs. People decide what gets built
 and whether the result goes in. Everything in between runs on
 structure: tests, fitness functions, a reviewer agent in a fresh
 session, conventions that agents and humans follow equally. The rules
@@ -99,19 +99,17 @@ the same time.
 
 | Layer | Cadence | What it produces |
 |---|---|---|
-| Execution | Hourly | Working features, PRs, updated artifacts |
+| Execution | Hourly | Checked results, integrations, updated artifacts |
 | Coordination | Daily | Shared situational awareness, blocker resolution |
 | Product | Weekly to bi-weekly | Direction, learning, roadmap fit |
 
 ### Execution layer (hourly)
 
-Each person works with one or more agents. The next item comes from the
-ramp (approved, specified, planned, not blocked, not taken), and
-`pulse go` plans, builds, and reviews it, and opens its pull request for
-your merge. In hours, not weeks. One
-constraint:
-nobody works on something that has not passed the filter. Spontaneous
-ideas go to the Ideas channel, not directly into code.
+Each person works with one or more agents. The ramp orders authorized work
+by dependencies, priority and available files. `pulse go` plans published
+specs, builds valid Plans and verifies their results. It publishes the
+result and integrates only with current final approval. Spontaneous ideas
+still go through the team's product decision before becoming code.
 
 The V-Model walk runs inside this layer: [`/pulse`](/guides/pulse)
 says where things stand and what comes next, the phase skills
@@ -119,14 +117,13 @@ says where things stand and what comes next, the phase skills
 its [planning](/guides/pulse-plan) step, [`/pulse-build`](/guides/pulse-build)
 with its planning and review steps,
 [`/pulse-audit`](/guides/pulse-audit)) cover partial cycles, and
-[`pulse go`](/guides/pulse-go) plans and builds every approved item at
-once, each in its own worktree ([Parallel work](/concepts/parallel-work)).
-Pulse stops for a person only [where a person decides](/concepts/v-model#where-pulse-stops-for-you):
-the BA, the completed PLAN before implementation, and the merge.
-Specs proceed to planning automatically by default; an explicit manual
-spec setting adds that stop. Between those points the phases hand over without
-asking; nobody passes approved work on by hand, and the order in the ramp
-decides what an agent takes next.
+[`pulse go`](/guides/pulse-go) prepares and builds ready items in parallel,
+each in its own worktree ([Parallel work](/concepts/parallel-work)).
+Analysis, spec, Plan and build proceed within the authorized task without
+routine early approval stops. Missing decisions hold only dependent work.
+Regular checked results integrate automatically by default. A person can
+choose manual final approval with the same evidence and version checks.
+Destructive removal retains its separate confirmations.
 
 ### Coordination layer (daily)
 
@@ -140,12 +137,11 @@ The team synchronises through three lightweight rituals:
 - **Sync call (twice a week, 30 min).** Not "what did you do", that is
   in the async status. Resolve blockers, review ideas from the Ideas
   channel, adjust priorities.
-- **Merge (continuous, async).** Before a PR reaches a person, a
-  reviewer agent in a fresh session has checked it against its spec,
-  PLAN, and decisions ([review](/concepts/verification-gates)) and put the
-  verdict into the PR. The person reads the PR at feature level (does
-  it deliver what the spec promised?) and merges. Architecture
-  conformance, duplicates, dead code, and syntax are the agents' job.
+- **Integration (continuous, async).** A fresh reviewer checks the result
+  against its spec, Plan and decisions; tests, review and security audit
+  become visible evidence. The runner integrates regular checked results
+  automatically by default. With manual final approval selected, a person
+  judges the outcome and approves its exact head and base in Pulse.
 
 Total meeting overhead: under 2.5 hours per week.
 
@@ -172,28 +168,28 @@ between sessions. Teammates do not know each other's context. Shared
 artifacts are the only synchronisation that works, and each fact has
 one home ([Where things live](/concepts/where-things-live)):
 
-- The board on GitHub: one record per item, written by the `pulse`
-  commands. Draft (a BA or spec is being written), ready, taken
-  (assignee, with the phase and last sign of life of the holding
-  session), blocked (waits for another item), in review (open pull
-  request), done (closed). Epics and features form the hierarchy
-  through parent links.
+- The board identifies each item and shows shared workflow state:
+  drafts, active claims, blockers, published results, final approvals and
+  completion. A claim's age alone says nothing about activity. Parent
+  links connect epics and their work items.
+
 - [`BA-{PROJECT}.md` plus an Item-BA per epic or feature the Project-BA does not cover](/guides/pulse-ba):
   the product north star and the item-level discovery. It lives across
   releases through the
-  [Post-Release Review](/guides/pulse-ba#phase-8-post-release-review-ba-as-living-document).
+  [Post-Release Review](/guides/pulse-ba#phase-6-post-release-review-ba-as-living-document).
 - [Epic and feature specs](/guides/pulse-re) in `_devprocess/requirements/`:
   the unit of work, written tech-agnostic so anyone, person or agent,
   can pick them up.
-- [PLANs and decision records](/guides/pulse-plan): how an item gets
+- [Plans and decision records](/guides/pulse-plan): how an item gets
   built, and the decisions that constrain later changes, found through
   the "Read When" column of `decisions/README.md`.
 - `architect-handoff.md`: the bridge from requirements to the plan.
-  Questions a person cannot answer alone travel as pull request
-  comments or come up in the sync call.
-- Pull requests and commits: every commit names its item
-  (`Refs: #<n>`), every build pull request closes its item
-  (`Closes #<n>`); a docs pull request closes none: `pulse new` opens it without `Closes`, and `pulse go` merges it at gate 1.
+  Questions a person cannot answer alone stay in its Dialog section
+  or come up in the sync call.
+- Commits and result evidence: every commit names its item
+  (`Refs: #<n>`). Pulse binds tests, review, audit and approval to the
+  concrete result and base, and records completion after integration.
+
 - `AGENTS.md`, `CLAUDE.md`, and the Pulse rules: institutional memory
   and working rules, loaded into every session and every subagent.
 
@@ -215,7 +211,7 @@ shows each item a teammate holds or writes:
   each phase it starts, and every 10 minutes while one runs.
 - `no sign of life for 2 h`: that run has been silent for 30 minutes
   or more. Ask its holder.
-- `no PR yet, held 2 h`: a session holds the item. Nothing reports a
+- `held 2 h`: a session holds the item. Nothing reports a
   session's progress, so the line shows how long it is held; ask the
   holder.
 - `last run: <note>` on a free item: a `pulse go` run gave it back
@@ -241,11 +237,10 @@ When implementation is cheap, the temptation is to turn every idea
 into a feature immediately. Pulse creates a deliberate pipeline:
 
 ```
-Ideas channel  ->  Sync call filter  ->  Approved  ->  Ramp  ->  Work
-   (free flow)    (10 min review,      (pulse       (order:    (pulse go:
-                  matches against BA   approve,     critical   plan, build,
-                  and roadmap)         label        path)      review, PR)
-                                       pulse:approved)
+Ideas channel -> Sync call filter -> Authorized scope -> Ramp -> Checked result
+                 matches BA and      spec and Plan      plan,   final approval,
+                 roadmap                              build    integration
+
 ```
 
 The filter is lightweight. It happens in 10 minutes during the sync
@@ -265,11 +260,12 @@ Four channels, in any tool the team uses (Teams, Slack, Discord):
 |---|---|---|
 | Ideas | Free-flowing impulses | "Could we add a CSV export?" |
 | Async status | Daily structured updates | "Done X, next Y, blocked on Z" |
-| Pull requests | Collecting PRs waiting for a merge, questions at feature level | "PR-42 lands the CSV export, ready to merge" |
+| Results | Checked work awaiting integration, questions at feature level | "#42 publishes CSV export with its tests and review" |
 | Direction | Bi-weekly outcome decisions | Direction session notes |
 
 If something is in Ideas, it is an impulse. Only when it passes the
-sync call filter and gets approved (`pulse approve`) does it become work.
+sync call filter and the team authorizes its scope does it become work.
+`pulse approve` is reserved for the checked result at the end.
 
 ## Roles as hats
 
@@ -278,7 +274,7 @@ In a 3 to 4 person team, these are hats, not dedicated positions:
 | Hat | Responsibility |
 |---|---|
 | Product direction | Owns the BA, runs the direction session, calls the filter decisions |
-| Architecture | Owns the decision records the reviewer agent checks every PR against |
+| Architecture | Owns the decision records the reviewer agent checks every result against |
 | Quality | Owns testing strategy, security findings, and the checks |
 
 The person wearing the product direction hat still builds and ships
@@ -297,7 +293,7 @@ capability) that close the iteration loop.
 
 The team tempos consume what the walk produces. The sync call reads
 `pulse status` and the live map. The direction session reads closed
-items and merged pull requests against the BA. The conscious filter
+items and integrated results against the BA. The conscious filter
 reads against the BA. Nothing in the operating model asks anyone to
 produce extra artifacts.
 
@@ -353,7 +349,7 @@ people, they bridge agent sessions that have zero memory. Without
 previous one decided.
 
 The artifacts do not replace conversation. They make conversation
-productive. Sync calls, pull request threads, and the Ideas channel
+productive. Sync calls, result discussions, and the Ideas channel
 are the interaction loops. The docs ensure those conversations are not
 wasted on "wait, what did you build yesterday?".
 
@@ -388,9 +384,10 @@ What changed: the
 second pattern. Code that proves a design wrong amends the decision
 record first, in the same flow as the bug trigger. With parallel
 builds, the first merge no longer holds silent authority either: the
-ramp keeps items that touch the same files apart, and `pulse go`
-checks every new commit of the base branch with the tests before it
-builds on it.
+ramp holds back items with overlapping planned files, and `pulse go`
+starts from the fetched base commit and its configuration. Each completed
+result receives full verification before integration; CI status adds no
+separate start or integration gate.
 
 ### "The reading budget per person is not in the model"
 
@@ -425,9 +422,9 @@ through the Pulse hooks in every session and every subagent, so no
 completion claim goes out without fresh evidence. The
 [Security Audit](/guides/pulse-audit) phase runs OWASP, OWASP LLM,
 SAST, SCA, and Zero Trust checks before release. A reviewer agent in a
-fresh session checks every item against its spec, PLAN, and decisions
-before its PR leaves draft. The person who merges judges whether the
-feature does what its spec promised.
+fresh session checks every item against its spec, Plan, and decisions
+before it becomes eligible for integration. Pulse integrates the checked
+result automatically unless a person has chosen manual final approval.
 
 The Digital Innovation Agents are part of Pulse. Every team can adapt
 and add skills for their own needs. Treat Pulse as a starting point,
@@ -445,8 +442,8 @@ Reply. This was the most actionable critique. The predecessor of Pulse
 answered it with a hand-kept `METRICS.md`; Pulse drops that file, because a file the
 agents must remember to update drifts. The signal now comes from where
 the work already happens: the live map shows the pulse of the moment
-(who works, who waits, what is red), and the timestamps of item records and pull requests
-timestamps carry cycle time, blocked time, and throughput. A report on
+(who works, who waits, what is red), while recorded work phases and
+integration timestamps provide the basis for cycle time and throughput. A report on
 top of those timestamps is still open. BA hypotheses keep their
 validation status in the BA, where the direction session reads it.
 
@@ -490,7 +487,8 @@ Reply. Provenance is exactly the design intent of the artifact set.
 [Writeback](/concepts/v-model#writeback) keeps decision records and
 specs in sync with the code. Decision records in MADR format carry
 context, decision, alternatives, and consequences. Every commit names
-its item, every build pull request closes one, every item's record links its spec.
+its item, every completed result has integration evidence, and every
+item's record links its spec.
 The [traceability chain](/concepts/v-model#the-traceability-chain)
 means any line of code traces back to a business motivation in the BA.
 

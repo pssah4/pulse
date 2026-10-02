@@ -11,7 +11,7 @@ verify:                       # the commands that prove the item; the builder ru
   - {test command}
 # needs:                      # work that has to be built first; pulse go makes each entry a blocker of this item, a new title a draft item
 #   - '{#M title}', or {a short title}
-# risk:                       # holds the PLAN for a person: a person's OK (a new dependency, a schema, a public interface, a breaking or destructive change)
+# risk:                       # consequential choices for final review: dependency, schema, public interface, compatibility or destructive effect
 #   - {dependency, schema, public-api, or destructive}
 ---
 
@@ -23,10 +23,11 @@ verify:                       # the commands that prove the item; the builder ru
      the full verify is no task's check), tasks of one wave on disjoint
      files, no placeholder left, a configured runner for every spec test.
      Run pulse check --plan <this-file> before committing or handing over.
-     The PLAN is committed on the item's branch
-     and pushed; after the item merges, git keeps it. -->
+     The Plan is committed on the item's branch
+     and pushed with its spec; a valid Plan permits the authorized build.
+     Final approval binds the checked result head and base. Git keeps the Plan. -->
 
-# PLAN: {title}
+# Plan: {title}
 
 ## Goal
 
@@ -66,11 +67,13 @@ under verify run them.}
 
 ## Stop conditions
 
-Stop instead of guessing when the work needs: a file outside `files`, a
-schema or data migration not in this PLAN, a new dependency, or a change to
-a spec test after it was frozen. Ask the user; headless (an agent `pulse go`
-started), stop and name it in the summary. Work that has to be built first
-goes under `needs:` in `_devprocess/plans/<n>-needs.md`.
+Stop instead of guessing when a requirement, ownership conflict or
+consequential action falls outside the authorized task. Record a routine
+scope correction in this Plan's change log and revalidate it. A frozen
+spec test changes only after its requirement and change-log entry are
+updated and the exact diff has been shown to the user. Headless agents
+preserve work and report decisions they cannot resolve. Work that must
+come first goes under `needs:` in `_devprocess/plans/<n>-needs.md`.
 
 ## Change log
 

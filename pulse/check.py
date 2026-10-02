@@ -11,10 +11,10 @@
       issue cache is available
   C9  every spec's parent: link and its epic's Items list agree
   C10 every spec's file name starts with the ID its place in the tree calls for
-  R1 to R6  an approved item's spec is one an agent can plan from (pulse/spec.py),
-      read from the base branch; without an issue cache the board is loaded,
-      without a board a finding says they were skipped; --spec <path> applies them to spec
-      files as they are here, before approval, and asks no board
+  R1 to R6  a registered work item's published spec is one an agent can plan from
+      (pulse/spec.py), resolved from fetched refs; without an issue cache the board is
+      loaded, without a board a finding says they were skipped; --spec <path> applies
+      them to local spec files and asks no board
 """
 from __future__ import annotations
 
@@ -209,10 +209,10 @@ def _tracked(root: Path):
     return [root / f for f in out.stdout.splitlines()] if out.returncode == 0 else []
 
 
-def check_stubs(root: Path):
+def check_stubs(root: Path, issue_cache: bool = True):
     open_issues = None
     try:
-        if state.cache_path(root).is_file():
+        if issue_cache and state.cache_path(root).is_file():
             open_issues = {i["number"] for i in state.cached(root)}
     except (OSError, subprocess.SubprocessError):
         pass
@@ -239,19 +239,22 @@ def check_stubs(root: Path):
 
 
 def check_readiness(root: Path):
-    """Approved items: their spec must be one an agent can plan from. Every write drops the
-    issue cache, so without one the board itself is read."""
+    """Check published specs of registered work items; drafts remain in preparation.
+    A cached board and fetched refs suffice, without a network read or early approval."""
     try:
         board = state.cached(root) if state.cache_path(root).is_file() else state.load(root, state.repo(root))
     except (state.StateError, OSError, ValueError) as e:
         why = str(e).partition("\n")[0]                 # gh adds a login hint on a second line
         yield Finding("board", 0, "R1-R6", f"skipped: no board ({why})")
         return
-    items = [i for i in board if i.get("approved") and i.get("type") in state.WORK and i.get("spec")]
+    items = [i for i in board if not i.get("draft") and i.get("type") in state.WORK and i.get("spec")]
     ref = config.base_ref(root) if items else None
     for i in items:
-        text = spec.on_base(root, i["spec"], ref)
-        if text is None and i.get("spec_prs"):          # in its docs PR, which pulse go checks and merges (#115)
+        branch = i.get("branch") or (i.get("work") or {}).get("branch") or \
+            ((i.get("lifecycle") or {}).get("work") or {}).get("branch")
+        text, _, why = spec.published(root, i["spec"], i["number"], branch=branch, base=ref)
+        if why:
+            yield Finding(i["spec"], 1, "R1", f"#{i['number']}: {why}")
             continue
         for f in spec.findings(text, i["type"], i["number"]):
             code, msg = f.split(" ", 1)
@@ -259,8 +262,7 @@ def check_readiness(root: Path):
 
 
 def check_specs(paths) -> list:
-    """pulse check --spec: what pulse approve and pulse go refuse once these specs are merged (spec.refusal),
-    read from the files as they are here."""
+    """Apply R1 to R6 to local spec files without reading the board."""
     found = []
     for p in map(Path, paths):
         try:
@@ -296,7 +298,7 @@ def check_plans(root: Path, paths) -> list:
     return found
 
 
-def run(root: Path, board: bool = True) -> list:
+def run(root: Path, board: bool = True, issue_cache: bool = True) -> list:
     """Every finding; board=False leaves R1 to R6 out, which read the board (the tests gate of pulse go)."""
     found = []
     for path in _walk(root):
@@ -323,7 +325,7 @@ def run(root: Path, board: bool = True) -> list:
             found += check_decision(root, path, text)
         if rel.startswith("_devprocess/requirements/features/"):
             found += check_activation(root, path, text)
-    found += check_stubs(root)
+    found += check_stubs(root, issue_cache=issue_cache)
     found += check_readiness(root) if board else []
     found += [Finding(p, 1, "C9", msg) for p, msg in spec.link_problems(root)]
     try:

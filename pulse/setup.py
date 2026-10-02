@@ -39,12 +39,12 @@ LABELS = {                     # name: (color, description)
     "pulse:feat": ("0e8a16", "Pulse: feature"),
     "pulse:imp": ("1d76db", "Pulse: improvement on an existing feature"),
     "pulse:fix": ("d93f0b", "Pulse: fix for a bug or drift"),
-    "pulse:approved": ("fbca04", "Pulse: the team wants it built"),
+    "pulse:approved": ("fbca04", "Pulse: legacy intent label; integration approval binds a checked result"),
     "pulse:draft": ("d4c5f9", "Pulse: no spec yet, analysis or spec work in progress"),
     "pulse:hold": ("b60205", "Pulse: a person holds it; pulse go neither plans nor builds it"),
-    "pulse:failed": ("e99695", "Pulse: pulse go gave up on it; pulse approve lets it try again"),
-    "pulse:base": ("0052cc", "Pulse: fixes a red base; pulse go plans and builds it on a red base too"),
-    "pulse:auto": ("c5def5", "Pulse: the control issue of the auto mode switches, one per repository"),
+    "pulse:failed": ("e99695", "Pulse: work failed; inspect retained work, then pulse resume permits another try"),
+    "pulse:base": ("0052cc", "Pulse: base-repair work; base CI does not gate planning"),
+    "pulse:auto": ("c5def5", "Pulse: legacy auto-mode record; each checked result needs final integration approval"),
     "pulse:order": ("c5def5", "Pulse: the shared manual order, one control issue per repository"),
     "P0": ("b60205", "Priority: at once"),              # pulse new copies priority: of the spec (#116)
     "P1": ("d93f0b", "Priority: soon"),
@@ -59,14 +59,16 @@ a shared board on GitHub with one record per item, and parallel agents.
 - Settings: `.pulse/config.toml` (mode: {mode})
 - Start with `/pulse` (in Codex `$pulse:pulse`): where things stand, what
   comes next, and the command for it.
-- Item state (draft, approved, taken, blocked, done) lives on the board on GitHub, one record per item
-  and only `pulse` writes it. Never write status into Markdown.
-- Parallel work runs through `pulse go`, which a person starts in a terminal:
+- Pulse keeps claims, holds, results and confirmed final approvals in shared
+  state, with one board record per item. Never write status into Markdown.
+- Parallel work runs through `pulse go`, which a person explicitly starts:
   ready items with disjoint files never wait for each other, up to `cap` in
   the settings.
-- An item's plan is its PLAN file `_devprocess/plans/{{n}}-{{slug}}.md`. A
-  plan mode, where the agent has one, only shows that PLAN for approval and
+- An item's plan is its Plan file `_devprocess/plans/{{n}}-{{slug}}.md`. A
+  plan mode, where the agent has one, shows that same Plan and
   keeps no plan of its own; in this project this holds over any other rule about plans.
+- Specs and Plans proceed when structurally valid. Integration of checked results
+  is automatic by default; an explicit manual final approval policy waits for a person.
 - The always-on rules arrive through the Pulse hooks. An agent without
   hook support reads them from hooks/rules.md in the Pulse plugin.
 
@@ -211,7 +213,7 @@ prefix_rule(
 )
 # `pulse -- <command>` too: Python 3.12 reads it as the command itself.
 prefix_rule(
-    pattern = ["pulse", ["approve", "approve-plan", "done", "--"]],
+    pattern = ["pulse", ["approve", "approve-plan", "revoke", "handoff", "retry", "done", "--"]],
     decision = "forbidden",
     justification = "A person's lever, in their own terminal.",
 )
@@ -393,6 +395,28 @@ def _gh(*args) -> bool:
         return False
 
 
+def check_plan(root: Path, force=False) -> dict:
+    """Use the freshly fetched base's commands for the same probe that gates planning in pulse go."""
+    from pulse import compat, go
+    result = dict(state="unchecked", step="prerequisites", sha="", fingerprint="", log="", cleanup="",
+                  why="", next="Publish the required configuration on the base, then run pulse setup --check-plan")
+    try:
+        branch = config.load(root)["base_branch"] or config.default_branch(root)
+        sha, why = go._fetch_base(root, branch)
+        result["sha"] = sha
+        if not sha:
+            raise state.StateError(f"origin/{branch} could not be fetched: {why}")
+        cfg = config.load(root, ref=sha)
+        if (cfg["base_branch"] or config.default_branch(root)) != branch:
+            raise state.StateError("base_branch differs from the trusted base configuration")
+        if not cfg["verify"] or not cfg.get("spec_tests"):
+            raise state.StateError(f"origin/{branch} needs verify and [spec_tests] before Plan compatibility can run")
+        return compat.probe(root, cfg, sha, force=force)
+    except (OSError, state.StateError) as error:
+        result["why"] = config.printable(str(error))[:2000]
+    return result
+
+
 def run(root: Path, mode: str, cap: int, base_branch: str, files: list,
         labels: bool, remove: bool, dry_run: bool,
         agent: str = None, verify: str = None) -> dict:
@@ -449,6 +473,8 @@ def run(root: Path, mode: str, cap: int, base_branch: str, files: list,
         _gh("label", "edit", "pulse:ready", "--name", "pulse:approved")   # keeps it on every issue
         report["labels"] = {name: _gh("label", "create", name, "--color", color, "--description", desc, "--force")
                             for name, (color, desc) in LABELS.items()}
+    if mode == "on" and not remove and not dry_run:
+        report["compatibility"] = check_plan(root)
     return report
 
 
@@ -457,6 +483,10 @@ def main(args) -> int:
     if root is None:
         print("pulse setup: not inside a git repository")
         return 2
+    if getattr(args, "check_plan", False):
+        result = check_plan(root, force=True)
+        print(json.dumps({"root": str(root), "compatibility": result}, indent=2))
+        return 0 if result["state"] == "compatible" else 1
     known = config.load(root)
     if getattr(args, "anchors", False):        # the Pulse block only, where a file has one (IMP-14)
         changes = []

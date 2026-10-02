@@ -7,6 +7,7 @@ render() is pure; gather() reads the world.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,7 @@ import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -24,7 +26,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import auto, config, go, lifecycle, merge, order, presence, ready, remove, setup, spec, state
+from pulse import actions, auto, config, go, goals, lifecycle, merge, order, presence, ready, remove, setup, spec, state
 
 WIDTH = 80                      # columns without a terminal (D-45)
 TITLE = 60                      # the most of a file name a row keeps (FIX-02-04-03)
@@ -58,98 +60,107 @@ SIGNET_LIGHT = ('007b84 007c84 007e86 008189 00848b 00878e 008990 00868d',
 INSET = 10
 HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on every screen (#57)
 # what the map asks of a person, the most urgent first, in the color of its state
-NEXT = {"failing": "31", "your review": "33", "waits for merge": "33",
-        "plan waits for you": "33", "not approved": "33", "spec rule": "90", "spec waits": "90", "last run": "90",
+NEXT = {"failing": "31", "your review": "33", "integration": "33", "waits for merge": "33",
+        "spec rule": "90", "spec waits": "90", "last run": "90",
         "plan repair": "90", "plan needs you": "33", "needs a plan": "90", "starts next": "90", "queued": "90",
         "spec in progress": "90", "nothing open": "90"}
 SILENT = 30 * 60                # a run's claim without a heartbeat this long shows no sign of life (D-43)
-PHASE = {"plan": "planning", "build": "building", "spec tests": "RED check running", "tests": "tests running",
+PHASE = {"spec": "specifying", "documents": "checking documents", "plan": "planning", "build": "building", "spec tests": "RED check running", "tests": "tests running",
          "check": "review and audit running", "review": "review running", "audit": "audit running",
          "fix": "fix round"}                                                             # pulse go, per feature
 # the live map is a tree walked without Shift but for ? (D-44): the map, an item, and what acts on it; below
 # the map every way back drops what is not written yet, q too (#55)
 UP, DOWN, ENTER, RIGHT = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n"), ("\x1b[C",)
 BACK = ("\x1b", "\x1b[D", "\x7f", "\x08", "q")
-KEYS = {"map": "↑↓ pick m move a approve enter open q quit",       # 44 columns: ? shows the help all the same
-        "item": "↑ ↓ pick  a approve  enter do it  esc back",
+KEYS = {"map": "↑↓ pick m move enter open ? help q quit",       # one key row at 44 columns; a still approves
+        "item": "↑↓ pick a approve enter do ? help esc back",
         "move": "↑ ↓ move  enter save  esc cancel",
         "confirm": "enter confirm  esc cancel",
         "number": "type issue number  enter open  esc cancel",
-        "help": "esc back"}
+        "help": "↑↓ scroll PgUp/PgDn page esc back"}
 HELP = """map      ↑ ↓ or j k pick a line, enter or →
-           opens it, a approves what it
-           waits for
-         epics in the board are pickable too
-         m move: pick unclaimed ramp work;
+           opens it, a previews approval
+         m moves unclaimed ramp work;
            arrows move it, enter saves,
-           esc cancels
-           dependencies always come first
-         g opens an issue by number,
-           closed too
-         ? shows this help, q quits; no key
-           but ? needs Shift
-item     its goal, stage, holder, blockers,
-           PR, and plan, then what you can
-           do with it now: ↑ ↓ or j k pick,
-           enter does it; it opens on a
-           reading one
-         PgUp PgDn scroll long details
-         defer keeps work as-is in the
-           backlog;
-           resume continues it explicitly
+           esc cancels; dependencies first
+         g opens an issue by number
+         ? shows this help, q quits
+item     goal, stage, holder, blockers,
+           result, checks and plan
+         ↑ ↓ or j k pick, enter acts;
+           PgUp PgDn scroll long details
+         approve binds the published result
+           and base after reviewing its diff
+           checks and findings
+         read result opens the complete diff
+         revoke withdraws final approval
+         defer pauses and preserves work;
+           resume awaits shared confirmation
+         handoff stops the current writer
+           before releasing its claim
+         these actions save locally first;
+           their sync state stays on the map
+         read plan and spec open in a window
+           (PULSE_EDITOR or the system app)
          discard closes without rollback
-         delete removes code, specs and
-           issue
-           through a separately reviewed PR
-         a, approve: the approval it waits
-           for, and nothing else; pulse go
-           acts on it. Gate 1, approve spec:
-           agents may plan it, and pulse go
-           merges its docs PR first. Gate 2,
-           approve plan: agents may build it
-           as that plan says, pushed. After
-           pulse:failed, try again
-         read plan, read spec: open it in a
-           window and the map runs on
-           (PULSE_EDITOR, else VS Code or
-           Cursor, else the system's app)
-         read PR opens its PR in the
-           browser; the merge is a person's,
-           on GitHub
-         a, o: approve spec or plan, read
-           spec
-auto     1 2 3 switch your auto mode of
-           gate 1 plan, 2 build, 3 merge:
-           pulse go passes it for your
-           items without asking you. The
-           head shows yours, others' below
-confirm  what it does shows first; enter
-           confirms, but not within a second
-           of opening it; esc cancels
-back     q goes back one level, as esc, ←
-           and backspace do, and drops what
-           is not written yet
-         q quits only on the map, esc never
-           quits it; ctrl-c quits anywhere"""
-GATE_ROW = re.compile(r"^\| ([a-z][a-z ]*) \| ([^|\n]+) \|(?: [0-9a-f]* \|)?$", re.M)   # a row of pulse go's gate table
+         delete prepares removal of work
+policy   3 shows final approval settings;
+           automatic is the default
+         manual waits for a person with
+           repository write access
+         holds, checks and bindings remain
+           required
+help     ↑ ↓ or j k scroll one line
+         PgUp PgDn scroll a page
+         enter and action keys do nothing
+confirm  enter confirms after one second;
+           esc cancels
+back     q, esc, ← or backspace go back and
+           drop an unconfirmed action
+         q quits only on the map;
+           ctrl-c quits anywhere"""
+WORKFLOW = """Workflow
+1. Orient: pulse shows the current state; pulse setup configures a project when needed.
+2. Spec: clarify the goal and record its scope and success criteria on the board.
+3. Plan: define tasks and tests, validate the plan and publish its exact contents.
+4. Build: first run and freeze the RED tests, then implement and run the project checks.
+5. Review and audit: inspect the result, fix findings and refresh affected checks.
+6. Integration: publish the checked result bound to its exact head and base. Regular results complete automatically by default; explicitly chosen manual waits for personal approval.
+Hooks, holds, prerequisites and current rights still apply. Removal always needs separate personal confirmation.
+Use pulse go with an optional goal to follow this process. A goal adds to queue work; --epic or --item restricts it. No spec or plan approval and no PR is required.
+
+Chat skills (in your coding agent)
+/pulse: find the current state and the next suitable step.
+/pulse-realign: onboard an existing project and its retained work.
+/pulse-ba: clarify a problem, its users and the intended benefit.
+/pulse-re: turn that understanding into a spec and success criteria.
+/pulse-build: implement a ready item against its plan, test first.
+/pulse-audit: inspect security risks and report concrete findings.
+In Codex use $pulse:pulse, $pulse:pulse-build and the corresponding $pulse:skill-name form. Planning is a phase managed by Pulse, not an additional public CLI command.
+
+Command reference (examples are text, not actions)
+"""
 # what the item view can offer (#55): the words, and what it does; offers() puts them in order
-OFFER = {"approve": ("approve", "the approval it waits for; pulse go acts on it"),
+OFFER = {"approve": ("approve integration", "approve the reviewed result and base"),
+         "revoke": ("revoke approval", "withdraw integration approval"),
+         "handoff": ("hand off claim", "stop the current writer and preserve its work"),
+         "read-result": ("read result diff", "open the published result, checks and findings"),
          "read-plan": ("read plan", "open it in a window"),
-         "open": ("read spec", "open it in a window"),
-         "read-pr": ("read PR", "open it in your browser")}
+         "open": ("read spec", "open it in a window")}
 OFFER.update({"defer": ("defer", "pause as-is in the backlog"),
               "resume": ("resume", "continue the preserved work"),
               "discard": ("discard", "close as not planned; keep code and specs"),
               "delete": ("delete", "review removal of code, specs, issue and comments")})
-READS = ("read-pr", "read-plan", "open")      # what the item view opens on: nothing that writes (#99 FR-09)
+READS = ("read-result", "read-plan", "open")
 # the approval a writes at each gate (#115): its words in the item view, and what it lets happen
-GATE = {0: ("try again", "pulse:failed goes, pulse go tries it again"),
-        1: ("approve spec", "gate 1: agents may plan it"),
-        2: ("approve plan", "gate 2: agents may build it as this plan says"),
-        3: ("approve merge", "gate 3: pulse go merges its PR at this head")}
+GATE = {3: ("approve integration", "approve this result and base after reviewing the diff and checks")}
 # the line an action shows while it runs; the ones not named here only open a window
-DOING = {"approve": "approving #{}…", "auto": "switching {}…"}
+DOING = {"auto": "saving approval policy…", "publish-plan": "starting plan publication #{}…",
+         "retry-sync": "queueing synchronization retry #{}…"}
 DOING.update({action: action + " #{}…" for action in lifecycle.ACTIONS})
+LOCAL_ACTIONS = {"approve", "defer", "resume", "revoke", "handoff"}
+LOCAL_WRITES = LOCAL_ACTIONS | {"publish-plan", "retry-sync", "auto"}
+DOING.update({action: "queueing " + action + " #{}…" for action in LOCAL_ACTIONS})
 SMALL = "the terminal is too low or too narrow to show what enter would confirm: make it larger"   # #76, #56
 SOON = 1.0                      # seconds after a confirmation opened in which an Enter came unread (#86, #90)
 VERB = {"Edit": "editing", "MultiEdit": "editing", "Write": "writing", "NotebookEdit": "editing",
@@ -248,6 +259,13 @@ def footer(status: str, keys: str, w: int) -> list:
     """The rows below the map: the status, then the keys, wrapped at w columns so that the end of a
     refusal says why (D-45), and without a character that is not printable (#56)."""
     return [row for s in status.split("\n") + [keys] for row in wrap(ready.printable(s), w)]
+
+
+def help_lines(width: int) -> list:
+    """Navigation, process and the current parser's command help, wrapped for this terminal."""
+    from pulse import cli                       # cli already imports this renderer
+    return [row for text in (HELP, "", WORKFLOW, *cli.command_help()) for line in text.split("\n")
+            for row in (wrap(ready.printable(line), width) or [""])]
 
 
 def depth(env=os.environ) -> int:
@@ -393,7 +411,7 @@ def _goal(text) -> str:
 def places(vm: dict) -> dict:
     """{item number, else branch or "no branch": every agent on it}. An agent counts for the item
     its claim holds, wherever its directory stands (FIX-02), else for the item of its branch; the
-    branch of a fork's PR, named in the fork, builds no item here (#63)."""
+    a result branch also identifies the item whose writer published it."""
     by_number = {i["number"]: i for i in vm["items"]}
     holds = {}                            # session or Codex subagent id -> the items its claims hold
     for x in vm["items"]:
@@ -405,7 +423,7 @@ def places(vm: dict) -> dict:
         for a in [s, *s["agents"]]:
             b = vm["branches"].get(a.get("cwd", ""), "")
             i = by_number.get(state.item_of(b)) or next(
-                (x for x in vm["items"] if b and (x.get("pr") or {}).get("branch") == b and not x["pr"].get("fork")),
+                (x for x in vm["items"] if b and (x.get("result") or {}).get("branch") == b),
                 None)
             own = holds.get(a.get("holder")) or holds.get(a["id"]) or holds.get(s["id"]) or []
             if own and i not in own:
@@ -415,15 +433,13 @@ def places(vm: dict) -> dict:
 
 
 def board(vm: dict) -> dict:
-    """Every open work item in one group: startable, held (a draft whose spec someone writes too,
-    #55), held with a PR, waiting for an open blocker (whatever else gates it), and the rest (not
-    approved, a gate, a file in use, a draft nobody holds)."""
+    """Group ready work, active writers, published results and blocked items."""
     rows = vm["ramp"].get("rows", [])
     held = [i for i in vm["items"] if i["assignees"] and (i["type"] in state.WORK or i.get("draft"))]
     start = [x for x in rows if x["stage"].startswith(("starts next", "queued"))]
     blocked = [x for x in rows if x["blocked_by"] and x not in start]
-    return {"ready to start": start, "in progress": [i for i in held if not i.get("pr")],
-            "in review": [i for i in held if i.get("pr")], "blocked": blocked,
+    return {"ready to start": start, "in progress": [i for i in held if not i.get("result")],
+            "in review": [i for i in held if i.get("result")], "blocked": blocked,
             "not ready yet": [x for x in rows if x not in start and x not in blocked]}
 
 
@@ -434,6 +450,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     walks them; item: the item view in place of the map (D-44), its number and what look() read;
     stages: gets the stage of every item in the map's words, as pulse status <n> prints it (#99 FR-14).
     Only the map writes escapes: every string of vm and item loses its control characters first (#56)."""
+    if vm.get("goal"):
+        vm = {**vm, "goal": {**vm["goal"], "objective": " ".join(vm["goal"]["objective"].splitlines())}}
     vm, item, p, w = _plain(vm), _plain(item), Paint(color), width
     by_number = {i["number"]: i for i in vm["items"]}
     shown = [] if picks is None else picks
@@ -463,37 +481,38 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     def mine(i) -> bool:
         return bool(vm["me"]) and vm["me"] in i["assignees"]
 
+    def automatic(i):
+        setting = vm.get("auto") or {}
+        return auto.active(setting.get("policy") or {}) and not setting.get("blocked") and not (
+            i.get("removal") or i.get("revoked"))
+
     def light(i):
-        """(state, words, next step) of a claimed item: its pulse go job, its pull request, or the claim."""
-        pr, n = i.get("pr"), i["number"]
+        """The current writer or the published result awaiting final integration."""
+        n, result = i["number"], i.get("result")
         fix = ("failing", f"/pulse-build {n} takes it on in a session") if mine(i) else None
-        if not pr:
-            if n in failed:                   # its phase file stays until the run ends
-                return "error", f"failed: {failed[n]}".replace("PLAN", "plan"), fix
-            if n in phases:                   # a job of pulse go: working, whether its agent reports or not
-                return "working", PHASE.get(phases[n], phases[n]), None
-            if n in vm["ramp"].get("plan_waits", ()):     # /pulse-build keeps the claim meanwhile; whose (#99 FR-14)
-                if mine(i):
-                    return "waiting", "plan waits for you", ("plan waits for you", f"pulse approve {n}")
-                return "idle", f"plan waits for {i.get('claimed_by') or i['assignees'][0]}", None
-            beat = i.get("claimed_beat")
-            if beat and not mine(i) and _run(i):      # the run's last sign of life (D-43)
-                return "idle", _life(i.get("claimed_phase") or "working", beat), None
-            return "idle", "no PR yet", None
-        ref = f"PR #{pr['number']}"
-        if pr.get("checks") == "fail":
-            return "error", f"{ref}, checks failing", fix
-        if pr.get("draft"):                   # pulse go opens a draft only when a gate is red (D-19)
-            return "error", f"draft {ref}, a gate is red", ("failing", f"/pulse-build {n} fixes it in a session, or "
-                                                            "the next pulse go takes it up") if mine(i) else None
-        if vm["me"] and vm["me"] in pr.get("reviewers", []):
-            return "waiting", f"{ref}, needs your review", ("your review", f"review {ref} on GitHub")
-        if mine(i) and not pr.get("fork") and pr.get("base") not in (None, vm.get("base")):   # stacked, older Pulse
-            return "waiting", f"{ref} targets {pr['base']}", ("waits for merge",
-                                                              f"retarget {ref} to {vm.get('base')} on GitHub")
-        if mine(i):                           # the map merges nothing (#115): a person on GitHub, until gate 3
-            return "waiting", f"{ref}, waits for merge", ("waits for merge", f"merge {ref} on GitHub")
-        return "idle", f"{ref}, waits for merge", None
+        if i.get("local_hold"):
+            return "waiting", "on hold locally", None
+        if i.get("hold"):
+            return "waiting", "on hold", None
+        if n in failed:
+            return "error", f"failed: {failed[n]}".replace("PLAN", "plan"), fix
+        if n in phases:
+            return "working", PHASE.get(phases[n], phases[n]), None
+        if i.get("integration_wait"):
+            return "waiting", "integration: " + i["integration_wait"], \
+                ("integration", f"Resolve #{n}: {i['integration_wait']}; then pulse go retries")
+        if result:
+            if any(value != "pass" for value in result.get("gates", {}).values()):
+                return "error", "published result has a failed check", fix
+            if i.get("approval"):
+                return "idle", "integration approved; waits for current-base checks", None
+            if automatic(i):
+                return "idle", "automatic integration pending", None
+            return "waiting", "result waits for integration approval", ("your review", f"pulse approve {n}")
+        beat = i.get("claimed_beat")
+        if beat and not mine(i) and _run(i):
+            return "idle", _life(i.get("claimed_phase") or "working", beat), None
+        return "idle", "work in progress; no published result", None
 
     def wants(row):
         """(state, next step) of a ramp row: red when the last run failed it, yellow when a person
@@ -507,23 +526,22 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             return "idle", ("spec in progress", f"{who or '/pulse-re'} writes the spec of #{n}")
         if row in groups["blocked"] and not ready.repairable(row, s):
             return "idle", None
-        if s == "not approved":               # approve writes gate 1, pulse go merges the docs PR (#115)
-            if n in vm.get("unready", ()):    # a spec on the base that breaks R2 to R6 there
-                return "idle", ("spec rule", f"/pulse-re on the spec of #{n}")
-            if n in vm.get("nowhere", ()):    # no spec, or neither on the base nor in an open pull request: what
-                return "idle", ("spec waits", f"/pulse-re {'pushes' if row.get('spec') else 'writes'} the spec "
-                                              f"of #{n}")      # approve cannot move is grey (#99 FR-12)
-            return "waiting", (s, f"pulse approve {n}, or approve spec in its view")
         if s.startswith("spec:"):
             return "idle", ("spec rule", f"/pulse-re on the spec of #{n}")
         if s.startswith("plan: "):
-            return ("idle", ("plan repair", f"Runner: repair #{n} plan; then ask for your approval")) \
+            return ("idle", ("plan repair", f"Runner: repair #{n} plan and check it again")) \
                 if ready.repairable(row, s) else \
-                ("waiting", ("plan needs you", f"You: review #{n} plan findings; previous approvals stay"))
-        if s.startswith(ready.WAITS):
-            return "waiting", ("plan waits for you", f"pulse approve {n}, or approve plan in its view")
-        if s.startswith(ready.MOVED):          # its docs PR moved since gate 1 (M-1)
-            return "waiting", ("docs PR changed", f"pulse approve {n}, or approve spec in its view")
+                ("waiting", ("plan needs you", f"You: review #{n} plan findings"))
+        if s.startswith(("plan publication", "plan versions", "plan commit", "plan push")):
+            return "waiting", ("plan needs you", f"Open #{n}: inspect and publish the preserved plan")
+        if s == "integration waits for approval":
+            if automatic(by_number.get(n, {})):
+                return "idle", None
+            return "waiting", ("your review", f"pulse approve {n}")
+        if s.startswith("integration: "):
+            return "waiting", ("integration", f"Resolve #{n}: {s[13:]}; then pulse go retries")
+        if s.startswith("result:"):
+            return "waiting", ("your review", f"#{n} needs result revalidation: {s[7:].strip()}")
         if row.get("note"):                   # a run gave it back (D-43); its branch holds the work
             return "idle", ("last run", f"/pulse-build {n} goes on from where it stopped")
         if remedy or runner and runner.get("item") in (None, n):
@@ -540,14 +558,15 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         since = row.get("claimed_beat") or row.get("claimed_at")
         stage = f"failed: {failed[n]}" if n in failed else \
             row["stage"] + (f", {_age(since)}" if row.get("draft") and since else "")
+        if stage == "integration waits for approval" and automatic(by_number.get(n, {})):
+            stage = "automatic integration pending"
         if row in groups["blocked"]:           # as the board counts it (N1.13), before details a cut may take
             head, cut, detail = ("", "", "") if stage.startswith("waits for") else stage.partition(" (")
             lead = head + ", waits for " if head else "waits for "
             stage = lead + _refs(row["blocked_by"], (room or int(w * STATE)) - len(lead)) + cut + detail
         stage += f", last run: {note}" if note and n not in failed else ""
-        grey = stage.startswith("not approved") and row not in groups["blocked"] and wants(row)[0] == "idle"
         return stage.replace("PLAN", "plan"), "31" if stage.startswith(("locked", "failed")) else \
-            "33" if stage.startswith(("waits for", "plan waits", "spec:", "plan:", "not approved")) and not grey \
+            "33" if stage.startswith(("waits for", "integration", "on hold", "plan:", "result:")) \
             else "90"
 
     feats = places(vm)                    # feature (or branch without one) -> every agent on it
@@ -559,7 +578,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     tone = {"error": "31", "waiting": "33"}
 
     def gate(i):
-        """Where a feature stands, and for someone else's claim without a PR or heartbeat since when:
+        """Where a feature stands, and for someone else's claim without a result or heartbeat since when:
         the state a person acts on first, the age after it, where a cut takes it. An item nobody
         holds says what its ramp row says."""
         if i["number"] not in lit:
@@ -571,7 +590,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             return (wants(row)[0], says(row)[0]) if row else ("idle", "")
         st, words, _ = lit[i["number"]]
         held = i.get("claimed_at") or i.get("claimed_beat")
-        since = f", held {_age(held)}" if held and not mine(i) and not i.get("pr") \
+        since = f", held {_age(held)}" if held and not mine(i) and not i.get("result") \
             and not (_run(i) and i.get("claimed_beat")) else ""
         return st, words + since
 
@@ -583,7 +602,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         i = by_number.get(seen["number"])
         if not i:
             return [p(f"#{seen['number']} is merged or closed", "90")]
-        n, pr, beat = i["number"], i.get("pr") or {}, i.get("claimed_beat")
+        n, result, beat = i["number"], i.get("result") or {}, i.get("claimed_beat")
         st, words = gate(i)
         operation = i.get("lifecycle") or {}
         if operation and operation.get("phase") != "resumed":
@@ -595,22 +614,37 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         life = _life(phase or "working", beat) if beat and _run(i) else f"held {_age(held)}" if held and not _run(i) \
             else PHASE.get(phase, phase) if phase else ""
         got = seen.get("approvals")                # a list, None when GitHub did not answer, or READING
-        said = [got] if isinstance(got, str) else [f"gate {g} by @{login}, {_when(at)}" for g, login, at in got or ()] \
+        said = [got] if isinstance(got, str) else [f"integration by @{login}" + (f", {_when(at)}" if at else "") for g, login, at in got or ()] \
             or ["none" if got == [] else "could not be read"]
         facts = [("goal", seen["goal"] or "-"), ("stage", p(words or "-", tone.get(st, "90")))] + \
             [(k, v) for k, v in zip(["approvals"], said[:1]) if "approvals" in seen] + \
             [("", v) for v in said[1:]] + [
                  ("holder", ", ".join(filter(None, [who, life])) if who else "nobody"),
                  ("blocked by", _refs(i["blocked_by"], w - 13) if i["blocked_by"] else "nothing"),
-                 ("PR", ", ".join(filter(None, [f"#{pr['number']}", pr.get("draft") and "draft",
-                                                 pr.get("checks") and f"checks {pr['checks']}"])) if pr else "none"),
+                 ("result", result.get("head", "")[:12] or "none"),
+                 ("base", result.get("base", "")[:12] or "none"),
+                 ("checks", ", ".join(f"{name}: {value}" for name, value in sorted(result.get("gates", {}).items())) or "none"),
                  ("spec", i.get("spec") or "none"), ("plan", seen["plan"] or "none yet")]
         if "plan_blob" in seen:
-            facts.append(("plan blob", seen["plan_blob"] or "local preview; push before approval"))
+            facts.append(("plan blob", seen["plan_blob"] or "local preview; publish before building"))
         facts += [("plan issue", finding) for finding in seen.get("plan_findings", ())]
+        observed = vm.get("plans", {}).get(n)
+        if observed:
+            facts += [("plan state", "versions differ; choose a source" if observed["conflict"] else
+                       "validated locally" if observed["selected"] and not observed["validation"]["findings"] else
+                       "validation blocked" if observed["exists"] else "missing"),
+                      ("commit", "exact content committed" if observed["commit"]["matches"] else "not committed"),
+                      ("publication", "exact content published" if observed["publication"]["matches"] else "not published")]
+            for _, source, _ in _plan_entries(observed):
+                facts.append(("plan source", f"{source['path']} ({source['layer']}) in " +
+                              (source.get("worktree") or source.get("ref") or "unknown")))
+            failure = observed.get("failure") or {}
+            if failure:
+                facts += [("plan failure", ("previous: " if failure.get("stale") else "") +
+                           f"{failure.get('step', 'publication')} blocked: {failure.get('cause', '')}")]
         menu = offers(vm, seen)
         pick = min(seen.get("pick", 0), len(menu) - 1)
-        choice = [(p(f" › {words:<14}", "1") if k == pick else f"   {words:<14}")
+        choice = [(p(f" › {words:<14} ", "1") if k == pick else f"   {words:<14} ")
                   + p(note, "33" if note.startswith("not yet") else "90")
                   for k, (_, words, note) in enumerate(menu)] or [p("   nothing to do here now", "90")]
         title = wrap(f"#{n} {i['title']}", w)
@@ -618,7 +652,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         heading = [section(title[0])] if len(title) == 1 else [p(line, "1;36") for line in title]
         details = []
         for label, value in facts:
-            pieces = wrap(value, w - 13) if label in ("goal", "plan", "plan blob", "plan issue") else [value]
+            pieces = wrap(value, w - 13) if label in ("goal", "stage", "plan", "plan blob", "plan issue",
+                         "plan state", "commit", "publication", "plan source", "plan failure") else [value]
             details += [f" {label if index == 0 else '':<12}{piece}" for index, piece in enumerate(pieces)]
         return heading + [""] + details + [""] + choice
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
@@ -637,19 +672,41 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                    w - inset),
             "   ".join(parts), p("! " + warn, "33") if warn else ""]
     mark = signet(p.color)
-    switched = vm.get("auto") or {}
-    mode = p(vm["auto_why"], "31") if vm.get("auto_why") else \
-        "auto you  " + auto.line(switched.get(vm["me"], {}), sep="  " if inset else " ")    # 44 columns hold it
-    if not vm.get("auto_why") and vlen(mode) > w - inset:
-        mode = "auto you " + auto.line(switched.get(vm["me"], {}), sep=" ").replace("auto after spec approval", "auto")
+    mode = p(vm["auto_why"], "31") if vm.get("auto_why") else auto.line(vm.get("auto") or {})
     out = [(fit(mark[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
     out.append("")
-    if item:                              # the item view (D-44), live like the map
-        return [fit(l, w) for l in out + inside(item)]
-    theirs = [p(f"auto @{login}  {auto.line(gates, only_on=True)} (their items)", "90")
-              for login, gates in sorted(switched.items(), key=lambda x: x[0].lower())
-              if login != vm["me"] and any(s["on"] for s in gates.values())]
-    out += theirs + [""] * bool(theirs)
+    goal = vm.get("goal")
+    if goal:
+        report = vm.get("goal_report") or {}
+        applied = report.get("goal") or {}
+        pending = (report.get("run") or {}).get("running") and any(
+            goal.get(key) != applied.get(key) for key in ("id", "revision"))
+        status = goal["status"]
+        if pending:
+            status = ("pause requested; " if status == "paused" else "") + "runner update pending"
+        scope = goal["scope"]
+        scope_text = "queue + goal" if scope["mode"] == "additive" else "restricted: " + (
+            ", ".join((scope.get("selector") or {}).values()) or
+            ", ".join(f"#{number}" for number in scope.get("items", [])) or "being resolved")
+        progress = goal.get("progress") or {}
+        done, remaining = len(progress.get("done", [])), len(progress.get("remaining", []))
+        for text in (f"Goal: {status}", goal["objective"],
+                     f"Scope: {scope_text}; {done} of {done + remaining} items complete", goal.get("reason", "")):
+            if text:
+                out.extend(wrap(text, w))
+        if goal["status"] == "paused":
+            out.extend(wrap("Resume: pulse go --resume", w))
+        out.append("")
+    local_actions = [entry for entry in vm.get("actions", []) if not item or entry["item"] == item["number"]]
+    if local_actions:
+        out.append(section("LOCAL ACTIONS"))
+        for entry in local_actions[-6:]:
+            label = "approval settings" if entry["kind"] == "policy" else f"#{entry['item']} {entry['kind']}"
+            out.append(f" {label}: {entry['status']}" +
+                       (f" ({entry['error']})" if entry.get("error") else ""))
+        out.append("")
+    if item:
+        return [fit(line, w) for line in out + inside(item)]
 
     # --- board ------------------------------------------------------------
     total = max(1, sum(map(len, groups.values())))
@@ -779,7 +836,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         if state_ in todo:
             step = ("You: " if (runner or remedy) and NEXT[state_] == "33" and
                     not todo[state_].startswith("You:") else "") + todo[state_]
-            out += [" " + line for line in wrap(step, w - 1)] if state_ in ("plan repair", "plan needs you") else \
+            out += [" " + line for line in wrap(step, w - 1)] if state_ in ("plan repair", "plan needs you", "integration") else \
                 [lr(" " + p(state_, NEXT[state_]), step, w)]
     out.append("")
 
@@ -829,47 +886,92 @@ def once(vm: dict, color) -> str:
     return "\n".join(render(dict(vm, once=True), color=depth() if color is True else color, width=columns()))
 
 
+def _plan_entries(observed: dict) -> list:
+    """Stable menu keys bind a source and its exact content, even when variants disagree."""
+    out, seen = [], set()
+    for variant in observed.get("variants", []):
+        for source in variant["sources"]:
+            selection = {key: source[key] for key in ("path", "content")}
+            selection["worktree" if source.get("worktree") else "ref"] = source.get("worktree") or source["ref"]
+            token = hashlib.sha256(json.dumps([selection, source["layer"]], sort_keys=True).encode()).hexdigest()[:16]
+            if token not in seen:
+                out.append((token, source, selection))
+                seen.add(token)
+    return out
+
+
+def _plan_log(root: Path, number: int, value: str) -> Path | None:
+    """Only this item's existing ordinary log inside this clone's common directory may open."""
+    expected = config.pulse_dir(root) / "go" / f"{number}.log"
+    try:
+        if value and Path(value) == expected and expected.resolve() == expected and \
+                stat.S_ISREG(expected.lstat().st_mode):
+            return expected
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _plan_observed(root: Path, item: dict, cfg: dict, sources: dict, report: dict) -> dict:
+    observed = ready.plan_state(root, item, cfg, sources)
+    prior = (report.get("items") or {}).get(str(item["number"])) or {}
+    work = item.get("work") if isinstance(item.get("work"), dict) else prior.get("work") or {}
+    failure = work.get("failure") or (prior.get("failure") if "work" not in item else None)
+    if isinstance(failure, dict) and failure.get("phase") == "plan":
+        failure = dict(failure)
+        same = next((selection for _, _, selection in _plan_entries(observed)
+                     if selection["content"] == failure.get("content")), None)
+        current = ready.plan_state(root, item, cfg, sources, same) if same and observed["conflict"] else observed
+        failure["stale"] = not same or current["ready"] or \
+            failure.get("checked_against") != current["validation"]["checked_against"]
+        observed["failure"] = failure
+        log = _plan_log(root, item["number"], failure.get("log"))
+        if log:
+            observed["error_log"] = str(log)
+    return observed
+
+
+def _publishable(item: dict) -> bool:
+    return bool(item) and item.get("state", "OPEN") == "OPEN" and not any(item.get(key) for key in
+        ("hold", "local_hold", "failed", "claim", "claim_token", "claimed_holder", "assignees", "result"))
+
+
 def offers(vm: dict, seen: dict) -> list:
-    """[(action, words, what it does)]: what the item view offers in the item's stage (#55): the approval it waits
-    for (#115), merge, read PR, read plan, read spec. An approval that cannot be given now says why in place of
-    what it does."""
-    i = next((x for x in vm["items"] if x["number"] == seen["number"]), None)
-    if not i:
+    """Actions for the published result and the observed shared item."""
+    item = next((x for x in vm["items"] if x["number"] == seen["number"]), None)
+    if not item:
         return []
-    n, ramp = i["number"], vm["ramp"].get("rows", [])
-    stage = next((r["stage"] for r in ramp if r["number"] == n), "")
-    gate = 0 if i.get("failed") else 1 if not i["approved"] or stage.startswith(ready.MOVED) else \
-        2 if n in vm["ramp"].get("plan_waits", ()) or stage.startswith(ready.WAITS) else None
-    why = ""
-    if gate == 1 and i.get("draft"):
-        why = "not yet: its spec is still being written"
-    elif gate == 1 and not i.get("spec"):
-        why = "not yet: it has no spec, /pulse-re writes one"
-    elif gate == 1 and n in vm.get("nowhere", ()):
-        why = "not yet: its spec is neither on the base nor in an open pull request"
-    elif gate == 1 and n in vm.get("unready", ()):
-        why = "not yet: its spec breaks a rule, /pulse-re fixes it"
-    elif gate == 1 and i.get("type") == "epic":
-        why = "approves the epic; its features are approved one by one"
-    said = seen.get("waiting")                 # what pulse approve would write now, as the live map asked (#121)
-    if said and not why.startswith("not yet"):
-        if said[0] is not None:
-            gate = said[0]
-        elif gate is not None:                 # the row says why, and a writes nothing
-            why = "not yet: " + re.sub(r"^#\d+ not approved: ", "", said[2]).replace("PLAN", "plan")
-    out = [] if gate is None else [("approve", GATE[gate][0], why or GATE[gate][1])]
-    pr = i.get("pr") or {}
-    out += [(a, *OFFER[a]) for a in ["read-pr"] * bool(pr) + ["read-plan"] * bool(seen.get("plan")) +
-            ["open"] * bool(i.get("spec"))]
-    if i.get("state") == "CLOSED" or i.get("hold"):
-        out = [entry for entry in out if entry[0] != "approve"]
-    if i.get("type") in state.WORK:
-        operation = i.get("lifecycle") or {}
-        actions = ["discard", "delete"]
-        if i.get("state", "OPEN") == "OPEN":
-            actions.insert(0, "resume" if operation.get("action") == "defer" and
-                           operation.get("phase") == "paused" else "defer")
-        out += [(action, *OFFER[action]) for action in actions]
+    out = []
+    if item.get("result"):
+        if item.get("approval"):
+            out.append(("revoke", *OFFER["revoke"]))
+        elif not (item.get("hold") or item.get("failed") or item.get("state") == "CLOSED"):
+            waiting = seen.get("waiting")
+            why = "not yet: " + waiting[2] if waiting and waiting[0] is None else OFFER["approve"][1]
+            out.append(("approve", OFFER["approve"][0], why))
+        out.append(("read-result", *OFFER["read-result"]))
+    observed = vm.get("plans", {}).get(seen["number"])
+    if observed is not None:
+        for index, (token, source, _) in enumerate(_plan_entries(observed), 1):
+            label = f"plan source {index}"
+            out.append(("read-plan:" + token, "read " + label, source["layer"] + ": " + source["path"]))
+            if source["layer"] == "file" and not observed["ready"] and _publishable(item):
+                out.append(("publish-plan:" + token, "publish " + label, "preview this preserved content"))
+        if observed.get("error_log"):
+            out.append(("read-plan-error", "read plan error", "open the publication log"))
+    elif seen.get("plan"):
+        out.append(("read-plan", *OFFER["read-plan"]))
+    if item.get("spec"):
+        out.append(("open", *OFFER["open"]))
+    out += [("retry-sync:" + entry["id"], "retry sync", f"{entry['kind']}: {entry['id']}")
+            for entry in vm.get("actions", []) if entry["item"] == item["number"] and entry["status"] == "error"]
+    if item.get("type") in state.WORK:
+        choices = ["resume" if item.get("hold") or item.get("failed") else "defer"] \
+            if item.get("state", "OPEN") == "OPEN" else []
+        if item.get("claim_token"):
+            choices.append("handoff")
+        choices += ["discard", "delete"]
+        out += [(action, *OFFER[action]) for action in choices]
     return out
 
 
@@ -914,8 +1016,8 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
             return {"level": "item", "at": n}, None
         if ch == "a" and n in picks:              # the approval the picked item waits for (#121 FR-04)
             return ui, ("approve", n)
-        if ch in ("1", "2", "3"):                 # your auto mode of gate 1, 2, 3 (#124 FR-09)
-            return ui, ("auto", auto.GATES[int(ch) - 1])
+        if ch in ("1", "2", "3"):                 # only the final approval policy remains
+            return ui, ("auto", "merge") if ch == "3" else None
         if ch == "?":
             return {"level": "help", "at": n, "from": "map"}, None
         return ui, ("say", "q quits the map") if ch in BACK else None     # Esc never ends it (D-44)
@@ -924,6 +1026,13 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
         back["pick"] = ui.get("pick", 0)
     if ch in BACK:                              # one level up, and what is not written yet is dropped
         return (back if level != "item" else {"level": "map", "at": n}), None
+    if level == "help":
+        if ch in UP + DOWN + ("\x1b[5~", "\x1b[6~"):
+            step = -1 if ch in UP + ("\x1b[5~",) else 1
+            if ch in ("\x1b[5~", "\x1b[6~"):
+                step *= ui.get("page", 1)
+            return {**ui, "scroll": max(0, ui.get("scroll", 0) + step)}, None
+        return ui, None
     if level == "item":
         if ch in ("\x1b[5~", "\x1b[6~"):
             step = ui.get("page", 1) * (-1 if ch == "\x1b[5~" else 1)
@@ -981,70 +1090,169 @@ def move(root: Path, vm: dict, ui: dict, action: tuple, size: tuple) -> tuple:
         f"move #{number}: position {target + 1} of {ui['count']}; preview only, enter saves"
 
 
+def _result_notes(item):
+    findings = item.get("findings", (item.get("result") or {}).get("findings"))
+    missing = item.get("missing") or []
+    words = "; ".join(str(finding) for finding in findings) if findings else \
+        "unavailable until full reports are read" if findings is None or missing else "none reported"
+    return ["findings: " + words] + (["reports unavailable: " + ", ".join(missing)] if missing else [])
+
+
+def _cached_person(root: Path) -> str:
+    def offline(args):
+        raise state.StateError("no cached account")
+    try:
+        login = state.me(root, run=offline, ttl=86400)
+    except (OSError, state.StateError):
+        login = ""
+    return state.who(root, login) or "you"
+
+
+def action_preview(root: Path, item: dict, kind: str, *, person=None) -> dict:
+    """Prepare a local intent from exactly the revision the person has observed."""
+    number, revision = item["number"], item.get("revision")
+    if not revision:
+        raise state.StateError(f"#{number}: open or refresh the Pulse map first; no shared revision is cached")
+    if kind not in LOCAL_ACTIONS:
+        raise state.StateError("unknown local action")
+    payload = {}
+    person = person or _cached_person(root)
+    lines = [f"#{number} {item.get('title', '')}: {OFFER[kind][0]}", f"requested by: {person}"]
+    if kind == "approve":
+        if actions.held(root, number):
+            raise state.StateError(f"#{number}: held locally; resume must synchronize before approval")
+        gate, binding, why = ready.waiting(root, item)
+        if gate != 3:
+            raise state.StateError((why or f"#{number}: no verified result is ready for approval").replace("PLAN", "plan"))
+        head, base = binding
+        payload = {"head": head, "base": base}
+        lines += [f"result: {head}", f"base: {base}"]
+        diff = _git(str(root), "diff", "--no-ext-diff", "--no-textconv", "--stat", base, head, "--")
+        lines += diff.splitlines() or ["No changed files in the cached result."]
+        files = _git(str(root), "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                     "--name-only", "-z", base, head, "--").split("\0")
+        protected = merge.protected(config.load(root), [path for path in files if path])
+        if protected:
+            lines.append("protected files: " + ", ".join(protected))
+        lines += [f"{gate}: {value}" for gate, value in sorted(item["result"].get("gates", {}).items())]
+        lines += _result_notes(item)
+    elif kind == "handoff":
+        holder = item.get("claim_token") or (item.get("claim") or {}).get("holder")
+        if not holder:
+            raise state.StateError(f"#{number}: no observed claim to hand off; refresh the map")
+        payload = {"holder": holder, "reason": "Person requested a claim handoff", "work": item.get("work") or {}}
+        lines.append("Request the current writer to stop and preserve its work before the claim is released.")
+    elif kind == "defer":
+        lines.append("Pause this item locally now; share the hold in the background.")
+    elif kind == "resume":
+        lines.append("Resume after the shared state confirms this request.")
+    elif kind == "revoke":
+        lines.append("Withdraw approval of the observed result and base.")
+    return {"kind": kind, "item": number, "expected": revision, "payload": payload, "person": person,
+            "lines": [ready.printable(line) for line in lines]}
+
+
+def queue_action(root: Path, intent: dict) -> str:
+    """Persist first, then wake the detached non-LLM synchronization worker."""
+    saved = actions.submit(root, intent["item"], intent["kind"], intent["payload"], intent["expected"])
+    answer = f"#{saved['item']}: {saved['kind']} queued locally by {intent.get('person') or 'you'}; synchronization pending"
+    try:
+        actions.start(root)
+    except (state.StateError, OSError) as error:
+        answer += f"; worker could not start: {error}; the request is saved"
+    return ready.printable(answer)
+
+
+def retry_action(root: Path, ident: str) -> str:
+    """Retry the existing operation locally. Conflicts require newly observed intent."""
+    if not auto.person(os.environ, True):
+        raise state.StateError("only a person retries an action, in their own terminal or map")
+    if not actions.retry(root, ident):
+        raise state.StateError("no saved sync error to retry; refresh before submitting a new action")
+    answer = f"{ident}: retry queued locally; synchronization pending"
+    try:
+        actions.start(root)
+    except (state.StateError, OSError) as error:
+        answer += f"; worker could not start: {error}; the request is saved"
+    return ready.printable(answer)
+
+
+def queue_policy(root: Path, enabled: bool, *, expected=None, until=None) -> str:
+    accepted = auto.toggle(root, "", "merge", enabled, until=until, expected=expected)
+    answer = f"Approval settings: {'automatic' if enabled else 'manual'} queued locally; synchronization pending"
+    try:
+        actions.start(root)
+    except (state.StateError, OSError) as error:
+        answer += f"; worker could not start: {error}; the request is saved"
+    return ready.printable(answer + f" ({accepted['id']})")
+
+
 def brief(root: Path, vm: dict, action: tuple) -> tuple:
-    """What a person reads before a approves (F6.08): the approval it writes, the goal, what holds it, and for a
-    PLAN the blobs the approval binds to, as pulse approve reads them (#115). (lines, the action Enter confirms),
-    or (why not, None). A goal takes one row of the map, so what an approval binds stays on the screen (#56 audit
-    M-1)."""
-    kind, n = action
-    if not auto.person(os.environ, True):     # its keys come from a terminal: an agent's marker is what tells
-        return ["only a person does this, in their own terminal or map; tell the person which gate waits"], None
-    if kind in lifecycle.ACTIONS:
-        planned = remove.action_preview(root, vm["repo"], n, run=state.gh) if kind == "delete" else \
-            lifecycle.preview(root, vm["repo"], n, kind, run=state.gh)
-        return planned["lines"], (kind, n, planned) if planned.get("confirmation") else None
-    if kind == "auto":                        # n: the gate; a short confirmation (#124 FR-09)
-        if vm.get("auto_why") or not vm.get("me"):
-            return [vm.get("auto_why") or "no GitHub login known: gh auth login"], None
-        switch_on = not auto.on(vm.get("auto") or {}, vm["me"], n)
-        return [auto.short(n, switch_on, vm["me"])], ("auto", n, switch_on)
-    one = lambda goal: _row(f"goal: {goal or '-'}", columns())
-    as_ = f" as {vm['person']}" if vm.get("person") else ""       # the account the lever acts as (#111)
-    i = next((x for x in vm["items"] if x["number"] == n), {})
-    if not i:                                 # merged or closed while its view stood (#99 FR-12)
-        return [f"#{n} is merged or closed"], None
-    gate, blobs, why = ready.waiting(root, i)
-    if gate is None:
-        return [ready.printable(why.replace("PLAN", "plan"))], None
-    text = spec.find(root, i["spec"])[0] if i.get("spec") else None      # on the base, else in its docs PR
-    plan = ready._git(root, "cat-file", "blob", blobs[0]) if gate == 2 else ""
-    head = [f"try #{n} {i.get('title', '')} again{as_}: {GATE[0][1]}",
-            f"approve spec #{n} {i.get('title', '')}{as_}: {GATE[1][1]}",
-            f"approve the plan of #{n} at {' '.join(b[:12] for b in blobs)}{as_}: {GATE[2][1]}",
-            f"approve the merge of #{n} {i.get('title', '')} at {' '.join(b[:12] for b in blobs)}{as_}: {GATE[3][1]}"][gate]
-    goal = spec.sections(plan).get("goal", "").strip().split("\n")[0] if plan else _goal(text)
-    holds = f"holds: {ready.hold(text or '', plan).replace('risk: ', 'risk ') or 'none'}"
-    if gate == 3:              # what waits for a person in the PR, before the approval is written (L-2 of #118)
+    """The exact local intent Enter confirms; synchronization later checks its revision."""
+    kind, number = action
+    if not auto.person(os.environ, True):
+        return ["only a person does this, in their own terminal or map"], None
+    if kind.startswith("retry-sync:"):
+        ident = kind.partition(":")[2]
+        entry = next((e for e in vm.get("actions", []) if e["id"] == ident and e["item"] == number and
+                      e["status"] == "error"), None)
+        return ([f"Retry {entry['kind']} of #{number}: {ident}",
+                 "The saved intent and version binding stay unchanged."], ("retry-sync", number, ident)) if entry else \
+            (["Sync state changed; refresh before retrying."], None)
+    if kind.startswith("publish-plan:"):
+        item = next((x for x in vm["items"] if x["number"] == number), {})
+        entry = next((row for row in _plan_entries(vm.get("plans", {}).get(number, {}))
+                      if row[0] == kind.partition(":")[2] and row[1]["layer"] == "file"), None)
+        if not entry or not _publishable(item):
+            return [f"#{number}: plan selection changed or publication is blocked; refresh"], None
+        selection = entry[2]
+        return [f"Publish the preserved plan of #{number} through the normal commit and push checks.",
+                *(f"{key}: {value}" for key, value in selection.items()),
+                "No planner starts. Implementation waits for confirmed exact publication."], \
+               ("publish-plan", number, selection)
+    if kind in LOCAL_ACTIONS:
+        item = next((x for x in vm["items"] if x["number"] == number), None)
+        if not item:
+            return [f"#{number}: refresh the map first"], None
         try:
-            holds = merge.seen(root, state.repo(root, run=state.gh), i["pr"]["number"], state.gh, "it")
-        except (state.StateError, ValueError) as e:
-            return [ready.printable(f"#{n}: what its PR changes is not known ({e})")], None
-    return [ready.printable(line) for line in (head, one(goal), holds)], (kind, n, gate, blobs)
+            intent = action_preview(root, item, kind, person=vm.get("person"))
+        except state.StateError as error:
+            return [ready.printable(str(error))], None
+        return intent["lines"], (kind, number, intent)
+    if kind == "auto":
+        seen = auto.read(root)
+        policy = seen["policy"]
+        pending = [entry for entry in seen["pending"] if entry["status"] != "conflict"]
+        enabled = pending[-1]["payload"]["mode"] != "automatic" if pending else not auto.active(policy)
+        proposed = "automatic" if enabled else "manual"
+        return [auto.line(seen), f"Set final approval to {proposed} for this repository?",
+                "Automatic approval requires verified results, exact versions and current authority.",
+                "Holds and revocations still block; destructive removal requires personal approval.",
+                "Saved locally first; confirmed changes apply across the repository."], \
+            ("auto", "merge", {"enabled": enabled, "expected": policy["revision"]})
+    if kind in lifecycle.ACTIONS:
+        planned = remove.action_preview(root, vm["repo"], number, run=state.gh) if kind == "delete" else \
+            lifecycle.preview(root, vm["repo"], number, kind, run=state.gh)
+        return planned["lines"], (kind, number, planned) if planned.get("confirmation") else None
+    return ["no action is ready"], None
 
 
-APPROVAL = re.compile(r"(?:gate ([123]) (?:approved by|ok at)|(plan) ok at|(merge) ok at)\b")   # as pulse approve writes them
-
-
-def approvals(comments) -> list:
-    """[(gate, login, at)]: the approvals among an item's comments, each by the GitHub account that wrote it and
-    when, oldest first; the comment of someone who may not push is none (#121 FR-05)."""
-    return [(int(m.group(1) or (2 if m.group(2) else 3)), (c.get("author") or {}).get("login") or "?",
-             c.get("createdAt") or "")
-            for c in comments or () for m in [APPROVAL.match(c.get("body") or "")]
-            if m and c.get("authorAssociation") in state.WRITERS]
-
-
-READING = "reading…"            # the approvals of an item view until GitHub answered
+READING = "reading…"            # canonical approval details while the item view opens
 
 
 def read_approvals(vm: dict, n: int):
-    """The approvals of item n, read from GitHub once as its view opens, beside the keys (L-3); None when GitHub
-    did not answer."""
-    try:
-        return approvals(json.loads(state.gh(["issue", "view", str(n), "--repo", vm["repo"], "--json", "comments"],
-                                             timeout=10)).get("comments"))
-    except (state.StateError, OSError, ValueError, AttributeError):
-        return None
+    """Display the canonical final approval; old issue comments authorize no gate."""
+    item = next((item for item in vm["items"] if item["number"] == n), {})
+    approval = item.get("approval") or {}
+    if approval.get("policy"):
+        policy = (vm.get("auto") or {}).get("policy") or {}
+        author = (policy.get("proof") or {}).get("author")
+        if approval["policy"] == "default:auto:v1":
+            return "automatic approval under the default policy"
+        return "automatic approval, policy " + approval["policy"][:12] + \
+            (f" set by @{author}" if author and policy.get("revision") == approval["policy"] else " (previous setting)")
+    proof = approval.get("proof") or {}
+    return [(3, proof.get("author") or "?", proof.get("at") or "")] if proof else []
 
 
 def waits(root: Path, vm: dict, n: int):
@@ -1107,6 +1315,13 @@ def look(root: Path, vm: dict, n: int) -> dict:
     """What the item view reads from git: the goal of the spec on the base, else on the branch of origin
     that has it (#68), and where the PLAN is."""
     i = next((x for x in vm["items"] if x["number"] == n), {})
+    observed = vm.get("plans", {}).get(n)
+    if observed is not None:
+        selected = observed["selected"]
+        return {"number": n, "goal": _goal(spec.find(root, i["spec"])[0] if i.get("spec") else None),
+                "plan": selected["path"] if selected else "versions differ" if observed["conflict"] else "",
+                "plan_blob": observed["publication"]["blob"],
+                "plan_findings": observed["validation"]["findings"]}
     p = ready.plans(root).get(n)
     return {"number": n, "goal": _goal(spec.find(root, i["spec"])[0] if i.get("spec") else None),
             "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else "",
@@ -1155,43 +1370,121 @@ def _show(path, name: str, cmd: list = None) -> str:
     return f"open it yourself: {path}"
 
 
+def _publish_plan(root: Path, vm: dict, number: int, selection: dict) -> str:
+    """Recheck the displayed file locally, then give publication to a detached CLI process."""
+    if not auto.person(os.environ, True):
+        return "only a person does this, in their own terminal or map"
+    item = next((item for item in vm["items"] if item["number"] == number), {})
+    if not _publishable(item) or actions.held(root, number):
+        return f"#{number}: publication blocked; resume the item or wait for its writer"
+    if not isinstance(selection, dict) or set(selection) != {"worktree", "path", "content"}:
+        return f"#{number}: plan selection changed; open its preview again"
+    cfg = config.load(root, ready._plan_ref(root)[1] or None)
+    observed = ready.plan_state(root, item, cfg, selection=selection)
+    if not observed["selected"] or observed["selected"]["layer"] != "file":
+        return f"#{number}: plan selection changed or is unavailable; open its preview again"
+    if observed["validation"]["findings"]:
+        return f"#{number}: publication blocked: {observed['why']}"
+    log = config.pulse_dir(root) / "go" / f"{number}.log"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        if log.parent.resolve() != log.parent or log.exists() and not _plan_log(root, number, str(log)):
+            return f"#{number}: publication log is unavailable"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        with open(log, "ab", opener=lambda path, _: os.open(path, flags, 0o600)) as output:
+            argv = [sys.executable, str(setup.PULSE_BIN), "publish-plan", str(number)]
+            for key in ("worktree", "path", "content"):
+                argv += ["--" + key, selection[key]]
+            subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=output,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as error:
+        return f"#{number}: plan publication could not start: {error}"
+    return f"#{number}: plan publication started; not yet published; log: {log}"
+
+
 def act(root: Path, vm: dict, action: tuple) -> str:
     """Carry out one action from the map; returns a line for the status bar. An approval writes what brief()
     showed, and only while the item still waits for it: the gate and blobs come with the action (#115)."""
     kind, n = action[0], action[1]
+    if kind == "auto":
+        if not auto.person(os.environ, True):
+            return "only a person changes approval policy, in their own terminal or map"
+        intended = action[2] if len(action) == 3 else {}
+        if intended.get("expected") != auto.read(root)["policy"]["revision"]:
+            return "Approval policy changed; review the current settings before confirming."
+        return queue_policy(root, intended["enabled"], expected=intended["expected"])
+    if kind == "retry-sync":
+        ident = action[2] if len(action) == 3 else None
+        if not any(entry["id"] == ident and entry["item"] == n and entry["status"] == "error"
+                   for entry in actions.pending(root)):
+            return "Sync state changed; refresh before retrying."
+        return retry_action(root, ident)
+    if kind in LOCAL_ACTIONS:
+        if not auto.person(os.environ, True):
+            return "only a person does this, in their own terminal or map"
+        current = next((item for item in vm["items"] if item["number"] == n), None)
+        intent = action[2] if len(action) > 2 else None
+        if not isinstance(intent, dict) or not {"expected", "payload", "kind", "item"} <= intent.keys():
+            return f"#{n}: approval preview changed; open it again"
+        if intent["kind"] != kind or intent["item"] != n:
+            return f"#{n}: action preview changed; open it again"
+        if current is None or current.get("revision") != intent["expected"]:
+            return f"#{n} changed since you read it; open its preview again"
+        try:
+            now = action_preview(root, current, kind)
+        except state.StateError as error:
+            return ready.printable(str(error))
+        if now["payload"] != intent["payload"]:
+            return f"#{n} changed since you read it; open its preview again"
+        return queue_action(root, intent)
     if kind in DOING and (vm.get("error") or vm.get("rate_limit")):
         raise state.StateError("the board is not current; wait for a successful fresh read before writing")
-    repo = state.repo(root, run=state.gh)
+    if kind == "publish-plan":
+        return _publish_plan(root, vm, n, action[2] if len(action) > 2 else None)
+    if kind == "read-plan-error":
+        log = _plan_log(root, n, vm.get("plans", {}).get(n, {}).get("error_log"))
+        return _show(log, f"plan publication log #{n}") if log else f"#{n}: plan error log is unavailable"
+    if kind.startswith("read-plan:"):
+        entry = next((row for row in _plan_entries(vm.get("plans", {}).get(n, {}))
+                      if row[0] == kind.partition(":")[2]), None)
+        item = next((item for item in vm["items"] if item["number"] == n), {})
+        if not entry or not item:
+            return f"#{n}: plan source changed or is unavailable"
+        sources = ready.plan_sources(root)
+        current = next((source for source in sources.get(n, []) if source["layer"] == entry[1]["layer"] and
+                        all(source.get(key) == value for key, value in entry[2].items())), None)
+        if not current:
+            return f"#{n}: plan source changed or is unavailable"
+        if current["layer"] == "file":
+            return _show(Path(current["worktree"]) / current["path"], current["path"])
+        return _copy(root, "plans", n, current["path"], current["text"], current.get("ref") or "index")
     if kind in lifecycle.ACTIONS:
         planned = action[2]
         apply = remove.apply_action if kind == "delete" else lifecycle.apply
-        return apply(root, repo, planned, planned["confirmation"], run=state.gh)
-    if kind == "auto":                          # n: the gate, as brief() showed it
-        return auto.toggle(root, repo, n, action[2], run=state.gh)
-    if kind == "approve":
-        current = next((i for i in vm["items"] if i["number"] == n), None)
-        if current is None or current.get("hold") or current.get("state") == "CLOSED":
-            return f"#{n} is held or closed; nothing approved"
-        gate, blobs, why = ready.waiting(root, current)
-        if gate is None:
-            return ready.printable(why.replace("PLAN", "plan"))
-        if tuple(action[2:]) != (gate, blobs):
-            return f"#{n} changed since you read it; a shows it again"
-        state.approve(root, repo, n, gate, blobs)
-        return f"#{n} approved, waits for pulse go"
-    if kind == "read-pr":
-        i = next((x for x in vm["items"] if x["number"] == n), {})
-        pr = (i.get("pr") or {}).get("number")
-        if not pr:
-            return f"#{n} has no PR"
-        url = re.sub(r"/issues/\d+$", f"/pull/{pr}", i.get("url") or "")     # a link: the system's opener (#61)
-        return _show(url, f"PR #{pr}", opener({})) if "/pull/" in url else f"#{n}: no link to PR #{pr}"
+        return apply(root, vm["repo"], planned, planned["confirmation"], run=state.gh)
+    if kind == "read-result":
+        item = next((item for item in vm["items"] if item["number"] == n), {})
+        result = item.get("result") or {}
+        if not result:
+            return f"#{n} has no published result"
+        head, base = result.get("head", ""), result.get("base", "")
+        if not all(re.fullmatch(r"[0-9a-f]{40,64}", sha) for sha in (head, base)):
+            return f"#{n}: the cached result binding is invalid; refresh the map"
+        diff = _git(str(root), "diff", "--no-ext-diff", "--no-textconv", base, head, "--")
+        text = f"# Result #{n}\n\nHead: {head}\nBase: {base}\n\n" + \
+            "\n".join(f"{gate}: {value}" for gate, value in sorted(result.get("gates", {}).items())) + \
+            "\n\n" + "\n".join(_result_notes(item)) + \
+            "\n\n```diff\n" + diff + "\n```\n"
+        for kind, report in sorted((item.get("reports") or {}).items()):
+            if report.get("commit") == head:
+                text += f"\n## {kind.capitalize()} report ({report['source']})\n\n{report['text']}\n"
+        return _copy(root, "results", n, f"result-{n}.md", text, head)
     if kind == "read-plan":
         plan = ready.plans(root).get(n)
         if not plan:
             return f"#{n} has no plan"
         if not plan["ref"]:
-            return _show(root / plan["path"], plan["path"])
+            return _show(Path(plan.get("worktree") or root) / plan["path"], plan["path"])
         return _copy(root, "plans", n, plan["path"], plan["text"], plan["ref"])     # on its branch only
     item = next((i for i in vm["items"] if i["number"] == n), {})
     if not item.get("spec"):
@@ -1262,24 +1555,8 @@ _limited: dict = {}
 
 
 def merged(root: Path, repo: str, items: list) -> set:
-    """The claimed items whose PR was merged, also into a base GitHub closes nothing on (not the
-    default branch): done, though open until pulse status closes them (ADR-06). Read at most every
-    state.TTL s."""
-    held = {i["number"] for i in items if i["assignees"] and not i.get("pr") and not i.get("hold")}
-    at, done = _merged.get(root, (0.0, set()))
-    if held and repo and time.time() - at >= state.TTL:
-        try:
-            done = {n for pr in json.loads(state.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "50",
-                                                     "--json", "headRefName,closingIssuesReferences,files,changedFiles,"
-                                                               "isCrossRepository"]))
-                    for n in state.pr_items(pr)}
-        except state.RateLimitError as error:
-            _limited[root] = error
-            return done & held
-        except (state.StateError, ValueError):
-            pass                        # offline: the last answer stands
-        _merged[root] = (time.time(), done)
-    return done & held
+    """Only confirmed canonical integration removes work from the live board."""
+    return {item["number"] for item in items if item.get("done")}
 
 
 _closed: dict = {}                      # root -> (read at, {epic: its closed children})
@@ -1322,12 +1599,41 @@ def _cache_notice(root: Path) -> str:
 
 def local(root: Path, vm: dict):
     """Local activity stays fresh while the board reader waits for the network."""
+    vm["goal"] = goals.read(root)
+    vm["goal_report"] = go.last_run(root) if vm["goal"] else None
+    entries = actions.pending(root)
+    vm["actions"] = entries
+    vm["auto"] = auto.read(root)
+    vm["approval_policy"] = vm["auto"]["policy"]["mode"]
+    holds = {}
+    for entry in entries:
+        if entry["kind"] == "defer":
+            holds[entry["item"]] = True
+        elif entry["kind"] == "resume" and entry["status"] == "confirmed":
+            holds[entry["item"]] = False
+    for item in vm.get("items", []):
+        if item["number"] not in holds and "local_hold" not in item:
+            continue
+        item.setdefault("_shared_hold", bool(item.get("hold")))
+        item["local_hold"] = bool(holds.get(item["number"]))
+        item["hold"] = item["_shared_hold"] or item["local_hold"]
+    ramp = vm.get("ramp", {})
+    for row in ramp.get("rows", []):
+        if holds.get(row["number"]):
+            row.setdefault("_stage_before_local_hold", row.get("stage", ""))
+            row["stage"] = "on hold locally"
+        elif "_stage_before_local_hold" in row:
+            row["stage"] = row.pop("_stage_before_local_hold")
+    for key in ("next", "queued"):
+        if key in ramp:
+            ramp[key] = [row for row in ramp[key] if not holds.get(row["number"] if isinstance(row, dict) else row)]
     now = time.monotonic()
     if now - vm.get("_presence_at", -math.inf) < 1:
         return
     vm["_presence_at"] = now
     vm["sessions"] = presence.read(root)
     vm["branches"] = {a["cwd"]: a.get("branch", "") for s in vm["sessions"] for a in [s, *s["agents"]]}
+    vm["runner"] = go.activity(root)
 
 
 def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
@@ -1363,34 +1669,38 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     finished = Counter(i["parent"] for i in items if i["number"] in done and i.get("parent"))
     items = [i for i in items if i["number"] not in done]
     phases = go.phases(root)
-    specs = {i["spec"] for i in items if not i["approved"] and i.get("spec")}   # on the base, else in its PR
-    there = set(_git(str(root), "ls-tree", "-rz", "--name-only", config.base_ref(root), "--", *specs)
-                .split("\0")) if specs else set()
     base = cfg["base_branch"] or config.default_branch(root)
+    report = go.last_run(root) or {}
+    sources = ready.plan_sources(root)
+    found = ready.plans(root, sources=sources)
+    trusted = config.load(root, ready._plan_ref(root)[1] or None)
+    plans = {item["number"]: _plan_observed(root, item, trusted, sources, report)
+             for item in items if item["type"] in state.WORK}
+    gates = ready.gates(root, [dict(item, assignees=[]) for item in items], trusted, found, sources)
+    for item in items:
+        prior = report.get("items", {}).get(str(item["number"]), {})
+        if (item.get("result") and not item.get("approval") and prior.get("phase") == "integration"
+                and prior.get("revision") == item.get("revision") and prior.get("why")):
+            item["integration_wait"] = prior["why"]
+            gates[item["number"]] = "integration: " + prior["why"]
+        else:
+            item.pop("integration_wait", None)
+        failure = plans.get(item["number"], {}).get("failure") or {}
+        if failure and not failure.get("stale") and not plans[item["number"]]["conflict"] and _publishable(item):
+            gates[item["number"]] = f"plan {failure.get('step', 'publication')} blocked: {failure.get('cause', '')}"
     vm = {"repo": repo, "now": time.strftime("%H:%M:%S"), "base": base,
             "person": state.who(root, me) or "you", "me": me,      # Klarname (@login), as every surface (#111)
             "items": items, "sessions": [], "error": error, "order": order_info,
             "phases": phases, "failed": failures(root, items),
             "halt": go.halt(root),              # base red, or a hook refused pulse go (#113)
             "runner": go.activity(root),        # live preparations too, before a claim or an agent exists (#149)
-            "base_status": (go.last_run(root) or {}).get("base") or {},
+            "base_status": report.get("base") or {}, "plans": plans,
             "closed": dict(Counter(closed(root, repo, items) if board else {}) + finished),
-            # no spec, or neither on the base nor in an open pull request: approve refuses it (#115)
-            "nowhere": [i["number"] for i in items if not i["approved"] and i.get("spec") not in there
-                        and not i.get("spec_prs")],
-            # ponytail: one git show per unapproved spec each refresh; git cat-file --batch if the ramp is long
-            "unready": [i["number"] for i in items if not i["approved"] and i.get("spec") in there
-                        and spec.refusal(spec.on_base(root, i["spec"]), i.get("type"), i["number"], "")],
+            "nowhere": [], "unready": [],
             "branches": {},
             "untrusted": setup.untrusted(cfg["agent"]),       # the lever guard does not run in Codex yet (#111)
-            "ramp": ready.view(root, items, cfg, me)}
-    try:                                        # every person's auto switches (#124): per login in status --json
-        seen = auto.read(root, repo, run=state.gh) if repo else {"switches": {}, "why": ""}
-    except state.StateError as e:
-        if isinstance(e, state.RateLimitError):
-            _limited[root] = e
-        seen = {"switches": {}, "why": f"auto switches not known: {e}"}
-    vm.update(auto=seen["switches"], auto_why=seen["why"])
+            "ramp": ready.ramp(items, ready.plan_files(root, found), cfg["cap"], me, gates=gates)}
+    vm["auto_why"] = ""
     local(root, vm)
     vm["rate_limit"] = root in _limited
     if vm["rate_limit"]:
@@ -1431,16 +1741,16 @@ SCRIPT = [
     [("agent", "s17", 17, "opus", "error", "Bash", "npm test", "npm test failed"), ("phase", 17, "tests"),
      ("agent", "s11", 11, "opus", "working", "Bash", "npm test", ""), ("claim", 23, "Alice")],
     [("agent", "s19", 19, "sonnet", "waiting", "AskUserQuestion", "", ""), ("claim", 16, "Bob")],
-    [("agent", "s17", 17, "opus", "working", "Edit", "docs/auth.md", ""), ("phase", 17, "fix"), ("pr", 14),
+    [("agent", "s17", 17, "opus", "working", "Edit", "docs/auth.md", ""), ("phase", 17, "fix"), ("result", 14),
      ("gone", "s14")],
     [("agent", "s19", 19, "sonnet", "working", "Edit", "src/auth/expiry.ts", ""),
      ("claim", 20, "Sebastian"), ("agent", "s20", 20, "opus", "working", "Read", "src/api/cursor.ts", ""),
-     ("pr", 16, "fail"), ("phase", 11, "review")],
-    [("pr", 11), ("gone", "s11"), ("claim", 24, "Bob")],
-    [("merge", 11), ("pr", 12, "pass", ["Sebastian"]), ("claim", 21, "Sebastian"),
+     ("result", 16, "fail"), ("phase", 11, "review")],
+    [("result", 11), ("gone", "s11"), ("claim", 24, "Bob")],
+    [("merge", 11), ("result", 12, "pass", ["Sebastian"]), ("claim", 21, "Sebastian"),
      ("agent", "s21", 21, "opus", "working", "Edit", "src/ui/Empty.tsx", "")],
-    [("pr", 17), ("gone", "s17"), ("agent", "s20", 20, "opus", "working", "Bash", "npm test", ""),
-     ("pr", 16, "pass")],
+    [("result", 17), ("gone", "s17"), ("agent", "s20", 20, "opus", "working", "Bash", "npm test", ""),
+     ("result", 16, "pass")],
     [("merge", 12), ("merge", 14), ("claim", 22, "Alice"), ("claim", 13, "Sebastian"),
      ("agent", "s13", 13, "opus", "working", "Edit", "src/ui/Banner.tsx", "")],
 ]
@@ -1450,7 +1760,7 @@ def demo(step: int = 0) -> dict:
     """A plausible morning at a sample project, step by step of SCRIPT."""
     items = {n: {"number": n, "title": title, "type": kind, "approved": ok, "assignees": [],
                  "parent": None if kind == "epic" else 10, "blocked_by": list(blocked), "blocking": [],
-                 "spec": None, "pr": None}
+                 "spec": None, "result": None}
              for n, title, kind, ok, blocked, _ in DEMO_ITEMS}
     items[11]["blocking"] = [13]
     files = {n: f for n, *_, f in DEMO_ITEMS if f}
@@ -1460,10 +1770,10 @@ def demo(step: int = 0) -> dict:
         op, *a = change
         if op == "claim":
             items[a[0]]["assignees"] = [a[1]]
-        elif op == "pr":                 # item, then optionally its checks and who is asked to review
-            i = items[a[0]]
-            i["pr"] = {"number": 100 + a[0], "branch": branch[a[0]], "draft": False,
-                       "checks": a[1] if len(a) > 1 else None, "reviewers": a[2] if len(a) > 2 else []}
+        elif op == "result":
+            item = items[a[0]]
+            item["result"] = {"branch": branch[a[0]], "head": "a" * 40, "base": "b" * 40,
+                              "gates": {"tests": a[1] if len(a) > 1 else "pass", "review": "pass", "audit": "pass"}}
         elif op == "merge":
             items.pop(a[0])
             closed[10] += 1
@@ -1481,7 +1791,7 @@ def demo(step: int = 0) -> dict:
     sessions = sorted(agents.values(), key=lambda s: s["order"])
     order = [i for i in items.values()]
     phases = {n: phases.get(n, "build") for n in {int(s["cwd"].rsplit("-", 1)[1]) for s in sessions
-                                                   if s["cwd"] != "/repo"} if not items[n]["pr"]}
+                                                   if s["cwd"] != "/repo"} if not items[n]["result"]}
     branches = {"/repo": "develop"}
     branches.update({f"/repo-{n}": branch[n] for n in items})
     minutes = 9 * 60 + 4 * step
@@ -1569,7 +1879,8 @@ def fitted(lines: list, height: int, keep: int, offset: int = None) -> list:
     room = max(1, height - len(head) - len(foot) - 1)
     at = next((i for i, line in enumerate(body) if ANSI.sub("", line).lstrip().startswith("›")), 0)
     top = max(0, min(at - room // 2 if offset is None else offset, len(body) - room))
-    return head + body[top:top + room] + [f"  … {len(body) - room} more lines; a taller terminal shows them"] + foot
+    hint = "PgUp/PgDn scroll" if offset is not None else "a taller terminal shows them"
+    return head + body[top:top + room] + [f"  … {len(body) - room} more lines; {hint}"] + foot
 
 
 def shows(text: list, width: int, height: int) -> bool:
@@ -1603,6 +1914,7 @@ def main(args) -> int:
     offered = {}                                     # item -> what its view offered on the last frame
     approved = {}                                    # item -> its approvals, once read beside the keys (L-3)
     detached = None
+    help_pages = {}                            # built once per width, never on an animation frame
     # what the read brings, the writes so far, the last look for a newer copy and for a newer release
     box = {"writes": 0, "looked": time.time(), "asked": -math.inf}
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
@@ -1686,7 +1998,7 @@ def main(args) -> int:
                 acts, was = [a for a, *_ in offers(_plain(view), _plain(seen))], offered.get(n, [])
                 k = ui.get("pick")
                 if k is None:                          # the view opens on a reading entry (#99 FR-09), whatever
-                    ui = {**ui, "pick": next((k for k, a in enumerate(acts) if a in READS), 0)}   # an earlier visit
+                    ui = {**ui, "pick": next((k for k, a in enumerate(acts) if a.partition(":")[0] in READS), 0)}
                 elif acts != was and k < len(was):     # offered. The list shifted: the cursor keeps its action, or
                     ui = {**ui, "pick": acts.index(was[k]) if was[k] in acts else 0}   # goes to the top,
                                                            # which never writes without asking first (#55)
@@ -1694,7 +2006,9 @@ def main(args) -> int:
                 lines = render(view, frame=frame, color=color, width=width,
                                item=dict(seen, pick=ui.get("pick", 0), approvals=approved.get(n, READING)))
             elif level == "help":                      # under the header, as every screen (#57)
-                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + HELP.split("\n")
+                if width not in help_pages:
+                    help_pages[width] = help_lines(width)
+                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + help_pages[width]
             elif level == "move":
                 shown = []
                 lines = render(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown)
@@ -1707,12 +2021,13 @@ def main(args) -> int:
             elif level == "confirm" and "expected" in ui:
                 notice = status + "\n> " + ui.get("typed", "")
             foot = footer(notice, KEYS[level], width) if read else []
-            if level == "item":
-                ui["page"] = max(1, height - min(HEAD, max(0, height - len(foot) - 2)) - len(foot) - 1)
-                if "scroll" in ui:
-                    ui["scroll"] = min(ui["scroll"], max(0, len(lines) - HEAD - ui["page"]))
+            if level in ("item", "help"):
+                kept = min(HEAD, max(0, height - len(foot) - 2))
+                ui["page"] = max(1, height - kept - len(foot) - 1)
+                if "scroll" in ui or level == "help":
+                    ui["scroll"] = min(ui.get("scroll", 0), max(0, len(lines) - kept - ui["page"]))
             cells = [fit(l, width) for l in fitted(lines + foot, height, len(foot),
-                                                  ui.get("scroll") if level == "item" else None)]
+                                                  ui.get("scroll") if level in ("item", "help") else None)]
             clear = (width, height) != drawn_at      # new or resized: cleared, then every row once (#98)
             if clear:
                 drawn = []
@@ -1735,7 +2050,7 @@ def main(args) -> int:
             if todo:                                   # its line is on the screen: now it runs (#55)
                 wrote = todo[0] in DOING
                 try:
-                    if wrote:
+                    if wrote and todo[0] not in LOCAL_WRITES:
                         if reading:
                             reading.join()
                             new, reading = box.pop("new"), None
@@ -1753,7 +2068,11 @@ def main(args) -> int:
                     box["writes"] += 1
                     if detached:
                         ui, detached = {"level": "map", "at": n}, None
-                    vm = None                          # the board as the write left it, at once
+                    if todo[0] in LOCAL_WRITES:
+                        local(root, vm)
+                        seen = None
+                    else:
+                        vm = None
                 todo = None
                 continue
             ch = read(TICK) if read else time.sleep(TICK)
@@ -1795,12 +2114,13 @@ def main(args) -> int:
                     except (state.StateError, ValueError) as error:
                         status = str(error)
                     action = None
-                if action and level in ("map", "item") and action[0] in ("approve", "auto", *lifecycle.ACTIONS):
+                if action and level in ("map", "item") and (action[0].startswith(("publish-plan:", "retry-sync:")) or
+                        action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
                     try:
                         text, sure = brief(root, view, action)
                     except (state.StateError, ValueError) as error:
                         text, sure = [str(error)], None
-                    expected = sure[2]["confirmation"] if sure and sure[0] in lifecycle.ACTIONS else ""
+                    expected = sure[2]["confirmation"] if sure and sure[0] in lifecycle.ACTIONS and sure[0] not in LOCAL_ACTIONS else ""
                     if expected:
                         text = [*text, "Type " + expected + " to confirm."]
                     status, action = "\n".join(text), None

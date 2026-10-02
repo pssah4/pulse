@@ -5,7 +5,7 @@ description: Every file the method writes, where it lives, and how long it may g
 
 # Artifacts
 
-Everything the method writes lives in `_devprocess/` in your repository, next to the code and versioned in git like it: once a spec is approved, `pulse go` merges it into the base branch, and a PLAN travels in the pull request of its build. The state of each item (approved, taken, blocked, done) never goes into these files; it sits in the item's record on the board ([Where things live](../concepts/where-things-live)).
+Everything the method writes lives in `_devprocess/`, versioned beside the code. Each item's spec, Plan and implementation share one published branch until its checked result is integrated. Claims, holds, results and final approvals live in shared workflow state, shown on the board; they never belong in spec frontmatter. See [Where things live](../concepts/where-things-live).
 
 ## Directory tree
 
@@ -22,7 +22,7 @@ _devprocess/
 │  ├─ improvements/IMP-{ee}-{ff}-… improvement: what changes and why              /pulse-re, /pulse-build
 │  ├─ fixes/FIX-{ee}-{ff}-{nn}-…   fix: symptom, root cause, regression test      /pulse-build
 │  └─ handoff/architect-handoff.md the bridge from requirements to the plan       /pulse-re
-├─ plans/{n}-{slug}.md             PLAN: tasks, files, waves, decisions           planning
+├─ plans/{n}-{slug}.md             Plan: tasks, files, waves, decisions           planning
 ├─ decisions/
 │  ├─ README.md                    router: which record to read when              planning
 │  └─ ADR-{nn}-{slug}.md           a decision that constrains later changes       planning
@@ -31,11 +31,11 @@ _devprocess/
 └─ arc42.md                        all 12 arc42 sections (on request)            planning
 ```
 
-[Planning](../guides/pulse-plan) is a step inside `/pulse-re`, for each feature, improvement, or fix approved in its session (an epic gets no PLAN), and inside `/pulse-build` and `pulse go`; review and audit are a step inside `/pulse-build` and `pulse go`. Settings live in `.pulse/config.toml` ([Configuration](./configuration)). Rules for one area of the code live in a path-local `AGENTS.md` beside that code, where an agent finds them when it reads a file there.
+[Planning](../guides/pulse-plan) runs inside `/pulse-re`, `/pulse-build` and `pulse go` for published features, improvements and fixes; an epic gets no implementation Plan. Review and audit follow the build. Configuration lives in `.pulse/config.toml`; rules for one code area live in its path-local `AGENTS.md`.
 
 ## Front matter
 
-Every spec carries identity and links, nothing else:
+Spec frontmatter carries identity, document links and planning inputs:
 
 ```yaml
 ---
@@ -46,7 +46,7 @@ ba-ref: ../../analysis/BA-agent-core.md    # where the why comes from
 subtype: user-facing                       # or library
 priority: P1                               # P0 to P2
 effort: M                                  # XS to L
-risk: []                                   # flags that make a person approve the PLAN
+risk: []                                   # consequential choices to preserve in the Plan and result review
 ---
 ```
 
@@ -65,11 +65,11 @@ A spec's file name starts with its ID: the type, the numbers of its parent, and 
 | fix or improvement of the epic itself | `FIX-04-01` | `fixes/FIX-04-01-...md` |
 | spec without a parent | `FEAT-07`, `FIX-03` | `features/FEAT-07-...md` |
 
-A folder listing thus groups the features of an epic, and every ID names its epic. Write a spec under its slug (starting with a letter) with `parent:` set, then run `pulse number`: it shows which specs lack the ID of their place, and `pulse number --apply` renames them, rewrites every path to them in the repository, puts the IDs into the epics' `## Items` lines, and moves the records along (their `Spec:` line and the ID in their title). An open record moves only once the base branch has the new path, because agents read the spec there: run `pulse number --apply` again after the merge. A spec keeps a fitting ID; one moved to another parent gets a new one, and its children follow. A new ID comes after every ID a spec file name has had in any branch, in the history, and in any worktree, so parallel sessions do not collide, and a gap stays a gap. A project that starts its numbering anew, say a version 2 on the history of version 1, sets `ids_since` in `.pulse/config.toml` to the commit where it starts ([Configuration](./configuration)); IDs before that commit, and on branches without it, no longer count. `pulse check` (C10) reports a missing or misplaced ID; two branches that took the same ID on different machines show up there after the merge, and `pulse number --apply` moves the one the base branch does not have.
+A folder listing thus groups the features of an epic, and every ID names its epic. Write a spec under its slug (starting with a letter) with `parent:` set, then run `pulse number`: it shows which specs lack the ID of their place, and `pulse number --apply` renames them, rewrites every path to them in the repository, puts the IDs into the epics' `## Items` lines, and moves the records along (their `Spec:` line and the ID in their title). For an existing record, `pulse number --apply` currently updates a renamed spec path only once that path reaches the base. Follow its instruction to rerun after integration. This limit on renaming does not prevent planning a published item-branch spec. A spec keeps a fitting ID; one moved to another parent gets a new one, and its children follow. A new ID comes after every ID a spec file name has had in any branch, in the history, and in any worktree, so parallel sessions do not collide, and a gap stays a gap. A project that starts its numbering anew, say a version 2 on the history of version 1, sets `ids_since` in `.pulse/config.toml` to the commit where it starts ([Configuration](./configuration)); IDs before that commit, and on branches without it, no longer count. `pulse check` (C10) reports a missing or misplaced ID; two branches that took the same ID on different machines show up there after the merge, and `pulse number --apply` moves the one the base branch does not have.
 
 The issue number stays the ID of the record: branches, commits (`Refs: #14`), and every `pulse` command use it. `pulse new` puts the spec's ID in front of the record's title, so the board and the map show it.
 
-A PLAN adds `spec:` and the `files:` it touches, which the ramp compares to keep parallel work apart. A decision record adds `applies-to` and `read-when`. Keys like `status`, `phase`, or `claim` are flagged by `pulse check`.
+A Plan adds `spec:` and the `files:` it touches, which the ramp compares to keep parallel work apart. A decision record adds `applies-to` and `read-when`. Keys like `status`, `phase`, or `claim` are flagged by `pulse check`.
 
 ## Line caps
 
@@ -85,7 +85,7 @@ Short documents get read. `pulse check` counts lines (an audit report without it
 | Epic | 40 |
 | Feature | 80 |
 | Architect handoff | 60 |
-| PLAN (up to its change log) | 80 |
+| Plan (up to its change log) | 80 |
 | Decision record (up to its implementation notes) | 60 |
 | Audit report | 65 |
 | System map | 150 |
@@ -95,7 +95,7 @@ Short documents get read. `pulse check` counts lines (an audit report without it
 Every artifact names the one it came from, so any line of code leads back to a business reason:
 
 ```
-BA  ->  epic  ->  feature  ->  PLAN  ->  decision record  ->  commit (Refs: #n)  ->  pull request (Closes #n)
+BA  ->  epic  ->  feature  ->  Plan  ->  decision record  ->  commit (Refs: #n)  ->  checked result  ->  integration
 ```
 
 ## See also

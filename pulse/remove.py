@@ -16,15 +16,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
-from pulse import auto, base, config, merge as gates, ready, state
+from pulse import auto, base, config, merge as gates, ready, shared, state
 
 
-SUMMARY = "number,state,headRefName,baseRefName,headRefOid,mergeCommit,isCrossRepository,closingIssuesReferences"
-FIELDS = SUMMARY + ",files,changedFiles,commits"
-PR_FIELDS = FIELDS + ",isDraft,mergeable,statusCheckRollup,comments"
 ISSUE_FIELDS = "id,number,title,state,body,labels,assignees,parent,blocking,blockedBy,comments"
 MARK = re.compile(r"<!-- pulse:remove (\{[^\n]*\}) -->")
 GATES = ("tests", "review", "audit")
@@ -92,11 +90,6 @@ def _target(issue):
                                      if label["name"] != state.HOLD)})
 
 
-def _prs(repo, run):
-    found = _json(run, ["pr", "list", "--repo", repo, "--state", "all", "--limit", "1000", "--json", SUMMARY])
-    if not isinstance(found, list) or len(found) >= 1000:
-        raise state.StateError("PR inventory may be incomplete; manual scope review required")
-    return found
 
 
 def _paths(root, before, after):
@@ -139,100 +132,60 @@ def _work(root, number):
 
 
 def preview(root: Path, repo: str, n: int, run=state.gh) -> dict:
-    """Fresh inventory; blocked reasons require scope clarification, not a best-effort revert."""
+    """Inventory only proven canonical integration; missing attribution requires manual scope review."""
     _identity(root, repo, n)
     branch, sha = _base(root)
     issue = _issue(repo, n, run)
     normalized = state.normalize(issue)
     spec = normalized.get("spec") or ""
-    blocked = []
+    items = shared.read(root)[1]["items"]
+    current = items.get(str(n), {})
+    original = (current.get("removal") or {}).get("original", current)
+    blocked, sources = [], []
     if normalized.get("type") not in state.WORK:
         blocked.append("only features, improvements and fixes can be removed")
-    if issue.get("assignees"):
+    if current.get("claim") or issue.get("assignees"):
         blocked.append("the holder must acknowledge the stop and release the claim")
     dependents = issue.get("blocking", {}).get("nodes", [])
     if dependents:
         blocked.append("dependent items require manual scope review")
     if not spec or PurePosixPath(spec).is_absolute() or ".." in PurePosixPath(spec).parts:
         blocked.append("missing or unsafe spec scope")
-    spec_commits = set(_git(root, "log", "--full-history", "-m", "--format=%H", sha, "--", spec).splitlines()) if spec else set()
-    sources = []
-    for pr in _prs(repo, run):
-        linked = {entry["number"] for entry in pr.get("closingIssuesReferences", [])}
-        paths = [entry["path"] for entry in pr.get("files", [])]
-        named = state.item_of(pr.get("headRefName"))
-        carries_spec = (pr.get("mergeCommit") or {}).get("oid") in spec_commits or spec and spec in paths
-        if n not in linked and named != n and not carries_spec:
-            continue
-        pr = _json(run, ["pr", "view", str(pr["number"]), "--repo", repo, "--json", FIELDS])
-        paths = [entry["path"] for entry in pr.get("files", [])]
-        if pr.get("state") == "OPEN":
-            blocked.append(f"open work in PR #{pr['number']}; preserve and resolve its scope first")
-            continue
-        if pr.get("state") != "MERGED":
-            continue
-        if n not in linked and named != n and set(paths) != {spec}:
-            blocked.append(f"ambiguous shared spec PR #{pr['number']}; manual scope required")
-            continue
-        if pr.get("isCrossRepository") or pr.get("baseRefName") != branch or linked - {n} or named not in (None, n):
-            blocked.append(f"ambiguous scope in PR #{pr['number']} (other item, fork or base)")
-            continue
-        if len(paths) != pr.get("changedFiles"):
-            blocked.append(f"incomplete scope of PR #{pr['number']}")
-            continue
-        commit = (pr.get("mergeCommit") or {}).get("oid", "")
-        head = pr.get("headRefOid") or ""
-        if not base.SHA.fullmatch(commit) or not base.SHA.fullmatch(head):
-            blocked.append(f"missing commit provenance for PR #{pr['number']}")
-            continue
-        _git(root, "merge-base", "--is-ancestor", commit, sha)
-        parents = _git(root, "rev-list", "--parents", "-n", "1", commit).split()[1:]
-        if len(parents) not in (1, 2):
-            blocked.append(f"ambiguous merge parents in PR #{pr['number']}")
-            continue
-        if len(parents) == 1 and head == commit:
-            commits = pr.get("commits") or []
-            if len(commits) != 1 or commits[0].get("oid") != head:
-                blocked.append(f"multi-commit or unverifiable rebase in PR #{pr['number']}; manual scope required")
-                continue
-        try:
-            _git(root, "cat-file", "-e", head + "^{commit}")
-        except state.StateError:
-            _git(root, "fetch", "-q", "--no-tags", "origin", f"refs/pull/{pr['number']}/head")
-            _git(root, "cat-file", "-e", head + "^{commit}")
-        ancestor = _git(root, "merge-base", parents[0], head)
-        if _patch(root, ancestor, head) != _patch(root, parents[0], commit):
-            blocked.append(f"ambiguous squash/rebase or merge resolution in PR #{pr['number']}; manual scope required")
-            continue
-        changed = _paths(root, parents[0], commit)
-        if set(changed) != set(paths):
-            blocked.append(f"incomplete changed-file provenance in PR #{pr['number']}")
-            continue
-        sources.append({"pr": pr["number"], "commit": commit, "head": head, "parent": parents[0],
-                        "mainline": 1 if len(parents) == 2 else None, "files": changed})
-    if not sources:
-        blocked.append("no complete merged PR provenance; manual scope required")
-    order = _git(root, "rev-list", "--first-parent", sha).splitlines()
-    if any(source["commit"] not in order for source in sources):
-        blocked.append("source merges are not on the base first-parent history; manual scope required")
-    sources.sort(key=lambda source: order.index(source["commit"]) if source["commit"] in order else len(order))
-    branches, work_problems = _work(root, n)
-    blocked.extend(work_problems)
+    result, commit = original.get("result") or {}, original.get("merge")
+    for number, item in items.items():
+        other = (item.get("removal") or {}).get("original", item)
+        if number != str(n) and commit and other.get("merge") == commit:
+            blocked.append(f"canonical integration also belongs to #{number}; manual scope review required")
+    if not original.get("done") or not commit or not result:
+        blocked.append("no complete canonical integration provenance; manual scope required")
+    else:
+        _git(root, "fetch", "-q", "--no-tags", "origin", commit, result["head"])
+        parents = _git(root, "rev-list", "--parents", "-1", commit).split()[1:]
+        order = _git(root, "rev-list", "--first-parent", sha).splitlines()
+        if parents != [result["base"], result["head"]] or commit not in order or \
+                _patch(root, result["base"], result["head"]) != _patch(root, result["base"], commit):
+            blocked.append("ambiguous integration parents, history or merge resolution; manual scope required")
+        else:
+            files = _paths(root, result["base"], commit)
+            if spec not in files:
+                blocked.append("spec lacks canonical change provenance; manual scope required")
+            sources.append({"commit": commit, "head": result["head"], "parent": result["base"],
+                            "mainline": 1, "files": files})
+    branches, problems = _work(root, n)
+    blocked.extend(problems)
     for ref, head in branches:
-        if head in {source["head"] for source in sources}:
-            continue
         try:
             _git(root, "merge-base", "--is-ancestor", head, sha)
         except state.StateError:
             blocked.append(f"unintegrated work on {ref}; secure and explicitly review its scope")
     return {"repo": repo, "item": n, "issue_id": issue["id"], "target": _target(issue),
-            "base": branch, "base_sha": sha, "spec": spec,
-            "sources": sources, "files": sorted({path for source in sources for path in source["files"]}),
+            "base": branch, "base_sha": sha, "spec": spec, "sources": sources,
+            "files": sorted({path for source in sources for path in source["files"]}),
             "branches": branches, "dependents": dependents, "blocked": blocked}
 
 
 def marker(value: dict) -> str:
-    """Machine record written as its own line in an append-only PR comment."""
+    """Machine record retained for historical removal comments."""
     return "<!-- pulse:remove " + json.dumps(value, sort_keys=True, separators=(",", ":")) + " -->"
 
 
@@ -264,42 +217,20 @@ def _paused(issue, operation, repo, run):
             any(key in current and current[key] != operation.get(key) for key in ("item", "inventory")) or \
             current.get("retained"):
         raise state.StateError("the trusted paused delete operation changed or still retains work; stop removal")
+    if not state.can_push(repo, operation["actor"], run):
+        raise state.StateError("deletion actor no longer has write permission")
+    for comment in reversed(issue.get("comments", [])):
+        body = comment.get("body", "")
+        if body.startswith("<!-- pulse:lifecycle ") and operation["id"] in body and \
+                '"paused"' in body and type(comment.get("id")) is int and state.writer(comment, repo, run, known) is True:
+            return {"comment": comment["id"], "author": comment["author"]["login"], "operation": operation["id"]}
+    raise state.StateError("deletion operation has no authenticated comment reference")
 
 
-def _find(repo, number, run):
-    prs = _json(run, ["pr", "list", "--repo", repo, "--head", f"pulse-remove/{number}",
-                      "--state", "all", "--limit", "100", "--json", PR_FIELDS])
-    if len(prs) > 1:
-        raise state.StateError("multiple removal PRs; resolve manually")
-    return prs[0] if prs else None
 
 
-def _post(repo, pr, value, run):
-    run(["pr", "comment", str(pr), "--repo", repo, "--body", marker(value)])
 
 
-def _records(pr, repo, run):
-    found, known = [], {}
-    for comment in _comments(repo, pr["number"], run):
-        match = MARK.fullmatch(comment.get("body", "").strip())
-        if not match:
-            continue
-        authority = state.writer(comment, repo, run, known)
-        if authority is False:
-            continue
-        if authority is not True:
-            raise state.StateError("removal comment authority cannot be verified; keep the issue")
-        if comment.get("lastEditedAt") or comment.get("edited") or \
-                comment.get("updated_at") != comment.get("created_at"):
-            raise state.StateError("edited removal binding; manual clarification required")
-        try:
-            value = json.loads(match.group(1))
-        except ValueError:
-            raise state.StateError("malformed trusted removal binding") from None
-        if not isinstance(value, dict):
-            raise state.StateError("malformed trusted removal binding")
-        found.append((value, (comment.get("author") or {}).get("login")))
-    return found
 
 
 def _absent(root, ref, inventory):
@@ -320,123 +251,173 @@ def _absent(root, ref, inventory):
         raise state.StateError("active feature references remain; manual scope removal required: " + result.stdout.strip())
 
 
-def prepare(root: Path, repo: str, n: int, operation: dict, run=state.gh) -> dict:
-    """Reserve once, revert only attributed changes, and publish a draft plus trusted binding.
+def _change(root, n, kind, current, **payload):
+    receipt = shared.update(root, gates._transition(n, kind, current, **payload))
+    if receipt["status"] != "confirmed":
+        raise state.StateError(receipt["reason"])
+    return receipt["data"]
 
-    A reservation without a bound PR is deliberately not stolen after an interrupted
-    preparation. Its retained worktree is reported for a person's recovery.
-    """
-    if not auto.person(os.environ, sys.stdin is not None and sys.stdin.isatty()):
-        raise state.StateError("only a person may prepare a removal")
+
+def _claim(root, current):
+    holder = uuid.uuid4().hex
+    item = _change(root, current["item"], "claim", current["canonical"], holder=holder,
+                   files=current["inventory"]["files"], removal=current["id"])
+    return item, holder
+
+
+def _release(root, number, holder, work=None):
+    item = shared.read(root)[1]["items"][str(number)]
+    if (item.get("claim") or {}).get("holder") == holder:
+        _change(root, number, "release", item, holder=holder, work={**(item.get("work") or {}), **(work or {})})
+
+
+def _fresh(root, head):
+    why = gates.evidence(root, head, GATES)
+    if why:
+        raise state.StateError(why)
+    if any(key.endswith(" carried from") for key in base._read(base._gates(root) / head)):
+        raise state.StateError("removal requires fresh gates, not carried evidence")
+
+
+def record_gates(root, repo, operation, run=state.gh):
+    """Publish only this supervisor's fresh evidence; human review approval remains separate."""
+    current = status(root, repo, operation, run)
+    check_scope(root, repo, current, run)
+    _fresh(root, current["head"])
+    item, holder = _claim(root, current)
+    try:
+        op = gates._transition(current["item"], "result", item, holder=holder, branch=current["branch"],
+                               head=current["head"], base=current["inventory"]["base_sha"],
+                               gates={gate: "pass" for gate in GATES})
+        receipt = shared.publish(root, op, current["branch"], current["head"], current["head"])
+        if receipt["status"] != "confirmed":
+            raise state.StateError(receipt["reason"])
+    finally:
+        _release(root, current["item"], holder)
+    return status(root, repo, operation, run)
+
+
+def integration_proof(root, repo, number, item, run=state.gh):
+    """Fresh removal-specific scope and authority for the common integration engine."""
+    current = status(root, repo, number, run)
+    check_scope(root, repo, current, run)
+    _fresh(root, current["head"])
+    if not _approval(current) or current["approval"] != item.get("approval"):
+        raise state.StateError("removal approval changed")
+    why = gates.approval_proof(repo, number, current["approval"], run, removal=current["binding"])
+    if why:
+        raise state.StateError(why)
+
+
+def integrate(root, repo, operation, confirmation, run=state.gh):
+    current = _checked(root, repo, operation, confirmation, run)
+    if current["phase"] != "prepared":
+        return _recovered(root, repo, current, run)
+    integration_proof(root, repo, current["item"], current["canonical"], run)
+    _, holder = _claim(root, current)
+    try:
+        outcome = gates.integrate(root, repo, current["item"], holder, run=run)
+        if outcome["status"] != "done":
+            raise state.StateError(outcome["why"])
+    finally:
+        snapshot = shared.read(root)[1]
+        if not snapshot["integration"]:
+            _release(root, current["item"], holder)
+    return status(root, repo, operation, run)
+
+
+def _recovered(root, repo, current, run):
+    outcome = gates.integrate(root, repo, current["item"], "", run=run)
+    if outcome["status"] != "done":
+        raise state.StateError(outcome["why"])
+    return current
+
+
+def prepare(root: Path, repo: str, n: int, operation: dict, run=state.gh) -> dict:
+    """Archive the completed generation, then publish its reviewed-scope revert without touching the caller."""
     inventory = _operation(repo, n, operation)
+    _person(f"{repo}#{n}", {"confirmation": f"{repo}#{n}"}, repo, run)
     _identity(root, repo, n)
-    if _find(repo, n, run):
+    previous = shared.read(root)[1]["items"].get(str(n), {})
+    if previous.get("removal"):
         return status(root, repo, operation, run)
     fresh = preview(root, repo, n, run)
-    if fresh != inventory:
-        raise state.StateError("removal inventory changed; refresh and confirm again")
-    if fresh["blocked"]:
-        raise state.StateError("; ".join(fresh["blocked"]))
+    if fresh != inventory or fresh["blocked"]:
+        raise state.StateError("removal inventory changed or blocked: " + "; ".join(fresh["blocked"]))
     issue = _issue(repo, n, run)
-    _paused(issue, operation, repo, run)
-    if state.HOLD not in {label["name"] for label in issue.get("labels", [])} or issue.get("assignees"):
-        raise state.StateError("removal waits for hold and the holder's completed stop")
-    if not state.can_push(repo, operation["actor"], run):
-        raise state.StateError("delete operation actor no longer has write permission")
+    proof = _paused(issue, operation, repo, run)
+    if state.HOLD not in {label["name"] for label in issue.get("labels", [])}:
+        raise state.StateError("removal waits for the confirmed deletion hold")
     branch = f"pulse-remove/{n}"
-    home = config.common_dir(root) / "pulse" / "removals"
+    if shared.remote_head(root, branch):
+        raise state.StateError("removal branch already reserved; inspect retained work")
+    current = _change(root, n, "removal_begin", previous, operation=operation, proof=proof)
+    holder = uuid.uuid4().hex
+    current = _change(root, n, "claim", current, holder=holder, files=fresh["files"], removal=operation["id"])
+    home = config.pulse_dir(root) / "removals"
     home.mkdir(parents=True, exist_ok=True)
-    worktree = home / operation["id"]
-    if worktree.exists() or worktree.is_symlink():
-        raise state.StateError(f"removal worktree already exists; inspect preserved work at {worktree}")
-    run(["api", f"repos/{repo}/git/refs", "-f", f"ref=refs/heads/{branch}", "-f", f"sha={fresh['base_sha']}"])
+    tree = home / operation["id"]
     try:
-        _git(root, "worktree", "add", "--detach", str(worktree), fresh["base_sha"])
-        _git(worktree, "switch", "-c", branch)
+        if tree.exists() or tree.is_symlink():
+            raise state.StateError("removal worktree already exists")
+        _git(root, "worktree", "add", "--detach", str(tree), fresh["base_sha"])
         for source in fresh["sources"]:
-            flags = ["-m", "1"] if source["mainline"] else []
-            _git(worktree, "revert", "--no-commit", *flags, source["commit"])
-        tree = _git(worktree, "write-tree")
-        _absent(worktree, tree, fresh)
-        actual = _paths(worktree, fresh["base_sha"], tree)
-        if not actual or set(actual) - set(fresh["files"]):
+            _git(tree, "revert", "--no-commit", "-m", "1", source["commit"])
+        prepared = _git(tree, "write-tree")
+        _absent(tree, prepared, fresh)
+        files = _paths(tree, fresh["base_sha"], prepared)
+        if not files or set(files) - set(fresh["files"]):
             raise state.StateError("revert has empty or unexpected scope; manual scope review required")
-        _git(worktree, "commit", "-m", f"revert: remove item #{n} ({operation['id']})")
-        head = _git(worktree, "rev-parse", "HEAD")
-        _git(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
-        url = run(["pr", "create", "--repo", repo, "--base", fresh["base"], "--head", branch, "--draft",
-                   "--title", f"Remove item #{n}", "--body",
-                   f"Removal operation {operation['id']} for #{n}.\n\n"
-                   "Requires fresh tests, review and audit, scope review, and separate exact-head human approval. "
-                   "The original issue and comments are deleted only after verified integration."])
-        match = re.search(r"/pull/(\d+)\s*$", url)
-        if not match:
-            raise state.StateError("removal PR creation returned no identifiable PR")
-        binding = {"phase": "prepared", "id": operation["id"], "repo": repo, "item": n,
-                   "inventory": fresh, "actor": operation["actor"], "head": head, "tree": tree,
-                   "files": actual, "branch": branch, "pr": int(match.group(1))}
-        _post(repo, binding["pr"], binding, run)
+        _git(tree, "commit", "-m", f"revert: remove item #{n} ({operation['id']})")
+        head = _git(tree, "rev-parse", "HEAD")
+        if preview(root, repo, n, run) != {**fresh, "blocked": ["the holder must acknowledge the stop and release the claim"]}:
+            raise state.StateError("scope changed during removal preparation")
+        op = gates._transition(n, "published", current, holder=holder, branch=branch, head=head,
+                               phase="removal", worktree=str(tree))
+        receipt = shared.publish(tree, op, branch, head, "")
+        if receipt["status"] != "confirmed":
+            raise state.StateError(receipt["reason"])
     except (state.StateError, OSError) as error:
-        raise state.StateError(f"removal preparation stopped; original issue retained; work preserved at {worktree}: {error}") from None
-    result = status(root, repo, operation, run)
-    return {**result, "worktree": str(worktree)}
+        raise state.StateError(f"removal preparation stopped; original retained; work preserved at {tree}: {error}") from None
+    finally:
+        _release(root, n, holder, {"branch": branch, "worktree": str(tree), "phase": "removal"})
+    return status(root, repo, operation, run)
 
 
 def status(root: Path, repo: str, operation: dict | int, run=state.gh) -> dict:
-    """Read progress; an item number recovers the operation from its trusted PR binding."""
+    """Canonical status remains recoverable after the original issue and its comments are deleted."""
     number = operation if type(operation) is int else operation.get("item")
     _identity(root, repo, number)
-    listed = _find(repo, number, run)
-    if not listed:
-        return {"phase": "paused", "item": number, "blocked": ["no bound removal PR; prepare or inspect reservation"]}
-    pr = _json(run, ["pr", "view", str(listed["number"]), "--repo", repo, "--json", PR_FIELDS])
-    records = _records(pr, repo, run)
-    bindings = [value for value, author in records if value.get("phase") == "prepared"]
-    if len(bindings) != 1:
-        raise state.StateError("removal PR needs exactly one trusted prepared binding")
-    binding = bindings[0]
-    if type(operation) is int:
-        operation = {**{key: binding.get(key) for key in ("id", "item", "actor", "inventory")},
-                     "action": "delete", "phase": "paused"}
-    inventory = _operation(repo, number, operation)
-    if binding.get("id") != operation["id"] or binding.get("item") != number or binding.get("repo") != repo or \
-            binding.get("inventory") != inventory or binding.get("actor") != operation["actor"] or \
-            binding.get("pr") != pr["number"] or pr.get("isCrossRepository") or \
-            pr.get("baseRefName") != inventory["base"] or pr.get("headRefName") != binding.get("branch") or \
-            not base.SHA.fullmatch(binding.get("head", "")):
-        raise state.StateError("removal binding or PR head changed; fresh scope approval required")
-    previous = None
-    for candidate, author in records:
-        if candidate.get("phase") != "rebound":
-            continue
-        same = ("id", "repo", "item", "actor", "branch", "pr", "files")
-        new_inventory = candidate.get("inventory") or {}
-        if candidate.get("previous") != _digest(binding) or \
-                any(candidate.get(key) != binding.get(key) for key in same) or \
-                new_inventory != {**binding["inventory"], "base_sha": new_inventory.get("base_sha")} or \
-                not all(base.SHA.fullmatch(candidate.get(key, "")) for key in ("head", "tree")) or \
-                not base.SHA.fullmatch(new_inventory.get("base_sha", "")):
-            raise state.StateError("invalid removal rebind chain; manual scope review required")
-        previous, binding = binding, candidate
-    pending = binding["head"] != pr.get("headRefOid")
-    if pending and (not previous or previous["head"] != pr.get("headRefOid") or pr["state"] != "OPEN"):
-        raise state.StateError("removal binding or PR head changed; fresh scope approval required")
-    digest = _digest(binding)
-    phases = [value["phase"] for value, author in records
-              if value.get("binding") == digest and value.get("id") == operation["id"]]
-    complete = any(value.get("phase") == "deleted" and value.get("binding") == digest and
-                   value.get("id") == operation["id"] and
-                   value.get("issue_id") == inventory["issue_id"] and
-                   value.get("commit") == (pr.get("mergeCommit") or {}).get("oid")
-                   for value, author in records)
-    phase = "deleted" if complete and pr["state"] == "MERGED" else \
-        "integrated" if "integrated" in phases and pr["state"] == "MERGED" else \
-        "merged" if pr["state"] == "MERGED" else "rebind-pending" if pending else "prepared"
-    current = {**binding, "phase": phase, "binding": digest, "pr_state": pr["state"], "view": pr,
-               "operation": operation,
-               "records": records, "confirmation": f"{repo}#{number}@{binding['head']}"}
-    if phase != "deleted" and _receipt(root, current):
+    item = shared.read(root)[1]["items"].get(str(number), {})
+    metadata = item.get("removal")
+    if not metadata:
+        return {"phase": "paused", "item": number, "blocked": ["no prepared removal"]}
+    stored = metadata["operation"]
+    if type(operation) is not int and operation != stored:
+        raise state.StateError("removal operation or inventory changed")
+    inventory = metadata["inventory"]
+    work, result = item.get("work") or {}, item.get("result") or {}
+    head, branch = result.get("head") or work.get("head", ""), result.get("branch") or work.get("branch", "")
+    if not head:
+        raise state.StateError("removal preparation incomplete; inspect preserved work: " + str(work))
+    _git(root, "fetch", "-q", "--no-tags", "origin", head)
+    binding = _digest({"id": stored["id"], "inventory": inventory, "head": head, "branch": branch})
+    current = {"id": stored["id"], "repo": repo, "item": number, "actor": stored["actor"],
+               "operation": stored, "inventory": inventory, "head": head, "branch": branch,
+               "tree": _git(root, "rev-parse", head + "^{tree}"),
+               "files": _paths(root, inventory["base_sha"], head), "binding": binding,
+               "phase": "deleted" if metadata["deleted"] else "integrated" if item["done"] else "prepared",
+               "merge": item["merge"], "approval": item["approval"], "canonical": item,
+               "worktree": work.get("worktree", ""), "confirmation": f"{repo}#{number}@{head}"}
+    if current["phase"] == "integrated" and _receipt(root, current):
         current["phase"] = "receipt-pending"
+    if current["phase"] == "prepared":
+        pending = _pending_rebind(root, current)
+        if pending:
+            current.update(phase="rebind-pending", pending=pending, head=pending["head"],
+                           inventory=pending["inventory"], worktree=pending["worktree"],
+                           tree=_git(root, "rev-parse", pending["head"] + "^{tree}"),
+                           confirmation=f"{repo}#{number}@{pending['head']}")
     return current
 
 
@@ -444,7 +425,7 @@ def _person(confirmation, current, repo, run):
     if not auto.person(os.environ, sys.stdin is not None and sys.stdin.isatty()):
         raise state.StateError("only a person may approve removal merges or delete the issue")
     if confirmation != current.get("confirmation"):
-        raise state.StateError("confirm the removal separately with " + current.get("confirmation", "a bound PR head"))
+        raise state.StateError("confirm the removal separately with " + current.get("confirmation", "a bound removal head"))
     login = run(["api", "user", "--jq", ".login"]).strip()
     if not state.can_push(repo, login, run):
         raise state.StateError("removal requires repository write permission")
@@ -458,9 +439,8 @@ def _checked(root, repo, operation, confirmation, run, final=False):
 
 
 def _approval(current):
-    return any(value.get("phase") == "merge-approved" and value.get("binding") == current["binding"]
-               and value.get("id") == current["id"]
-               and value.get("head") == current["head"] for value, author in current["records"])
+    approval = current.get("approval") or {}
+    return approval.get("head") == current["head"] and approval.get("base") == current["inventory"]["base_sha"]
 
 
 def _event(current, phase, **extra):
@@ -472,16 +452,14 @@ def _receipt_path(root, current):
 
 
 def _completion(current):
-    return _event(current, "deleted", issue_id=current["inventory"]["issue_id"],
-                  commit=(current["view"].get("mergeCommit") or {}).get("oid"))
+    return _event(current, "deleted", issue_id=current["inventory"]["issue_id"], commit=current["merge"])
 
 
 def _receipt(root, current):
     path = _receipt_path(root, current)
-    if path.parent.is_symlink() or current["pr_state"] != "MERGED":
+    if path.parent.is_symlink() or not current["merge"]:
         return False
-    return base._read(path) == {"repo": current["repo"], "pr": current["pr"], "head": current["head"],
-                                "completion": _completion(current)}
+    return base._read(path) == {"repo": current["repo"], "head": current["head"], "completion": _completion(current)}
 
 
 @contextmanager
@@ -496,7 +474,7 @@ def _acknowledge(root, current):
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "w") as receipt:
             yield
-            json.dump({"repo": current["repo"], "pr": current["pr"], "head": current["head"],
+            json.dump({"repo": current["repo"], "head": current["head"],
                        "completion": _completion(current)}, receipt)
             receipt.flush()
             os.fsync(receipt.fileno())
@@ -514,9 +492,11 @@ def _acknowledge(root, current):
 
 @contextmanager
 def _exclusive(root, repo, current, run):
-    """Atomic remote reservation plus a locked local retry receipt; never steals another clone's attempt."""
-    folder = config.common_dir(root) / "pulse" / "removals"
+    """One local retry owner reserves deletion in canonical state before its irreversible API call."""
+    folder = config.evidence_dir(root) / "removals"
     folder.mkdir(parents=True, exist_ok=True)
+    if folder.is_symlink():
+        raise state.StateError("unsafe removal reservation directory")
     path = folder / (current["id"] + ".finalize")
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -525,23 +505,18 @@ def _exclusive(root, repo, current, run):
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise state.StateError("unsafe removal reservation receipt")
             fcntl.flock(receipt, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            saved = receipt.read()
-            ref = f"refs/heads/pulse-remove-finalize/{current['item']}"
-            if not saved:
-                try:
-                    run(["api", f"repos/{repo}/git/refs", "-f", f"ref={ref}", "-f", f"sha={current['head']}"])
-                except state.StateError as error:
-                    raise state.StateError(f"deletion reserved or reservation uncertain; inspect the original clone: {error}") from None
-                receipt.write(current["binding"])
+            holder = receipt.read()
+            if not holder:
+                holder = uuid.uuid4().hex
+                receipt.write(holder)
                 receipt.flush()
                 os.fsync(receipt.fileno())
-            elif saved != current["binding"]:
-                raise state.StateError("another removal owns the local reservation")
-            if _git(root, "ls-remote", "--exit-code", "origin", ref).split() != [current["head"], ref]:
-                raise state.StateError("removal reservation changed; keep the issue")
-            yield
+            item = shared.read(root)[1]["items"][str(current["item"])]
+            _change(root, current["item"], "removal_finalize", item, holder=holder,
+                    id=current["id"], merge=current["merge"])
+            yield holder
     except OSError as error:
-        raise state.StateError(f"removal reserved by another process or receipt unavailable: {error}") from None
+        raise state.StateError(f"deletion reserved or receipt unavailable: {error}") from None
 
 
 def _live_issue(repo, current, run):
@@ -551,33 +526,23 @@ def _live_issue(repo, current, run):
             state.HOLD not in {label["name"] for label in issue.get("labels", [])} or \
             issue.get("blocking", {}).get("nodes", []):
         raise state.StateError("item identity, hold, holder or dependencies changed; deletion stopped")
-    for pr in _prs(repo, run):
-        if pr["number"] != current["pr"] and pr.get("state") == "OPEN":
-            detail = _json(run, ["pr", "view", str(pr["number"]), "--repo", repo, "--json", "files,changedFiles"])
-            paths = [entry["path"] for entry in detail.get("files", [])]
-            if current["item"] in state.pr_items(pr) or current["inventory"]["spec"] in paths or \
-                    len(paths) != detail.get("changedFiles"):
-                raise state.StateError("new open or incompletely inventoried work requires scope review before removal")
     return issue
 
 
 def check_scope(root: Path, repo: str, current: dict, run=state.gh) -> None:
-    """Revalidate the bound, paused removal before running gates or merging."""
-    if current["pr_state"] != "OPEN":
-        raise state.StateError("removal PR is not open")
-    if current["phase"] == "rebind-pending":
-        raise state.StateError("removal rebind push is pending; confirm rebind first")
+    """Revalidate retained original work, exact removal scope and the current base."""
+    if current["phase"] != "prepared":
+        raise state.StateError("removal is not awaiting integration")
     _live_issue(repo, current, run)
     branches, problems = _work(root, current["item"])
     if problems or branches != current["inventory"]["branches"]:
-        raise state.StateError("original item work changed; preserve and review before removal merge")
-    branch, sha = _base(root)
-    if sha != current["inventory"]["base_sha"]:
-        raise state.StateError("base changed; rebuild removal and obtain fresh scope review")
-    _git(root, "fetch", "-q", "--no-tags", "origin", current["head"])
-    if _git(root, "rev-parse", current["head"] + "^{tree}") != current["tree"] or \
-            _paths(root, sha, current["head"]) != current["files"]:
-        raise state.StateError("removal tree or scope changed")
+        raise state.StateError("original item work changed; preserve and review before removal")
+    if _base(root) != (current["inventory"]["base"], current["inventory"]["base_sha"]):
+        raise state.StateError("base changed; rebind removal and obtain fresh scope review")
+    if shared.remote_head(root, current["branch"]) != current["head"]:
+        raise state.StateError("removal head changed")
+    if not current["files"] or set(current["files"]) - set(current["inventory"]["files"]):
+        raise state.StateError("removal scope changed")
     _absent(root, current["head"], current["inventory"])
 
 
@@ -593,200 +558,221 @@ def _rebind_inventory(root, repo, current, run):
     return fresh
 
 
-def rebind(root: Path, repo: str, operation: dict, inventory: dict, confirmation: str, run=state.gh) -> dict:
-    """Confirm independent base advancement, append its binding, and fast-forward the removal branch.
+def _rebind_path(root, current):
+    path = config.evidence_dir(root) / "removals" / (current["id"] + ".rebind")
+    if path.parent.is_symlink() or path.is_symlink():
+        raise state.StateError("unsafe removal rebind receipt")
+    return path
 
-    A posted binding precedes the push: retries can finish that exact head after an
-    interrupted push. Prior bindings, approvals, worktrees and history remain intact.
-    """
+
+def _pending_rebind(root, current):
+    path = _rebind_path(root, current)
+    if not path.exists():
+        return None
+    pending = base._read(path)
+    if (set(pending) != {"repo", "binding", "previous", "inventory", "head", "worktree"}
+            or not all(isinstance(pending[key], str) for key in ("repo", "binding", "previous", "head", "worktree"))
+            or not isinstance(pending["inventory"], dict) or not base.SHA.fullmatch(pending["head"])):
+        raise state.StateError("unreadable removal rebind receipt; inspect retained work")
+    if pending["repo"] != current["repo"]:
+        raise state.StateError("removal rebind receipt names another repository")
+    if pending["binding"] == current["binding"] and pending["previous"] == current["head"]:
+        inventory = pending["inventory"]
+        if (not isinstance(inventory.get("base_sha"), str) or not base.SHA.fullmatch(inventory["base_sha"])
+                or inventory != {**current["inventory"], "base_sha": inventory["base_sha"]}):
+            raise state.StateError("prepared rebind inventory changed; inspect retained work")
+        return pending
+    if pending["head"] == current["head"] and pending["inventory"] == current["inventory"]:
+        return None  # The exact attempt was published, including after a lost response.
+    raise state.StateError("retained rebind binding is stale; inspect preserved work at " + pending["worktree"])
+
+
+def _save_rebind(root, current, inventory, tree, head):
+    path = _rebind_path(root, current)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = {"repo": current["repo"], "binding": current["binding"], "previous": current["head"],
+               "inventory": inventory, "head": head, "worktree": str(tree)}
+    temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as saved:
+            json.dump(pending, saved)
+            saved.flush()
+            os.fsync(saved.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError as error:
+        raise state.StateError(f"cannot preserve prepared rebind at {tree}: {error}") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def rebind(root: Path, repo: str, operation: dict, inventory: dict, confirmation: str, run=state.gh) -> dict:
     current = status(root, repo, operation, run)
-    expected = f"rebind {current['confirmation']} base {inventory['base_sha']}"
-    _person(confirmation, {**current, "confirmation": expected}, repo, run)
+    _person(confirmation, {**current, "confirmation": f"rebind {current['confirmation']} base {inventory['base_sha']}"}, repo, run)
     fresh = _rebind_inventory(root, repo, current, run)
-    expected_inventory = current["inventory"] if current["phase"] == "rebind-pending" else fresh
-    if current["pr_state"] != "OPEN" or inventory != expected_inventory:
-        raise state.StateError("rebind scope changed; inspect and confirm again")
-    if current["phase"] != "rebind-pending":
-        if inventory == current["inventory"]:
-            raise state.StateError("no new base to bind")
-        home = config.pulse_dir(root) / "removals"
-        home.mkdir(parents=True, exist_ok=True)
-        worktree = Path(tempfile.mkdtemp(prefix=current["id"] + "-rebind-", dir=home)) / "tree"
-        _git(root, "fetch", "-q", "--no-tags", "origin", current["head"])
-        _git(root, "worktree", "add", "--detach", str(worktree), current["head"])
-        _git(worktree, "merge", "--no-ff", "--no-edit", inventory["base_sha"])
-        head = _git(worktree, "rev-parse", "HEAD")
-        tree = _git(worktree, "rev-parse", "HEAD^{tree}")
-        if _paths(root, inventory["base_sha"], head) != current["files"]:
-            raise state.StateError("rebound removal changed scope; inspect retained worktree " + str(worktree))
+    pending = current.get("pending")
+    if current["phase"] not in {"prepared", "rebind-pending"} or inventory != (pending["inventory"] if pending else fresh):
+        raise state.StateError("rebind scope changed")
+    previous = pending["previous"] if pending else current["head"]
+    if shared.remote_head(root, current["branch"]) != previous:
+        raise state.StateError("removal head changed before rebind publication")
+    item, holder = _claim(root, current)
+    home = config.pulse_dir(root) / "removals"
+    tree = Path(pending["worktree"]) if pending else Path(tempfile.mkdtemp(prefix=current["id"] + "-rebind-", dir=home)) / "tree"
+    try:
+        if not pending:
+            _git(root, "worktree", "add", "--detach", str(tree), current["head"])
+            _git(tree, "merge", "--no-ff", "--no-edit", inventory["base_sha"])
+        elif (tree.is_symlink() or config.common_dir(tree) != config.common_dir(root)
+              or _git(tree, "status", "--porcelain", "--untracked-files=all", "--ignored")
+              or _git(tree, "rev-parse", "HEAD") != pending["head"]):
+            raise state.StateError("prepared rebind worktree changed; preserve and inspect " + str(tree))
+        head = _git(tree, "rev-parse", "HEAD")
+        if (_git(root, "rev-list", "--parents", "-1", head).split()[1:] != [previous, inventory["base_sha"]]
+                or _paths(root, inventory["base_sha"], head) != current["files"]):
+            raise state.StateError("rebound removal changed scope; inspect retained worktree " + str(tree))
         _absent(root, head, inventory)
-        binding = {key: current[key] for key in ("id", "repo", "item", "actor", "branch", "pr", "files")}
-        binding.update(phase="rebound", previous=current["binding"], inventory=inventory, head=head, tree=tree)
-        if status(root, repo, operation, run)["binding"] != current["binding"] or _base(root)[1] != inventory["base_sha"]:
-            raise state.StateError("removal changed while preparing rebind; inspect retained worktree")
-        if not current["view"].get("isDraft"):
-            run(["pr", "ready", str(current["pr"]), "--repo", repo, "--undo"])
-        _post(repo, current["pr"], binding, run)
-        current = status(root, repo, operation, run)
-        if current["binding"] != _digest(binding):
-            raise state.StateError("rebind comment not verified; no push")
-    _git(root, "cat-file", "-e", current["head"] + "^{commit}")
-    _git(root, "merge-base", "--is-ancestor", current["view"]["headRefOid"], current["head"])
-    if _git(root, "rev-parse", current["head"] + "^{tree}") != current["tree"] or \
-            _paths(root, inventory["base_sha"], current["head"]) != current["files"]:
-        raise state.StateError("bound rebind tree changed; preserve and inspect it")
-    _absent(root, current["head"], inventory)
-    _git(root, "push", "origin", f"{current['head']}:refs/heads/{current['branch']}")
-    result = status(root, repo, operation, run)
-    if result["phase"] == "rebind-pending":
-        raise state.StateError("rebind push not yet visible; retry the same confirmed rebind")
-    return result
+        if not pending:
+            _save_rebind(root, current, inventory, tree, head)
+        op = gates._transition(current["item"], "removal_rebind", item, holder=holder, inventory=inventory,
+                               branch=current["branch"], head=head, phase="removal", worktree=str(tree))
+        receipt = shared.publish(tree, op, current["branch"], head, previous)
+        if receipt["status"] != "confirmed":
+            raise state.StateError(receipt["reason"])
+    finally:
+        _release(root, current["item"], holder)
+    return status(root, repo, operation, run)
 
 
 def merge_proof(root: Path, repo: str, operation: dict, confirmation: str, run=state.gh) -> dict:
-    """Fresh merge preconditions for go; does not approve, merge or close anything."""
     current = _checked(root, repo, operation, confirmation, run)
     check_scope(root, repo, current, run)
-    why = gates.evidence(root, current["head"], GATES) or gates.ready(current["view"])
-    if why:
-        raise state.StateError(why)
-    carried = base._read(base._gates(root) / current["head"])
-    if any(key.endswith(" carried from") for key in carried):
-        raise state.StateError("removal requires fresh gates, not carried evidence")
+    _fresh(root, current["head"])
     return current
 
 
 def merge(root: Path, repo: str, operation: dict, confirmation: str, run=state.gh) -> dict:
-    """Record a person's exact-head approval, then ask the go runner to merge it."""
     from pulse import go
     current = _checked(root, repo, operation, confirmation, run)
-    if current["phase"] == "deleted" or current["pr_state"] == "MERGED":
-        return current
+    if current["phase"] != "prepared":
+        return _recovered(root, repo, current, run)
     current = merge_proof(root, repo, operation, confirmation, run)
+    if not current["canonical"].get("result"):
+        raise state.StateError("removal gates have not published their result")
     if not _approval(current):
-        _post(repo, current["pr"], _event(current, "merge-approved", head=current["head"]), run)
-    checked = status(root, repo, operation, run)
-    if checked["binding"] != current["binding"] or not _approval(checked):
-        raise state.StateError("exact-head removal approval could not be verified")
+        oid = uuid.uuid4().hex
+        binding = {"operation": oid, "item": current["item"], "head": current["head"],
+                   "base": current["inventory"]["base_sha"], "removal": current["binding"]}
+        url = run(["issue", "comment", str(current["item"]), "--repo", repo, "--body",
+                   "pulse removal approval " + json.dumps(binding, sort_keys=True, separators=(",", ":"))])
+        match = re.fullmatch(r"https://github[.]com/" + re.escape(repo) + r"/issues/" + str(current["item"]) +
+                             r"#issuecomment-([1-9][0-9]*)\s*", url)
+        if not match:
+            raise state.StateError("removal approval comment was not acknowledged")
+        actor = run(["api", "user", "--jq", ".login"]).strip()
+        approval = {"head": binding["head"], "base": binding["base"],
+                    "proof": {"comment": int(match.group(1)), "author": actor, "operation": oid}}
+        why = gates.approval_proof(repo, current["item"], approval, run, removal=current["binding"])
+        if why:
+            raise state.StateError(why)
+        _change(root, current["item"], "approve", current["canonical"], **approval)
     return go.removal(root, repo, operation, confirmation, gh_run=run)
 
 
 def finalize(root: Path, repo: str, operation: dict, confirmation: str, run=state.gh) -> str:
-    """Verify integrated removal, delete the issue last, and record an acknowledged result."""
     current = _checked(root, repo, operation, confirmation, run, final=True)
     if current["phase"] == "deleted":
-        return f"#{current['item']} deleted; removal PR #{current['pr']} records completion"
-    if _receipt(root, current):
-        _post(repo, current["pr"], _completion(current), run)
-        if status(root, repo, operation, run)["phase"] != "deleted":
-            raise state.StateError("deletion acknowledged locally; completion repair not yet verified")
-        return f"#{current['item']} deleted; repaired completion in removal PR #{current['pr']}"
-    if current["pr_state"] != "MERGED" or not _approval(current):
-        raise state.StateError("removal must be merged after separate exact-head approval before deletion")
-    why = gates.evidence(root, current["head"], GATES)
-    if why:
-        raise state.StateError(why)
-    _live_issue(repo, current, run)
-    branch, sha = _base(root)
-    integrated = (current["view"].get("mergeCommit") or {}).get("oid", "")
-    if not base.SHA.fullmatch(integrated):
-        raise state.StateError("merged PR has no integration commit")
-    _git(root, "merge-base", "--is-ancestor", integrated, sha)
-    if _git(root, "rev-parse", integrated + "^{tree}") != current["tree"]:
-        raise state.StateError("integrated tree differs from reviewed removal; keep issue for review")
-    if set(_paths(root, integrated, sha)) & set(current["inventory"]["files"]):
-        raise state.StateError("removal scope changed since integration; renewed review required before deletion")
-    _absent(root, sha, current["inventory"])
-    branches, problems = _work(root, current["item"])
-    if problems or branches != current["inventory"]["branches"]:
-        raise state.StateError("original item work changed; preserve and review before deletion")
-    _post(repo, current["pr"], _event(current, "integrated", commit=integrated), run)
-    with _exclusive(root, repo, current, run):
-        if status(root, repo, operation, run)["phase"] == "deleted":
-            return f"#{current['item']} deleted; removal PR #{current['pr']} records completion"
+        return f"#{current['item']} deleted; canonical removal records completion"
+    repair = _receipt(root, current)
+    if not repair:
+        if current["phase"] != "integrated" or not _approval(current):
+            raise state.StateError("removal requires separately approved integration before deletion")
+        why = gates.approval_proof(repo, current["item"], current["approval"], run, removal=current["binding"])
+        if why:
+            raise state.StateError(why)
+        _fresh(root, current["head"])
+        _recovered(root, repo, current, run)
         _live_issue(repo, current, run)
-        if _base(root)[1] != sha:
-            raise state.StateError("base changed before deletion; retain issue for review")
-        try:
-            with _acknowledge(root, current):
-                run(["issue", "delete", str(current["item"]), "--repo", repo, "--yes"])
-        except state.StateError as error:
-            raise state.StateError(f"removal integrated, delete outcome uncertain; inspect and retry: {error}") from None
-        state.drop_cache(root)
-        try:
-            _post(repo, current["pr"], _completion(current), run)
-        except state.StateError as error:
-            raise state.StateError(f"GitHub acknowledged deletion, completion receipt failed; retain PR #{current['pr']}: {error}") from None
-    return f"#{current['item']} deleted after verified removal in PR #{current['pr']}"
+        _, sha = _base(root)
+        integrated = current["merge"]
+        _git(root, "merge-base", "--is-ancestor", integrated, sha)
+        if _git(root, "rev-parse", integrated + "^{tree}") != current["tree"] or \
+                set(_paths(root, integrated, sha)) & set(current["inventory"]["files"]):
+            raise state.StateError("integrated removal tree or later scope changed")
+        _absent(root, sha, current["inventory"])
+        branches, problems = _work(root, current["item"])
+        if problems or branches != current["inventory"]["branches"]:
+            raise state.StateError("original work changed before deletion")
+    with _exclusive(root, repo, current, run) as holder:
+        if not repair:
+            _live_issue(repo, current, run)
+            if _base(root)[1] != sha:
+                raise state.StateError("base changed before deletion")
+            try:
+                with _acknowledge(root, current):
+                    run(["issue", "delete", str(current["item"]), "--repo", repo, "--yes"])
+            except state.StateError as error:
+                raise state.StateError(f"delete outcome uncertain; retain receipt and inspect: {error}") from None
+        item = shared.read(root)[1]["items"][str(current["item"])]
+        _change(root, current["item"], "removal_deleted", item, holder=holder, id=current["id"], merge=current["merge"])
+    state.drop_cache(root)
+    return f"#{current['item']} deleted after verified removal; canonical completion retained"
 
 
 def finish(root: Path, repo: str, operation: dict, confirmation: str, run=state.gh) -> str:
-    """Perform one confirmed step; final deletion always needs a distinct confirmation."""
     if confirmation.startswith("delete "):
         return finalize(root, repo, operation, confirmation, run)
     current = merge(root, repo, operation, confirmation, run)
-    if current["phase"] == "deleted":
-        return f"#{current['item']} deleted; completion is recorded in PR #{current['pr']}"
-    return f"Removal PR #{current['pr']} merged; issue retained until final confirmation: delete {current['confirmation']}"
+    return f"Removal {current['phase']}; issue retained until final confirmation: delete {current['confirmation']}"
 
 
 def action_preview(root: Path, repo: str, n: int, run=state.gh) -> dict:
-    """CLI/Map proposal: stage, lines, exact confirmation and snapshot. Never prompts or writes GitHub."""
+    """One explicit deletion step for CLI and Map, with the complete bound scope."""
     from pulse import lifecycle
     _identity(root, repo, n)
     actor = lifecycle._actor(repo, run)
     planned = {"repo": repo, "item": n, "actor": actor, "confirmation": "", "stage": "pending"}
     lines = [f"{repo}#{n}: removal as @{actor}.",
-             "Code, specs and active references will be removed through a reviewed PR. "
-             "The issue and ALL its comments will then be permanently deleted.",
-             "Original branches, worktrees and Git history are retained; no force push or history reset."]
-    if _find(repo, n, run):
+             "Remove code, spec and active references through a separately reviewed result.",
+             "The issue and ALL its comments will be permanently deleted only after another confirmation.",
+             "Original branches, worktrees and Git history are retained."]
+    item = shared.read(root)[1]["items"].get(str(n), {})
+    if item.get("removal"):
         current = status(root, repo, n, run)
         planned["current"] = current
         inventory = current["inventory"]
         if current["phase"] == "deleted":
             planned["stage"] = "done"
-            lines.append(f"Deleted; completion recorded in removal PR #{current['pr']}.")
-        elif current["phase"] == "receipt-pending":
+            lines.append("Deleted; canonical completion retained.")
+        elif current["phase"] in {"receipt-pending", "integrated"}:
             planned.update(stage="finalize", confirmation="delete " + current["confirmation"])
-            lines.append("GitHub acknowledged deletion; protected local receipt exists. "
-                         "Confirm completion-comment repair only. The issue will NOT be deleted again.")
-        elif current["pr_state"] == "OPEN" and (current["phase"] == "rebind-pending" or
-                                                _base(root)[1] != inventory["base_sha"]):
-            fresh_inventory = _rebind_inventory(root, repo, current, run)
-            inventory = inventory if current["phase"] == "rebind-pending" else fresh_inventory
+            lines.append("Confirm irreversible issue/comment deletion separately; a saved success receipt repairs only completion.")
+        elif current["phase"] == "rebind-pending":
+            _rebind_inventory(root, repo, current, run)
             planned.update(stage="rebind", inventory=inventory,
                            confirmation=f"rebind {current['confirmation']} base {inventory['base_sha']}")
-            lines.append("Confirm the refreshed scope against the new base. The removal branch advances "
-                         "without force; previous bindings stay recorded. Fresh gates and separate exact-head "
-                         "merge approval are required before integration.")
-        elif current["pr_state"] == "MERGED":
-            why = gates.evidence(root, current["head"], GATES)
-            if why:
-                lines.append(why)
-            elif not _approval(current):
-                lines.append("Merged without a verified removal approval; keep the issue and investigate.")
-            else:
-                planned.update(stage="finalize", confirmation="delete " + current["confirmation"])
-                lines.append("The removal PR is merged. Confirm irreversible issue/comment deletion separately; "
-                             "integration and the stopped operation will be checked again before deleting.")
+            lines.append("Retry publication of the preserved exact rebind commit; fresh gates follow publication.")
+        elif _base(root)[1] != inventory["base_sha"]:
+            inventory = _rebind_inventory(root, repo, current, run)
+            planned.update(stage="rebind", inventory=inventory,
+                           confirmation=f"rebind {current['confirmation']} base {inventory['base_sha']}")
+            lines.append("Confirm this independent base change; fresh gates and personal removal approval follow.")
         else:
-            why = gates.evidence(root, current["head"], GATES)
-            carried = base._read(base._gates(root) / current["head"])
-            why = why or ("Fresh review and audit required; carried evidence is not sufficient."
-                          if any(key.endswith(" carried from") for key in carried) else "")
-            if why or current["view"].get("isDraft"):
-                planned.update(stage="check", confirmation="check " + current["confirmation"])
-                lines.append(f"PR #{current['pr']} needs its own gates: {why or 'draft'}. "
-                             "Confirm to run configured tests and a fresh review/audit session through pulse go. "
-                             "This does not approve a merge or delete the issue.")
-            elif gates.ready(current["view"]):
-                lines.append(f"PR #{current['pr']} waits: {gates.ready(current['view'])}.")
-            else:
-                planned.update(stage="merge", confirmation=current["confirmation"])
-                lines.append("Confirm the complete removal scope and preservation of unrelated features. "
-                             "This merges the exact reviewed head; it does NOT delete the issue yet.")
-        lines.append(f"Removal PR #{current['pr']}; exact head {current['head']}.")
+            try:
+                _fresh(root, current["head"])
+                why = "" if current["canonical"].get("result") else "gates are not published"
+            except state.StateError as error:
+                why = str(error)
+            planned.update(stage="check" if why else "merge",
+                           confirmation=("check " if why else "") + current["confirmation"])
+            lines.append("Run fresh tests, review and audit: " + why if why else
+                         "Personally approve this exact removal scope and its integration; retain the issue.")
+        lines.append(f"Removal branch {current['branch']}; exact head {current['head']}.")
     else:
         raw = _issue(repo, n, run)
         current = lifecycle.operation(raw, lifecycle.trusted(repo, run))
@@ -796,23 +782,19 @@ def action_preview(root: Path, repo: str, n: int, run=state.gh) -> dict:
         planned["inventory"] = inventory
         if current.get("action") == "delete" and current.get("phase") in ("requested", "stopped", "paused"):
             if current["phase"] != "paused" or current.get("retained"):
-                lines.append("Stop pending: the original holder must acknowledge and secure the work. No PR prepared.")
-            elif inventory["blocked"]:
-                lines.extend(inventory["blocked"])
-            else:
+                lines.append("Stop pending: the original holder must acknowledge and secure the work.")
+            elif not inventory["blocked"]:
                 planned.update(stage="prepare", confirmation=f"{repo}#{n}",
                                operation={**current, "item": n, "inventory": inventory})
-                lines.append("Work is paused. Confirm this scope to prepare the removal PR.")
+                lines.append("Work is paused. Confirm this scope to prepare the removal result.")
         else:
             life = lifecycle.preview(root, repo, n, "delete", run)
             planned.update(stage="stop", lifecycle=life, confirmation=life["confirmation"])
             lines.extend(life["lines"])
-            lines.extend(inventory["blocked"])
     lines.append(f"Base: {inventory['base']} at {inventory['base_sha']}.")
-    lines.append("Sources: " + (", ".join(f"PR #{entry['pr']} ({entry['commit']})"
-                                         for entry in inventory["sources"]) or "not established; manual scope required"))
+    lines.append("Sources: " + (", ".join(source["commit"] for source in inventory["sources"]) or "manual scope required"))
     lines.append("Affected paths: " + (", ".join(inventory["files"]) or "scope not established"))
-    lines.append("Dependent items: " + (", ".join(f"#{entry['number']}" for entry in inventory["dependents"]) or "none"))
+    lines.extend(inventory["blocked"])
     lines.extend(f"Preserved branch: {ref} at {head}" for ref, head in inventory["branches"])
     planned["lines"] = [config.printable(line) for line in lines]
     planned["snapshot"] = _digest(planned)
@@ -849,14 +831,14 @@ def apply_action(root: Path, repo: str, planned: dict, confirmation: str, run=st
     elif stage == "check":
         from pulse import go
         result = go.removal(root, repo, planned["current"]["operation"], confirmation, gh_run=run, check=True)
-        return f"Removal gates passed for PR #{result['pr']}; run pulse delete {number} for separate merge approval."
+        return f"Removal gates passed at {result['head']}; run pulse delete {number} for personal removal approval."
     elif stage == "rebind":
         result = rebind(root, repo, planned["current"]["operation"], planned["inventory"], confirmation, run)
-        return f"Removal PR #{result['pr']} rebound at {result['head']}; run pulse delete {number} for fresh gates."
+        return f"Removal rebound at {result['head']}; run pulse delete {number} for fresh gates."
     else:
         raise state.StateError("no deletion action is ready")
     result = prepare(root, repo, number, operation, run)
-    return f"Removal PR #{result['pr']} prepared; issue retained. Run pulse delete {number} again " \
+    return f"Removal result {result['head']} prepared; issue retained. Run pulse delete {number} again " \
            "to confirm and start its real tests, review and audit."
 
 

@@ -1,5 +1,5 @@
 <svg class="pd" viewBox="0 0 1000 384" role="img" aria-labelledby="ms-title">
-  <title id="ms-title">The method in nine steps. /pulse-ba: why, and for whom, you approve. /pulse-re: what, epics and features, you approve each. Planning: how, tasks and files; /pulse-re, /pulse-build, or pulse go plans. /pulse-build: spec tests first, one branch per feature; it loops back to planning on a bug, a design, or a requirement question, and to /pulse-re on a gap. Then three gates: tests verify, then review and /pulse-audit in one fresh session; a red gate gets a fix round, then the tests and the red gates run again. Then one pull request per feature, and you merge it into develop.</title>
+  <title id="ms-title">The method in nine steps. /pulse-ba establishes why and for whom; /pulse-re writes epics and features. Valid published specs proceed to planning without early approval. /pulse-build writes spec tests first on the item branch. Tests, review and security audit verify the result; a red gate gets one fix round followed by tests. Green review or audit evidence may carry to a new commit only when its Git tree is identical. If contents change, both checks run again. Pulse publishes the result and integrates it into the shared base with exact head and base binding. Regular results integrate automatically by default; manual final approval is optional. Missing product input holds only dependent work.</title>
   <defs>
     <marker id="ms-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="pd-head" d="M0 0L10 5L0 10z"/></marker>
   </defs>
@@ -9,15 +9,15 @@
   <path class="pd-edge pd-back" d="M860 86V66Q860 58 852 58H608Q600 58 600 66V84" marker-end="url(#ms-head)"/>
   <rect class="pd-bg" x="650" y="48" width="160" height="20"/>
   <text x="730" y="62" text-anchor="middle">bug, design, requirement</text>
-  <rect class="pd-node pd-you" x="20" y="86" width="200" height="84" rx="12"/>
+  <rect class="pd-node" x="20" y="86" width="200" height="84" rx="12"/>
   <text class="pd-cmd" x="120" y="116" text-anchor="middle">/pulse-ba</text>
   <text x="120" y="138" text-anchor="middle">why, and for whom</text>
-  <text class="pd-you-t" x="120" y="156" text-anchor="middle">you approve</text>
+  <text class="pd-you-t" x="120" y="156" text-anchor="middle">evidence and input</text>
   <path class="pd-edge" d="M220 128H271" marker-end="url(#ms-head)"/>
-  <rect class="pd-node pd-you" x="273" y="86" width="200" height="84" rx="12"/>
+  <rect class="pd-node" x="273" y="86" width="200" height="84" rx="12"/>
   <text class="pd-cmd" x="373" y="116" text-anchor="middle">/pulse-re</text>
   <text x="373" y="138" text-anchor="middle">what: epics, features</text>
-  <text class="pd-you-t" x="373" y="156" text-anchor="middle">you approve each</text>
+  <text class="pd-you-t" x="373" y="156" text-anchor="middle">published valid specs</text>
   <path class="pd-edge" d="M473 128H525" marker-end="url(#ms-head)"/>
   <rect class="pd-node" x="527" y="86" width="200" height="84" rx="12"/>
   <text class="pd-h" x="627" y="108" text-anchor="middle">planning</text>
@@ -43,15 +43,15 @@
   <text x="500" y="288" text-anchor="middle">fresh session</text>
   <path class="pd-edge" d="M582 278H615" marker-end="url(#ms-head)"/>
   <rect class="pd-node" x="617" y="236" width="164" height="84" rx="12"/>
-  <text class="pd-h" x="699" y="266" text-anchor="middle">pull request</text>
-  <text x="699" y="288" text-anchor="middle">one per feature</text>
+  <text class="pd-h" x="699" y="266" text-anchor="middle">published result</text>
+  <text x="699" y="288" text-anchor="middle">head, base, gates</text>
   <path class="pd-edge" d="M781 278H814" marker-end="url(#ms-head)"/>
   <rect class="pd-node pd-you" x="816" y="236" width="164" height="84" rx="12"/>
   <text class="pd-h" x="898" y="266" text-anchor="middle">merge</text>
-  <text x="898" y="288" text-anchor="middle">into develop</text>
-  <text class="pd-you-t" x="898" y="306" text-anchor="middle">you merge</text>
+  <text x="898" y="288" text-anchor="middle">into the shared base</text>
+  <text class="pd-you-t" x="898" y="306" text-anchor="middle">auto by default</text>
   <path class="pd-edge pd-back" d="M500 320V340Q500 348 492 348H110Q102 348 102 340V322" marker-end="url(#ms-head)"/>
-  <text x="301" y="370" text-anchor="middle">a red gate: fix round, then the gates again from the tests</text>
+  <text x="301" y="370" text-anchor="middle">a red gate: fix, retest, refresh evidence</text>
   <rect class="pd-node pd-you" x="828" y="357" width="18" height="18" rx="5"/>
-  <text x="856" y="370">stops for you</text>
+  <text x="856" y="370">manual option</text>
 </svg>
