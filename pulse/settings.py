@@ -130,7 +130,67 @@ def read(root: Path, repo: str = "") -> dict:
     except (OSError, state.StateError):
         policy = "as key 3"
     offers.append(("auto", "approval", policy))
-    return {"rows": rows, "rules": _rules(root, cfg["mode"]), "offers": offers}
+    grants, granting = _levers(root)
+    return {"rows": rows, "rules": _rules(root, cfg["mode"]), "offers": offers + granting, "levers": grants}
+
+
+def _levers(root: Path) -> tuple:
+    """Rows and offers of the person's lever grants (#197 FR-03, FR-08, FR-10): what holds and until when, the
+    latest uses, a grant for each attended Claude Code session, one for all, and revoking them all."""
+    from pulse import levers, presence
+    try:
+        shown = levers.listing(root)
+    except Exception as error:           # an unreadable store grants nothing; the view says so
+        return [("lever grants", "unreadable", "local", ready.printable(str(error))[:80])], []
+    rows = [("lever grant", f"{g['scope']} by {g['by']}", "local", g["until"]) for g in shown["grants"]] or \
+        [("lever grants", "none", "local", "every lever is the person's; l on a session line grants them")]
+    rows += [("lever use", u["lever"], time.strftime("%H:%M UTC", time.gmtime(u["at"])),
+              f"session {u['session'][:8]}, {u['scope']}, {u['source']}") for u in shown["uses"][:3]]
+    offers = []
+    for row in presence.read(root):
+        if row.get("attended") and row.get("harness") == "claude" and not row.get("holder") and not row.get("parent"):
+            sid = row["id"]
+            offers += [(f"levers:session:{sid}", f"grant session {sid[:8]}", "this session and its subagents"),
+                       (f"levers:run:{sid}", f"grant run {sid[:8]}", "until the pulse go run ends, else its next message")]
+    offers.append(("levers:always", "grant always", "every attended Claude Code session of this clone"))
+    if shown["grants"]:
+        offers.append(("levers:off", "revoke all lever grants", "every lever is the person's again"))
+    return rows, offers
+
+
+def lever_preview(root: Path, action: str) -> list:
+    """What Enter confirms for a levers offer of the map."""
+    _, scope, sid = (action.split(":", 2) + ["", ""])[:3]
+    if scope == "off":
+        return ["Revoke every lever grant of this clone?",
+                "Sessions lose them at once; every lever is the person's again."]
+    who = "every attended Claude Code session of this clone" if scope == "always" else f"Claude Code session {sid[:8]}"
+    span = {"always": "until you revoke it", "session": "for this session and its subagents",
+            "run": "until the pulse go run ends, or without a run until your next message to it"}.get(scope, "")
+    return [f"Let {who} pull your levers {span}?",
+            "approve, defer, resume, revoke, handoff, retry, discard, delete, auto, take over, gh pr ready and merge,",
+            "base pushes, --force-with-lease on item branches; never force, --no-verify or hooks off.",
+            "Every use is logged and named on the item; revoke here or with pulse levers off."]
+
+
+def lever_act(root: Path, action: str) -> str:
+    """The person grants or revokes in the map (#197 FR-03, FR-09); only an attended Claude Code session that
+    presence shows now gets a run or session grant (FR-06)."""
+    from pulse import levers, presence
+    if not auto.person(os.environ, True):
+        raise state.StateError("only a person grants levers, in their own terminal or map")
+    _, scope, sid = (action.split(":", 2) + ["", ""])[:3]
+    if scope == "off":
+        return f"{levers.off(root)} lever grant(s) ended; every lever is yours again"
+    if scope == "always":
+        levers.grant(root, "always", "", levers.who(root))
+        return "every attended Claude Code session of this clone may pull your levers until you revoke it"
+    row = next((r for r in presence.read(root) if r.get("id") == sid), None)
+    if scope not in ("run", "session") or not row or not row.get("attended") or row.get("harness") != "claude" \
+            or row.get("holder") or row.get("parent"):
+        raise state.StateError("only an attended Claude Code session that runs now gets a lever grant")
+    levers.grant(root, scope, sid, levers.who(root), levers.run_id(root) if scope == "run" else "")
+    return f"Claude Code session {sid[:8]} may pull your levers ({scope}); revoke here or with pulse levers off"
 
 
 def _checked(root: Path, key: str, value: str, ref: str = None) -> tuple:

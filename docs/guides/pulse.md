@@ -51,7 +51,21 @@ The action is saved locally before synchronization. `queued` and `syncing` are p
 
 `/pulse` helps configure [`pulse setup`](./pulse-setup), execute an explicitly requested [`pulse go`](./pulse-go), and open the [Map](./pulse-map). In a terminal the runner stays in the foreground; without a TTY Pulse starts or reuses its managed process and returns a confirmed receipt with report and log. The skill reads its actual state before reporting success. `pulse go --stop` requests a controlled stop. Runner agents cannot start a nested runner.
 
-The Map shows progress and offers final integration approval, defer, resume, revoke and handoff. These actions belong to you; the agent names the command for your terminal and never types keys into the Map for you. `pulse auto` displays the final approval policy. A person can choose manual approval with `pulse auto merge off` or restore automatic approval with `pulse auto merge on`.
+The Map shows progress and offers final integration approval, defer, resume, revoke and handoff. These actions belong to you; the agent names the command for your terminal and never types keys into the Map for you, unless you granted it your levers (below). `pulse auto` displays the final approval policy. A person can choose manual approval with `pulse auto merge off` or restore automatic approval with `pulse auto merge on`.
+
+## Let an attended session pull your levers
+
+When an attended Claude Code session should carry the workflow through by itself, you can grant it your levers once. The session runs `pulse levers allow run`, `session` or `always` on its own; Claude Code then shows you its own permission dialog, which neither the model nor the auto mode classifier answers. Only your confirmation makes the grant. In the Map, `l` on a session line opens the settings, where you grant a session `run` or `session`, every attended session `always`, or revoke them.
+
+| Scope | Holds |
+|---|---|
+| `run` | until the `pulse go` run that runs at the grant ends; without a run until your next message to that session |
+| `session` | for that Claude Code session and its subagents |
+| `always` | for every attended Claude Code session in this clone, until you revoke it |
+
+Under a grant the session pulls approve, defer, resume, revoke, handoff, retry, discard, delete, `pulse auto merge on|off`, `claim --take` and `release --take` itself, as well as `gh pr ready|merge`, pushes to the base branch and `git push --force-with-lease` on an item branch. Force pushes, `--force-with-lease` on the base, `--no-verify`, disabled hooks and removed session markers stay closed under every grant; tests, review, audit and the binding of an integration to head and base still apply. Every use is logged: `pulse levers` and the Map's settings show the grants and the latest uses, and a lever on an item leaves a comment there that names the session and the grant. `pulse levers off` in your terminal, or revoke in the Map, ends every grant at once.
+
+Grants live in Pulse's local store outside the repository, never in a file, the config or the environment. Unattended sessions (`claude -p`), agents of `pulse go` and child sessions get none. Codex gets none either: it has no dialog the model cannot answer and does not tell an attended session apart, so its levers stay yours.
 
 ## Commands
 
@@ -62,6 +76,7 @@ The Map shows progress and offers final integration approval, defer, resume, rev
 | `/pulse-build` | implementation, test first (planned first when it has no Plan), bugs, tests for existing code |
 | `/pulse-audit` | security audit: the third gate of every feature, or by hand with a chosen scope |
 | `/pulse-realign` | take over existing code, or move a project from the predecessor plugin |
+| [`/pulse-go`](./pulse-go) | start or steer `pulse go` from the chat, with your whole text as its goal |
 
 [Planning](./pulse-plan) runs as a step inside `/pulse-re`, for each ready feature, improvement, or fix in its session (an epic gets no Plan), and inside `/pulse-build` and `pulse go`; review and audit run inside `/pulse-build` and `pulse go`.
 

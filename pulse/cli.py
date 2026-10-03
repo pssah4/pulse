@@ -520,14 +520,77 @@ def _tty() -> bool:
     return sys.stdin is not None and sys.stdin.isatty()
 
 
-def _person_only(lever):
+def _person_only(lever, n=None):
     """Gate levers are a person's (D-21, FEAT-03-01): auto.person, no agent marker and a terminal. It holds direct
-    calls only; the lever guard checks what goes into a pane."""
+    calls only; the lever guard checks what goes into a pane. A lever grant of the person lets an attended Claude
+    Code session pull it (#197): logged, and named on the item's board record."""
+    from pulse import levers
     if auto.person(os.environ, _tty()):
         return False
+    root = config.find_root()
+    grant = levers.allowed(root, os.environ) if levers.grantable(lever) else None
+    if grant:
+        items = [m for m in (n if isinstance(n, list) else [n]) if m]
+        sid, what = levers.session(os.environ), " ".join(["pulse", lever, *map(str, items)])
+        levers.use(root, grant, what, "cli", sid)
+        print(ready.printable(f"pulse {lever}: under the person's lever grant ({grant['scope']}, by {grant['by']}) "
+                              f"for Claude Code session {sid[:8]}"))
+        for m in items:
+            _lever_note(root, m, what, grant, sid)
+        return False
     print(f"pulse {lever}: only a person does this, in their own terminal or the Pulse map; tell the person "
-          "which gate waits")
+          "which gate waits" + (f"; or {levers.HINT}" if levers.session(os.environ) and levers.grantable(lever) else ""))
     return True
+
+
+def _lever_note(root, n, what, grant, sid):
+    """FR-08 of #197: the board record of the item names the session and the grant behind the lever."""
+    stamp = time.strftime("%H:%M UTC", time.gmtime(grant["at"]))
+    body = (f"`{what}` ran from Claude Code session {sid[:8]} under a lever grant ({grant['scope']}) "
+            f"that {grant['by']} gave at {stamp}; the item's record shows what it changed.")
+    try:
+        state.gh(["issue", "comment", str(n), "--repo", state.repo(root, run=state.gh), "--body", body])
+    except state.StateError as error:
+        print(ready.printable(f"pulse: the board note on #{n} failed ({error}); the use is in pulse levers"))
+
+
+def cmd_levers(args):
+    """#197: show, ask for, or end the person's lever grants."""
+    from pulse import levers
+    root = _root()
+    if args.action == "off":
+        print(f"pulse levers: {levers.off(root)} grant(s) ended; every lever is the person's again")
+        return 0
+    if args.action == "allow":
+        if not args.scope:
+            print("pulse levers allow: name the scope, run, session or always")
+            return 1
+        if auto.person(os.environ, _tty()):
+            if args.scope != "always":
+                print("pulse levers allow: a person grants run or session to one session in the Pulse map "
+                      "(l on its line); always holds for every attended session of this clone")
+                return 1
+            levers.grant(root, "always", "", levers.who(root))
+            print("pulse levers: every attended Claude Code session of this clone may pull your levers until "
+                  "pulse levers off")
+            return 0
+        sid = levers.session(os.environ)
+        if not sid:
+            print(ready.printable(f"pulse levers allow: {levers.why_not(os.environ)}"))
+            return 1
+        levers.request(root, sid, args.scope, levers.run_id(root) if args.scope == "run" else "")
+        print(f"pulse levers: the grant ({args.scope}) holds once Claude Code reports this command done; "
+              "it follows the person's confirmation in Claude Code's dialog")
+        return 0
+    shown = levers.listing(root)
+    for g in shown["grants"]:
+        print(ready.printable(f"grant {g['scope']} by {g['by']}, {g['until']}"))
+    for u in shown["uses"][:10]:
+        when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(u["at"]))
+        print(ready.printable(f"used {when}: {u['lever']} by session {u['session'][:8]} ({u['scope']}, {u['source']})"))
+    if not shown["grants"]:
+        print("pulse levers: no grant; every lever is the person's")
+    return 0
 
 
 def _other_item(cmd, n):
@@ -540,7 +603,7 @@ def _other_item(cmd, n):
 
 
 def cmd_lifecycle(args):
-    if _person_only(args.cmd):
+    if _person_only(args.cmd, args.n):
         return 1
     if args.cmd in ("defer", "resume", "revoke", "handoff"):
         return _local_action(args.cmd, [args.n])
@@ -564,7 +627,7 @@ def cmd_lifecycle(args):
 
 def cmd_approve(args):
     """Durably queue approval of the observed result and base; synchronization authenticates it."""
-    if _person_only("approve"):
+    if _person_only("approve", args.n):
         return 1
     return _local_action("approve", args.n)
 
@@ -623,7 +686,7 @@ def _said(result):
 def cmd_claim(args):
     """The claim carries the files of the Plan this clone has, so every ramp holds them without a fetch
     (WP-56). Running work and the ramp's next-item reservations refuse a conflicting claim (#46, #102)."""
-    if args.take and _person_only("claim --take") or _other_item("claim", args.n):
+    if args.take and _person_only("claim --take", args.n) or _other_item("claim", args.n):
         return 1
     root, repo, run = _ctx()
     sources = ready.plan_sources(root)
@@ -685,7 +748,7 @@ def _start_point(root, n, draft=False) -> str:
 
 def cmd_release(args):
     """--take also hands over another person's claim (D-13)."""
-    if args.take and _person_only("release --take") or _other_item("release", args.n):
+    if args.take and _person_only("release --take", args.n) or _other_item("release", args.n):
         return 1
     if args.take:
         return _local_action("handoff", [args.n])
@@ -770,6 +833,13 @@ def parser() -> argparse.ArgumentParser:
     c = add("approve", cmd_approve, "queue final integration approval for the cached, reviewed result and base",
             when="Manual final policy is selected and you have reviewed the current result.", example="pulse approve 12")
     c.add_argument("n", type=int, nargs="+")
+
+    c = add("levers", cmd_levers, "show, ask for, or end the person's lever grants for attended Claude Code "
+            "sessions; Claude Code asks the person to confirm a grant",
+            when="An attended session should pull approve, defer, resume, take over, merge and base pushes itself.",
+            example="pulse levers allow session")
+    c.add_argument("action", nargs="?", choices=("allow", "off"))
+    c.add_argument("scope", nargs="?", choices=("run", "session", "always"))
 
     c = add("retry", cmd_retry, "retry a saved action after a synchronization error; keep its original binding",
             when="A saved action reports a synchronization error.", example="pulse retry operation-id")

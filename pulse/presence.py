@@ -174,6 +174,8 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
     row = {"id": who, "parent": session if agent else previous.get("parent", ""),
            "cwd": str(root), "branch": head[16:] if head.startswith("ref: refs/heads/") else "",
            "harness": kind, "holder": holder,
+           # an attended Claude Code session can get the person's lever grant in the map (#197 FR-03, FR-06)
+           "attended": kind == "claude" and not holder and env.get("CLAUDE_CODE_SESSION_ATTENDED") == "1",
            "waiting": waiting,
            "state": status, "tool": next(iter(waiting.values())) if waiting else
            tool if event in {"PreToolUse", "PermissionRequest"} else "",

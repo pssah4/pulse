@@ -2564,7 +2564,7 @@ def removal(root: Path, repo: str, operation: dict, confirmation: str, gh_run=st
     """
     from pulse import remove
     current = remove.status(root, repo, operation, gh_run)
-    remove._person(confirmation, {**current, "confirmation": ("check " if check else "") +
+    remove._person(root, confirmation, {**current, "confirmation": ("check " if check else "") +
                                  current["confirmation"]}, repo, gh_run)
     common = config.pulse_dir(root)
     lock, left = _lock(common)
@@ -3296,12 +3296,18 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 if waits and not parked and said != waits:
                     said = waits
                     print("  go idle, waits for " + ", ".join(f"#{n}" for n in waits), flush=True)
+                hand = [(i["number"], words, step or f"pulse status {i['number']}") for i in items    # (#195)
+                        if i["number"] in selected and i["number"] not in jobs
+                        for words, step in [pmap.holding(i)] if words]
                 rows = [_waiting_for(root, i) for i in items if i["number"] in waits and i["number"] not in parked] + \
                     [(n, f"usage limit until {_clock(j.until)}", f"pulse status {n}") for n, j in parked.items()]
+                # a held item's age moves every minute: its number and step keep the wait's start, as reasons do
+                steady = "; ".join([f"#{n}: {why}" for n, why, _ in rows] + [f"#{n} {step}" for n, _, step in hand])
+                rows += hand
                 detail = "; ".join(f"#{n}: {why}" for n, why, _ in rows)
-                rep["activity"] = idle if (idle or {}).get("detail") == detail else None
+                rep["activity"] = idle if (idle or {}).get("steady") == steady else None
                 _activity(rep, "waiting", "waiting for", ", ".join(f"#{n}" for n, _, _ in rows),
-                          "; ".join(f"#{n}: {step}" for n, _, step in rows), detail)
+                          "; ".join(f"#{n}: {step}" for n, _, step in rows), detail, steady=steady)
                 idle = rep["activity"]
                 waiting()
                 nap = max(0.01, min([LIFECYCLE_POLL if managed else IDLE] +

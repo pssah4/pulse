@@ -40,7 +40,7 @@ The header shows activity, items needing you, failures and the final approval po
 | red | a check, run or action failed |
 | grey | waiting or idle work |
 
-A claimed item without observed activity is not proof that an agent is working. Teammates' claims show ownership and reported phases; activity on another machine is not inferred from a claim's age.
+A claimed item without observed activity is not proof that an agent is working. An item a session holds by hand, without a run of `pulse go`, names its holder, the session, its phase and the age of its last sign of life, for example `held by ann, claude session b3dcb386: building, 5 min ago`. The session leaves that sign of life as one comment on the item's issue when it claims the item or changes phase, and its hook renews the comment at most every ten minutes while the session works, from any clone and without a commit. Only a comment by the claim's own account for the claim's session counts. After 30 minutes without one the row turns yellow: `no sign of life for 40 min; ask ann or take it over: pulse release --take 12`. The Map, `pulse status <n>` and an idle `pulse go` use the same words, and none of them changes the claim.
 
 The working light breathes in truecolor and 256-color terminals; 16-color terminals show steady lights, and plain output has no color or motion. The worst state rolls up to the item and its person. Long titles shorten while the state remains readable; blocker lists end with the count of additional items.
 
@@ -90,6 +90,8 @@ Rules shows, per harness, when a session in this clone last started with the Pul
 
 The entries change `mode`, the slots, `workers` and `agent`; the approval entry takes the way of `3`. `Enter` on an entry previews the change and its effect; the slots ask for a number first. `Enter` on the preview fetches the base and commits the change on a branch of its own, `chore/pulse-settings-<YYYYMMDD>` (`-2`, `-3` when the name is taken), made from `origin/<base>` in a throwaway worktree: `.pulse/config.toml`, for `mode` also the Pulse block of `AGENTS.md`, committed with your project's hooks and pushed. Your working tree and the base stay as they are. The status line names the branch; the change counts for the team once that branch is integrated into the base.
 
+LEVERS lists the [lever grants](./pulse#let-an-attended-session-pull-your-levers) that hold, with scope, who granted and until when, and their latest uses. Its entries grant an attended Claude Code session `run` or `session`, every attended session `always`, or revoke every grant; `Enter` previews, a second `Enter` saves it in the local store at once. `l` on a session line opens this view.
+
 Only a person changes settings. A value that does not hold, a configuration on the base that cannot be read, or a base that cannot be fetched gives the reason and writes nothing. The Map never changes what runs a program (`verify`, `setup`, `[agents]`, `[spec_tests]`); those change in a reviewed commit.
 
 ### Offline state and rate limits
@@ -105,6 +107,7 @@ A GitHub rate-limit or connection warning keeps the last known board visible wit
 | Map | `↑`, `↓`, `j`, `k` | select a row |
 | Map | `Enter`, `→` | open the selected item |
 | Map | `Enter` on a session line | focus its Herdr pane |
+| Map | `l` on a session line | open the settings with your [lever grants](./pulse#let-an-attended-session-pull-your-levers) |
 | Map | `g` | open an item by number |
 | Map | `a` | preview final integration approval when available |
 | Map | `m` | preview a move of unclaimed work |

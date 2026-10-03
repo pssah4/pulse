@@ -7,7 +7,9 @@
                                   or the item branch has commits origin lacks
   guard                           deny a command that pulls a person's lever
                                   (PreToolUse, synchronous, pulse/guard.py)
-  presence                        update local activity metadata, without commands or transcripts
+  presence                        update local activity metadata, without commands or transcripts; a
+                                  session that holds items renews its sign of life on them at most
+                                  every 10 min, in a detached process (pulse/alive.py)
 
 The guard runs for commands that reach a shell or a tool
 server. A hook must never break a session: any failure
@@ -30,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from pulse import auto, config, guard, presence, ready, settings, setup, state  # noqa: E402
+from pulse import alive, auto, config, guard, levers, presence, ready, settings, setup, state  # noqa: E402
 
 KEPT = 86400                   # seconds a hook takes the login the CLI kept: it asks no network (#111)
 EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
@@ -288,6 +290,15 @@ def stop_verdict(root, cfg, payload, env):
     return json.dumps({"decision": "block", "reason": " ".join(reasons)}) if reasons else ""
 
 
+def _inside(root, cwd) -> bool:
+    """Whether the command runs in this clone: a lever grant holds there only (#197)."""
+    try:
+        here, top = Path(cwd).resolve(), Path(root).resolve()
+    except (TypeError, OSError, ValueError):
+        return False
+    return here == top or top in here.parents
+
+
 def _pulse_on(place):
     """(root, config) of the project around place (None: this process's directory) where Pulse is on, else None."""
     root = config.find_root(Path(place) if place else None)
@@ -325,10 +336,20 @@ def lever_guard(stdin_text, env):
             return ""
         root, cfg = found
         payload = json.loads(stdin_text)
+        asked = _asking(payload)
+        if asked:
+            return _decide(root, payload, env, asked)
         # Claude Code names the command's directory; Codex its session's, the workdir stands in its rollout.
         cwd = (lambda: state.ran_in(payload) or None) if "turn_id" in payload else payload.get("cwd") or "."
-        why = guard.verdict(payload.get("tool_name") or "", payload.get("tool_input") or {},
-                            cfg["base_branch"], config.default_branch(root), cwd, map_panes(root))
+        tool, given, panes = payload.get("tool_name") or "", payload.get("tool_input") or {}, map_panes(root)
+        why = guard.verdict(tool, given, cfg["base_branch"], config.default_branch(root), cwd, panes)
+        if why and "turn_id" not in payload and levers.session(env) and _inside(root, payload.get("cwd")) and not guard.verdict(
+                tool, given, cfg["base_branch"], config.default_branch(root), cwd, panes, granted=True):
+            grant = levers.allowed(root, env)        # the lever is one a grant opens (#197 FR-04)
+            if grant:
+                levers.use(root, grant, clip(str(given.get("command") or tool), 300), "guard", levers.session(env))
+                return ""
+            why = f"{why} Or {levers.HINT}."          # FR-01: how the session asks the person
     except Exception:
         try:
             payload = json.loads(stdin_text)
@@ -343,13 +364,69 @@ def lever_guard(stdin_text, env):
                                               "permissionDecisionReason": why}}) if why else ""
 
 
+def _asking(payload) -> str:
+    """The scope of a plain `pulse levers allow <scope>` (Bash, the whole command), else ""."""
+    given = payload.get("tool_input") if isinstance(payload, dict) else None
+    command = given.get("command") if isinstance(given, dict) else None
+    m = levers.ALLOW.fullmatch(command.strip()) if isinstance(command, str) and payload.get("tool_name") == "Bash" \
+        else None
+    return m.group(1) if m else ""
+
+
+def _decide(root, payload, env, scope):
+    """#197 FR-02: Claude Code's own dialog for an attended session, which neither the model nor a classifier
+    answers; its tool use is noted, and only PostToolUse of it makes the grant. Codex is left to the CLI, which
+    names the gap (FR-11); anyone else is denied (FR-06)."""
+    if "turn_id" in payload:
+        return ""
+    sid, tool_use = levers.session(env), payload.get("tool_use_id")
+    if not sid or not isinstance(tool_use, str) or not tool_use:
+        why = levers.why_not(env) if not sid else "no tool use to bind the confirmation to"
+        return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                  "permissionDecisionReason": f"pulse levers allow: {why}"}})
+    levers.ask(root, tool_use, sid, scope)
+    said = {"run": "until this pulse go run ends, or without a run until your next message",
+            "session": "for this Claude Code session and its subagents",
+            "always": "for every attended Claude Code session in this clone until you revoke it"}[scope]
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                              "permissionDecisionReason":
+                                                  f"Pulse: let the agent pull your levers (approve, defer, resume, "
+                                                  f"take over, merge, push to the base) {said}? Every use is logged; "
+                                                  f"pulse levers off or the Pulse map ends it."}})
+
+
+def lever_event(stdin_text, env):
+    """PostToolUse of an asked `pulse levers allow` makes its grant; a prompt ends a run grant made without a
+    run (#197 FR-02, FR-05). Errors stay silent: the grant is simply not made."""
+    try:
+        payload = json.loads(stdin_text)
+        event = payload.get("hook_event_name")
+        if event not in ("PostToolUse", "UserPromptSubmit"):
+            return
+        scope = _asking(payload) if event == "PostToolUse" else ""
+        if event == "PostToolUse" and not scope:
+            return
+        found = _pulse_on(payload.get("cwd") if isinstance(payload.get("cwd"), str) else None)
+        if found is None:
+            return
+        if scope:
+            levers.confirm(found[0], payload.get("tool_use_id") or "", levers.session(env), scope)
+        else:
+            levers.prompted(found[0], env.get("CLAUDE_CODE_SESSION_ID"))
+    except Exception:
+        pass
+
+
 def main(argv, stdin_text, env):
     if argv[:1] in (["presence"], ["guard"], ["session-start"], ["subagent-start"], ["stop"]):
         try:
-            presence.record(json.loads(stdin_text), env)
+            payload = json.loads(stdin_text)
+            presence.record(payload, env)
+            alive.kick(payload, env)       # a holding session's sign of life, detached, every 10 min (#195)
         except (ValueError, TypeError):
             pass
     if argv[:1] == ["presence"]:
+        lever_event(stdin_text, env)
         return ""
     if argv[:1] == ["guard"]:
         return lever_guard(stdin_text, env)

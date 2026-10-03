@@ -94,6 +94,7 @@ The saved objective, scope and completion evidence survive restarts. `pulse go -
 | `/pulse-build` | test first, smallest change, done only when a user can reach the feature; also tests for existing code |
 | `/pulse-audit` | OWASP Top 10, LLM Top 10, static analysis, dependencies, supply chain |
 | `/pulse-realign` | take over existing code, or move a project from the Digital Innovation Agents plugin |
+| `/pulse-go` | start or steer `pulse go` from the chat, with your whole text as its goal |
 
 ## Discovery before implementation
 

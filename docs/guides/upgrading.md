@@ -7,6 +7,12 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.3.2 to 0.3.3
+
+Update the plugin in Claude Code and Codex and start new sessions; Codex asks for its normal review of changed hooks. Nothing to change in a project. `/pulse-go` (in Codex `$pulse:pulse-go`) starts and steers `pulse go` from the chat. A session that holds an item by hand leaves its sign of life as one `pulse:beat` comment on the item, so the Map and `pulse status` name holder, phase and age, and a stale item shows the next step.
+
+Lever grants are new and off until you give one: in an attended Claude Code session, `pulse levers allow run`, `session` or `always` makes Claude Code ask you, and `l` on a session line in the Map grants or revokes. `pulse levers off` ends every grant. See [Let an attended session pull your levers](./pulse#let-an-attended-session-pull-your-levers).
+
 ## From 0.3.1 to 0.3.2
 
 Update the plugin in Claude Code and Codex. Nothing to change in a project. A result whose item branch moved since its check is checked again on the new head, an idle `pulse go` names what it waits for, a push waits up to 30 minutes for the project's pre-push hook, and the Map's Herdr pane stays open unless you end the Map.

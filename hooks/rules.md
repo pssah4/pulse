@@ -9,8 +9,9 @@ item by that name.
 ## Start
 
 Defer, resume, revoke, handoff, discard and delete are the person's
-levers, as are settings: an agent never invokes or confirms them, in the
-Map or through record edits, force pushes or history resets. Tell the
+levers, as are settings: an agent pulls them only under the person's
+`pulse levers` grant, never in the Map or through record edits, force
+pushes or history resets. Tell the
 person the command for their own terminal: `pulse approve`, `revoke`,
 `done`, `claim --take`, `release --take`, `setup --remove`, or
 `setup --mode off`. An agent may prepare an authorized removal.

@@ -78,6 +78,9 @@ def _file(directory, name, create=True):
             raise
         fd = os.open(name, flags, dir_fd=directory)
     try:
+        if not create and os.fstat(fd).st_nlink == 0:
+            # another command's transaction ended and SQLite deleted its journal after our open (#189)
+            raise FileNotFoundError(name)
         _private(fd)
     except BaseException:
         os.close(fd)

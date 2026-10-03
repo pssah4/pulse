@@ -29,6 +29,13 @@ PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|revoke|handoff|retry|d
 RISKY = re.compile(r"\b(?:pulse|gh|herdr|tmux|osascript)\b|\bgit\s+push\b")   # what an unreadable command may not name
 MARKS = re.compile(r"<!-- pulse:|Plan-ok|plan ok at|merge ok at|pulse (?:integration approval|removal approval|final approval policy|action) \{")
 MARKERS = {"PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"}
+# the store of lever grants and the hook that writes it: no grant opens them (#197 FR-07)
+STORE = re.compile(r"outbox\.sqlite|\blever_(?:grants|asks|requests|uses)\b|\bpulse_hook\b|\brun-hook\.cmd\b"
+                   r"|\bpulse\.levers\b|\bfrom\s+pulse\s+import\b[^\n;|&]*\blevers\b")
+ASKING = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?levers[ \t]+allow\b")     # alone it gets the dialog, never here
+STORE_REASON = ("Lever grants come only from the person's confirmation in Claude Code's own dialog or in the "
+                "Pulse map. Run pulse levers allow run|session|always on its own; no other command reaches "
+                "the grants or the hook that writes them.")
 QUOTED = re.compile(r"'([^']*)'|\"((?:[^\"\\]|\\.)*)\"")
 HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([\w.-]+))")
 CAT = re.compile(r"\$\([ \t]*cat[ \t]+<<-?[ \t]*(['\"]?)([\w.-]+)\1[ \t]*\n(.*?)\n[ \t]*\2[ \t]*\n?[ \t]*\)", re.S)
@@ -70,10 +77,15 @@ class _Ctx:
         self.feed = []                                  # what the current command reads: its heredocs, None unknown
         self.seen = {} if seen is None else seen        # lookups, once per verdict at every level
         self.said = [] if said is None else said        # why a map pane was refused, for the verdict
+        self.granted = False                            # a lever grant covers the session (#197)
+        self.went = False                               # a cd in the line: a grant's push may be elsewhere
+        self.head = ""                                  # the program of a line that is one plain command
 
     def into(self, cwd=None, pane=True):
         """The context of text sent into another terminal (cwd None) or to another guarded agent (False)."""
-        return _Ctx(self.bases, cwd, pane, self.maps, self.seen, self.said)
+        inner = _Ctx(self.bases, cwd, pane, self.maps, self.seen, self.said)
+        inner.granted = self.granted and not pane       # a grant is the session's: no other terminal gets it
+        return inner
 
     def lookup(self, ask, *where):
         """ask(*where), once per verdict: a line of pushes costs one git call per directory."""
@@ -103,10 +115,11 @@ class _Ctx:
 PWSH_JOIN = re.compile(r"`\r?\n")                 # PowerShell joins a line that ends in a backtick
 
 
-def verdict(tool, tool_input, base, default, cwd=".", maps=()) -> str:
+def verdict(tool, tool_input, base, default, cwd=".", maps=(), granted=False) -> str:
     """REASON when the call pulls a person's lever, else "". cwd is the command's directory, or a function
     that finds it, None when it is not known; maps are the panes live maps run in (.git/pulse/map-pane). A
-    command it cannot take apart, or a check that fails, is denied when it names a lever's tool (FR-08)."""
+    command it cannot take apart, or a check that fails, is denied when it names a lever's tool (FR-08).
+    granted: a lever grant covers the session; only the levers of #197 FR-04 open, never FR-14's."""
     try:
         command = tool_input.get("command")             # Bash, PowerShell, Monitor
         if tool.startswith("mcp__"):                    # GitHub tools of an MCP server: only reads
@@ -119,6 +132,8 @@ def verdict(tool, tool_input, base, default, cwd=".", maps=()) -> str:
         if tool == "PowerShell":                        # its line continuation: a backtick at the end of a line
             command = PWSH_JOIN.sub("", command)
         ctx = _Ctx({base, default} - {None, ""}, cwd, maps=frozenset(maps))
+        ctx.granted = granted
+        ctx.head = _plain(command) if granted else ""
         ctx.seen["until"] = time.monotonic() + LOOKUPS      # every lookup of a live map's pane, within the hook's 5 s
         ctx.seen["whole"] = command                     # the line a write of gh stands in (#124)
         return (ctx.said[0] if ctx.said else REASON) if _denied(command, ctx, 0, True) else ""
@@ -139,7 +154,11 @@ def _denied(text, ctx, depth, strict):
     main, docs = _heredocs(text)
     ctx.raw, ctx.bodies = text, [body for _, body in docs]
     try:
-        if PULSE.search(text) or any(_feeds(head, body, ctx, depth) for head, body in docs):
+        if STORE.search(text) or ASKING.search(text):
+            ctx.said.append(STORE_REASON)
+            return True
+        if PULSE.search(text) and not (ctx.granted and ctx.head == "pulse" and _direct(text, strict)) or \
+                any(_feeds(head, body, ctx, depth) for head, body in docs):
             return True
         main, subs = _scan(main)
         if any(_denied(sub, ctx, depth + 1, False) for sub in subs):
@@ -155,6 +174,7 @@ def _denied(text, ctx, depth, strict):
                 return True                             # a blanked marker; an agent without the guard in a pane
             if prog in ("cd", "pushd", "popd"):
                 ctx.chdir(cmd[n + 1:], prog)
+                ctx.went = True
             if any(w.startswith(("GIT_DIR=", "GIT_WORK_TREE=")) for w in cmd):
                 ctx.moved = True
             progs, names, ends, last = _programs(cmd, n), [_name(w) for w in cmd], [0] * len(cmd), {}
@@ -167,6 +187,34 @@ def _denied(text, ctx, depth, strict):
         return False
     finally:
         ctx.raw, ctx.bodies, ctx.feed = raw, bodies, feed
+
+
+def _plain(text):
+    """The program of a line that is one plain command, else "": no chain, pipe, subshell, function, heredoc,
+    substitution, assignment or wrapper. The only form a lever grant opens, so the command runs in the session's
+    own directory and repository (#197)."""
+    main, docs = _heredocs(_prepare(text))
+    main, subs = _scan(main)
+    cmds = [c for c in _commands(main, True, []) if c]
+    if docs or any(s.strip() for s in subs) or re.search(r"[<>]\(", main) or len(cmds) != 1 or \
+            re.match(r"\w+=", cmds[0][0]):
+        return ""                                   # <(...) and >(...) run a command the parser keeps in this one
+    return _name(cmds[0][0])
+
+
+def _direct(text, strict):
+    """Whether every lever the text names is a command of pulse itself in this line: under a grant only those open.
+    One in an echo, a redirect, a script, a heredoc or a substitution goes elsewhere and stays denied (#197)."""
+    main, docs = _heredocs(text)
+    main, subs = _scan(main)
+    if docs or any(s.strip() for s in subs):
+        return False
+    seen = 0
+    for cmd in _commands(main, strict, []):             # only a command whose program is pulse itself
+        n = next((i for i, w in enumerate(cmd) if not re.match(r"\w+=", w)), len(cmd))
+        if n < len(cmd) and _name(cmd[n]) == "pulse":
+            seen += len(PULSE.findall(" ".join(cmd[n:])))
+    return seen == len(PULSE.findall(text))
 
 
 def _name(word):
@@ -385,13 +433,15 @@ def _words(args, takes):
 
 
 def _gh(args, ctx, depth):
-    kept, skip = [], False                              # -R and --repo stand anywhere (Analysis 5.8)
+    kept, skip, elsewhere = [], False, False            # -R and --repo stand anywhere (Analysis 5.8)
     for a in args:
         if skip:
             skip = False
         elif a in ("-R", "--repo"):
-            skip = True
-        elif not a.startswith(("--repo=", "-R")):
+            skip = elsewhere = True
+        elif a.startswith(("--repo=", "-R")):
+            elsewhere = True
+        else:
             kept.append(a)
     words = [a for a in kept if not a.startswith("-")] + ["", ""]
     group, verb = words[0], words[1]
@@ -400,7 +450,11 @@ def _gh(args, ctx, depth):
         return _api_writes(kept[kept.index("api") + 1:])
     if group == "auth":                                 # a token read out, or shown
         return verb == "token" or verb == "status" and _flag(kept, ("--show-token",), "t", "h")
-    if (group, verb) in (("pr", "merge"), ("pr", "ready"), ("repo", "edit")) or \
+    if (group, verb) in (("pr", "merge"), ("pr", "ready")):     # a grant: this repository, branch protection kept
+        line = ctx.seen.get("whole") or ctx.raw
+        elsewhere = elsewhere or "GH_REPO" in line or "GH_HOST" in line or any("://" in a for a in kept)
+        return not ctx.granted or ctx.head != "gh" or elsewhere or _flag(kept, ("--admin",), "")
+    if (group, verb) == ("repo", "edit") or \
             group == "issue" and verb in ISSUE or group == "label" and verb in ("create", "edit", "delete", "clone"):
         return True
     if (group, verb) == ("pr", "review") and _flag(kept, ("--approve",), "a", "bF", long_takes=("--body", "--body-file")):
@@ -477,10 +531,13 @@ def _api_writes(args):
 
 def _git(args, ctx, depth):
     i, where, moved, hooks_off = 0, [], ctx.moved, False
+    line = ctx.seen.get("whole") or ctx.raw
+    configured = "GIT_CONFIG" in line                   # a remote, URL, push rule or alias set for this call
     while i < len(args) and args[i].startswith("-"):
         a = args[i]
         value = args[i + 1] if i + 1 < len(args) and a in ("-c", "--config-env") else a[2:] if a.startswith("-c") else ""
         hooks_off = hooks_off or value.lower().startswith("core.hookspath")      # the hooks of --no-verify
+        configured = configured or a.startswith(("-c", "--config-env"))     # any config of this call, any form
         if a == "-C" and i + 1 < len(args):
             where.append(args[i + 1])
         moved = moved or a.startswith(("--git-dir", "--work-tree"))
@@ -496,9 +553,12 @@ def _git(args, ctx, depth):
             "--template", "--cleanup", "--trailer", "--pathspec-from-file"))
     if sub != "push":
         return False
-    if _flag(rest, ("--force", "--force-with-lease", "--mirror", "--no-verify", "--all", "--branches"), "fn", "o",
-             long_takes=("--repo", "--receive-pack", "--exec", "--push-option"), prefix=True):
+    takes = ("--repo", "--receive-pack", "--exec", "--push-option")
+    if _flag(rest, ("--force", "--mirror", "--no-verify", "--all", "--branches"), "fn", "o", long_takes=takes,
+             prefix=True):
         return True
+    lease = _flag(rest, ("--force-with-lease",), "", "o", long_takes=takes, prefix=True)
+    delete = _flag(rest, ("--delete",), "d", "o", long_takes=takes, prefix=True)
     words, skip = [], False
     for a in rest:
         if skip:
@@ -507,13 +567,23 @@ def _git(args, ctx, depth):
             skip = True
         elif not a.startswith("-"):
             words.append(a)
+    # a grant holds for this clone's repository only: its origin, or the branch's own upstream (#197)
+    named = any(a.startswith(("--repo", "--receive-pack", "--exec")) for a in rest)     # another remote or program
+    granted = ctx.granted and ctx.head == "git" and not where and not moved and not configured and not ctx.went and \
+        not named and words[:1] in ([], ["origin"])
+    if lease and not granted:
+        return True                                     # a grant opens a lease on an item branch only (#197)
     dsts = []
     for spec in words[1:]:                              # words[0] is the remote
         dst = spec.split(":")[-1]
         dst = dst[11:] if dst.startswith("refs/heads/") else dst
-        if spec.startswith("+") or "*" in dst or dst in ctx.bases:
-            return True                                 # forced, every branch (as --all), or the base
-        dsts.append("HEAD" if "$" in dst or "`" in dst else dst)       # a name the push computes
+        computed = "$" in dst or "`" in dst             # a name the push computes
+        if spec.startswith("+") or "*" in dst or \
+                dst in ctx.bases and (delete or spec.startswith(":") or lease or not granted):
+            return True                                 # forced, every branch (as --all), the base deleted or bare
+        if lease and dst not in ("HEAD", "@") and (computed or _item_of(dst) is None):
+            return True                                 # a lease on a named item branch only
+        dsts.append("HEAD" if computed else dst)
     if dsts and not set(dsts) & {"HEAD", "@"}:
         return False
     place = ctx.where()                                 # git push, git push origin HEAD: the checked-out branch
@@ -527,7 +597,16 @@ def _git(args, ctx, depth):
         if ctx.branch is None:
             return True
     branch = ctx.branch or ctx.lookup(_branch, here)
-    return not branch or branch in ctx.bases            # a branch git cannot name: denied (FR-08)
+    if not branch:
+        return True                                     # a branch git cannot name: denied (FR-08)
+    if branch in ctx.bases:
+        return delete or lease or not granted
+    return lease and _item_of(branch) is None
+
+
+def _item_of(branch):
+    from pulse import state
+    return state.item_of(branch)
 
 
 def _target(sub, rest, bases):
@@ -854,14 +933,17 @@ def _pulse(args, ctx, depth):
     sub, nxt = args[0], args[1]
     if ctx.pane and sub in ("map", "go"):              # direct skill starts use their own foreground PTY
         return True
+    if (sub, nxt) == ("levers", "allow"):               # alone it gets Claude Code's dialog, never here (#197)
+        return True
     if sub == "setup":                                  # Pulse off or out, and the guard with it
         for k, a in enumerate(args):
             name, eq, value = a.partition("=")
             if len(name) >= 4 and ("--remove".startswith(name) or "--mode".startswith(name) and
                                    (value if eq else args[k + 1]) == "off"):
                 return True
-    return sub in ("approve", "approve-plan", "revoke", "handoff", "retry", "done", "defer", "resume", "discard", "delete") or sub == "auto" and bool({"on", "off"} & set(args)) or \
-        (sub, nxt) in (("claim", "--take"), ("release", "--take"))
+    lever = sub in ("approve", "approve-plan", "revoke", "handoff", "retry", "defer", "resume", "discard", "delete") or \
+        sub == "auto" and bool({"on", "off"} & set(args)) or (sub, nxt) in (("claim", "--take"), ("release", "--take"))
+    return sub == "done" or lever and not (ctx.granted and ctx.head == "pulse")     # FR-04 of #197, plain only
 
 
 def _env(args, ctx, depth):

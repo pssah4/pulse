@@ -26,7 +26,7 @@ from pulse import config
 
 TTL = 30                 # refresh issue structure; canonical state is read independently
 POLL = 2                 # seconds between the free conditional checks for a change
-FORMAT = 18              # of the issue cache, raised when an item gains a field or load attaches differently
+FORMAT = 19              # of the issue cache, raised when an item gains a field or load attaches differently
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
 FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments,author"
@@ -450,7 +450,7 @@ def _plan_ok(labels: list, body: str):
 
 def normalize(issue: dict, trusted=_owner, lifecycle_trusted=None) -> dict:
     """The record of an issue; trusted(comment) says whether its author may push, for a note (#89)."""
-    from pulse import lifecycle
+    from pulse import alive, lifecycle
     labels = [l["name"] for l in issue.get("labels", [])]
     operation = lifecycle.operation(issue, lifecycle_trusted or trusted)
     kind = next((t for t in TYPES if f"pulse:{t}" in labels), None)
@@ -488,6 +488,8 @@ def normalize(issue: dict, trusted=_owner, lifecycle_trusted=None) -> dict:
         "claimed_beat": mark["beat"] if mark else None,
         "claimed_files": mark["files"] if mark else [],        # what it changes; every ramp holds them
         "note": note["body"].partition("\n")[2].strip() if note else "",
+        "beats": [{"author": {"login": (c.get("author") or {}).get("login") or ""}, "body": m.group(0)}      # #195
+                  for c in issue.get("comments") or [] for m in [alive.BEAT.match((c.get("body") or "")[:alive.MOST])] if m],
         "note_at": note.get("createdAt", "") if note else "",
         "draft": DRAFT in labels,
         "hold": HOLD in labels or bool(operation and operation.get("phase") != "resumed"),
@@ -678,7 +680,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
 
 
 def _overlay(root, entries):
-    from pulse import auto, shared
+    from pulse import alive, auto, shared
     revision, snapshot = shared.read(root)
     policy = shared.policy(snapshot)
     try:
@@ -697,13 +699,14 @@ def _overlay(root, entries):
                          migration_required=bool(entry.get("claimed_by") or entry.get("hold") or entry.get("failed")))
         else:
             claim = current.get("claim") or {}
+            phase, beat = (claim and alive.latest(entry.get("beats") or [], claim)) or (None, None)     # #195
             entry.update({key: current.get(key) for key in
                           ("revision", "result", "approval", "claim", "stop", "work", "removal", "revoked")})
             entry.update(shared_revision=revision, migration_required=False, hold=current["hold"],
                          failed=current.get("failed", False), failure=current.get("failure", ""),
                          claimed_holder=claim.get("session") or claim.get("holder"), claim_token=claim.get("holder"),
                          claimed_by=claim.get("actor") or claim.get("holder"), claimed_files=claim.get("files", []),
-                         claimed_phase=(current.get("work") or {}).get("phase"),
+                         claimed_phase=phase or (current.get("work") or {}).get("phase"), claimed_beat=beat,
                          assignees=[claim["actor"]] if claim.get("actor") else [], done=current["done"])
             stop = current.get("stop") or {}
             entry["lifecycle"] = {"action": "defer", "phase": "requested" if stop.get("status") == "requested"
@@ -763,10 +766,11 @@ def _action_proof(repo_name, operation, actor, run, *, issue=None, body=None):
 
 def sync_action(root, operation, run=None):
     """Authenticate durable person intent, then apply exactly its stable operation."""
-    from pulse import auto, shared
+    from pulse import auto, levers, shared
     run = gh if run is None else run
     factual = operation.get("kind") == "stopped"
-    if not factual and (not holder()["id"].startswith("terminal:") or not auto.person(os.environ, True)):
+    if not factual and not (holder()["id"].startswith("terminal:") and auto.person(os.environ, True)
+                            or levers.allowed(root, os.environ)):      # or a session under the person's grant (#197)
         raise StateError("person actions cannot be synchronized from an agent source")
     if operation.get("kind") not in {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}:
         raise StateError("unknown person action")
@@ -1338,7 +1342,15 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
                                    "reason": "stop arrived before work started"}, current["revision"])
         drop_cache(root)
         return False, f"#{n} received a stop while claiming; no work started"
+    _alive(root, repo_name, n, who, phase or (current.get("work") or {}).get("phase"), run)
     return True, f"claimed #{n}"
+
+
+def _alive(root, repo_name, n, who, phase, run):
+    """A session's sign of life on n (#195); a run of pulse go and its agents keep their own (D-43)."""
+    from pulse import alive
+    if not who["id"].startswith("go:"):
+        alive.write(root, repo_name, n, who, phase, run=run)
 
 
 def beat(root: Path, repo_name: str, n: int, phase: str, run=gh, who=None) -> bool:
@@ -1356,6 +1368,7 @@ def beat(root: Path, repo_name: str, n: int, phase: str, run=gh, who=None) -> bo
     receipt = _change(root, n, "claim", {**claim, "phase": phase}, current["revision"])
     if receipt["status"] != "confirmed":
         return False
+    _alive(root, repo_name, n, who, phase, run)
     return True
 
 
@@ -1365,7 +1378,8 @@ def release(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, ta
     from pulse import shared
     who = who or holder()
     if take or take_person:
-        if not holder()["id"].startswith("terminal:"):
+        from pulse import levers
+        if not holder()["id"].startswith("terminal:") and not levers.allowed(root, os.environ):
             raise StateError("only a person may explicitly release another claim")
         login = run(["api", "user", "--jq", ".login"]).strip()
         if not can_push(repo_name, login, run):

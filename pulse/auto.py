@@ -99,8 +99,8 @@ def read(root, repo=None, run=None, fresh=False, ttl=state.TTL) -> dict:
 
 
 def toggle(root, repo: str, gate: str, switch_on: bool, until=None, run=None, *, expected=None) -> dict:
-    from pulse import actions
-    if not person(os.environ, True):
+    from pulse import actions, levers
+    if not levers.may(root, os.environ, "auto"):        # a person, or a session under their grant (#197)
         raise state.StateError("only a person may change integration approval policy")
     if gate != "merge" or type(switch_on) is not bool or until is not None and (
             not switch_on or _epoch(until) <= time.time()):

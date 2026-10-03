@@ -20,7 +20,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
-from pulse import auto, base, config, merge as gates, ready, shared, state
+from pulse import base, config, merge as gates, ready, shared, state
 
 
 ISSUE_FIELDS = "id,number,title,state,body,labels,assignees,parent,blocking,blockedBy,comments"
@@ -336,7 +336,7 @@ def _recovered(root, repo, current, run):
 def prepare(root: Path, repo: str, n: int, operation: dict, run=state.gh) -> dict:
     """Archive the completed generation, then publish its reviewed-scope revert without touching the caller."""
     inventory = _operation(repo, n, operation)
-    _person(f"{repo}#{n}", {"confirmation": f"{repo}#{n}"}, repo, run)
+    _person(root, f"{repo}#{n}", {"confirmation": f"{repo}#{n}"}, repo, run)
     _identity(root, repo, n)
     previous = shared.read(root)[1]["items"].get(str(n), {})
     if previous.get("removal"):
@@ -421,8 +421,9 @@ def status(root: Path, repo: str, operation: dict | int, run=state.gh) -> dict:
     return current
 
 
-def _person(confirmation, current, repo, run):
-    if not auto.person(os.environ, sys.stdin is not None and sys.stdin.isatty()):
+def _person(root, confirmation, current, repo, run):
+    from pulse import levers
+    if not levers.may(root, os.environ, "delete", sys.stdin is not None and sys.stdin.isatty()):
         raise state.StateError("only a person may approve removal merges or delete the issue")
     if confirmation != current.get("confirmation"):
         raise state.StateError("confirm the removal separately with " + current.get("confirmation", "a bound removal head"))
@@ -434,7 +435,7 @@ def _person(confirmation, current, repo, run):
 
 def _checked(root, repo, operation, confirmation, run, final=False):
     current = status(root, repo, operation, run)
-    _person(confirmation, {**current, "confirmation": ("delete " if final else "") + current["confirmation"]}, repo, run)
+    _person(root, confirmation, {**current, "confirmation": ("delete " if final else "") + current["confirmation"]}, repo, run)
     return current
 
 
@@ -613,7 +614,7 @@ def _save_rebind(root, current, inventory, tree, head):
 
 def rebind(root: Path, repo: str, operation: dict, inventory: dict, confirmation: str, run=state.gh) -> dict:
     current = status(root, repo, operation, run)
-    _person(confirmation, {**current, "confirmation": f"rebind {current['confirmation']} base {inventory['base_sha']}"}, repo, run)
+    _person(root, confirmation, {**current, "confirmation": f"rebind {current['confirmation']} base {inventory['base_sha']}"}, repo, run)
     fresh = _rebind_inventory(root, repo, current, run)
     pending = current.get("pending")
     if current["phase"] not in {"prepared", "rebind-pending"} or inventory != (pending["inventory"] if pending else fresh):
@@ -806,7 +807,8 @@ def apply_action(root: Path, repo: str, planned: dict, confirmation: str, run=st
     from pulse import lifecycle
     if not confirmation:
         return "cancelled; nothing changed"
-    if not auto.person(os.environ, sys.stdin is not None and sys.stdin.isatty()):
+    from pulse import levers
+    if not levers.may(root, os.environ, "delete", sys.stdin is not None and sys.stdin.isatty()):
         raise state.StateError("only a person may perform deletion actions")
     if repo != planned.get("repo") or confirmation != planned.get("confirmation"):
         raise state.StateError("confirmation does not match the deletion preview")
@@ -845,7 +847,8 @@ def apply_action(root: Path, repo: str, planned: dict, confirmation: str, run=st
 def command(root: Path, repo: str, n: int, run=state.gh) -> int:
     """Interactive pulse delete entry point; repeated calls advance only explicitly confirmed stages."""
     try:
-        if not auto.person(os.environ, sys.stdin is not None and sys.stdin.isatty()):
+        from pulse import levers
+        if not levers.may(root, os.environ, "delete", sys.stdin is not None and sys.stdin.isatty()):
             raise state.StateError("only a person may run pulse delete in their terminal or Map")
         planned = action_preview(root, repo, n, run)
         print("\n".join(planned["lines"]))

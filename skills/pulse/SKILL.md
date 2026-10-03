@@ -178,7 +178,10 @@ the stop pending; uncommitted work stays in its worktree.
 `pulse discard <n>` closes without rollback. `pulse delete <n>` instead
 requires a reviewed removal of code, specs and references before deleting
 the issue and comments. It requires typed confirmation and a separate
-final integration approval. Never run these person-only commands for them.
+final integration approval. Never run these person-only commands for them,
+unless the person granted their levers: `pulse levers allow
+run|session|always`, run on its own, makes Claude Code ask them, and
+`pulse levers` shows the grants and their uses.
 
 In the map, `m`, arrow keys and `Enter` save a shared order; prerequisites
 still come first. `Esc` cancels. The picker also reaches epics in the board.
@@ -190,3 +193,4 @@ still come first. `Esc` cancels. The picker also reaches epics in the board.
 | `/pulse-build` | one item test-first (planned first when it has no Plan), bugs, tests for existing code |
 | `/pulse-audit` | security audit |
 | `/pulse-realign` | take over an existing codebase or a DIA project |
+| `/pulse-go` | start or steer `pulse go` with the person's goal |

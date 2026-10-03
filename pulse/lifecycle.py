@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -331,7 +332,8 @@ def _finish(root, repo, number, current, run, who=None):
 def apply(root, repo, planned, confirmation, run=state.gh) -> str:
     if not confirmation:
         return "cancelled; nothing changed"
-    if not state.holder().get("id", "").startswith("terminal:"):
+    from pulse import levers
+    if not state.holder().get("id", "").startswith("terminal:") and not levers.allowed(root, os.environ):  # #197
         raise state.StateError("a person must confirm lifecycle actions; agents cannot apply them")
     if repo != planned.get("repo") or confirmation != planned.get("confirmation"):
         raise state.StateError("confirmation does not match the preview")

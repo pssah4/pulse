@@ -90,7 +90,7 @@ KEYS = {"map": "↑↓ pick m move enter open ? help q quit",       # one key ro
         "read": "↑↓ wheel scroll PgUp/PgDn page esc back",
         "settings": "↑↓ pick enter change ? help esc back",
         "value": "type slots  enter preview  esc cancel"}
-JUMP_KEYS = "↑↓ pick enter/click jump ? help q quit"   # the map's keys on a session row (#181)
+JUMP_KEYS = "↑↓ enter/click jump l levers ? help q quit"   # the map's keys on a session row (#181, #197)
 HERDR_WAIT = 2                  # seconds the map waits for each Herdr call of a jump (#181)
 HELP = """map      ↑ ↓ or j k pick a line, enter or →
            opens it, a previews approval
@@ -108,6 +108,10 @@ session  enter or a click on a session in
            workspace; only the focus moves
          a subagent leads to its session
          without a pane the line says why
+         l shows your lever grants in the
+           settings: grant a Claude Code
+           session run or session, all
+           attended ones always, or revoke
 item     goal, stage, holder, blockers,
            result, checks and plan
          ↑ ↓ or j k pick, enter acts;
@@ -179,6 +183,7 @@ Chat skills (in your coding agent)
 /pulse-re: turn that understanding into a spec and success criteria.
 /pulse-build: implement a ready item against its plan, test first.
 /pulse-audit: inspect security risks and report concrete findings.
+/pulse-go: start or steer pulse go with your goal.
 In Codex use $pulse:pulse, $pulse:pulse-build and the corresponding $pulse:skill-name form. Planning is a phase managed by Pulse, not an additional public CLI command.
 
 Command reference (examples are text, not actions)
@@ -204,7 +209,8 @@ DOING = {"auto": "saving approval policy…", "publish-plan": "starting plan pub
          "retry-sync": "queueing synchronization retry #{}…"}
 DOING.update({action: action + " #{}…" for action in lifecycle.ACTIONS})
 LOCAL_ACTIONS = {"approve", "defer", "resume", "revoke", "handoff"}
-LOCAL_WRITES = LOCAL_ACTIONS | {"publish-plan", "retry-sync", "auto", "setting"}
+LOCAL_WRITES = LOCAL_ACTIONS | {"publish-plan", "retry-sync", "auto", "setting", "levers"}
+DOING["levers"] = "saving the lever grant…"           # local only: the store beside the outbox (#197)
 DOING.update({action: "queueing " + action + " #{}…" for action in LOCAL_ACTIONS})
 SMALL = "the terminal is too low or too narrow to show what enter would confirm: make it larger"   # #76, #56
 SOON = 1.0                      # seconds after a confirmation opened in which an Enter came unread (#86, #90)
@@ -423,12 +429,13 @@ def _age(at) -> str:
     s = _secs(at)
     if s is None:
         return "a while"
+    s = max(0, s)                       # a clock ahead of this one says no time passed
     return f"{int(s // 60)} min" if s < 3600 else f"{int(s // 3600)} h" if s < 2 * 86400 else f"{int(s // 86400)} d"
 
 
 def _run(i: dict) -> bool:
-    """Whether a run of pulse go holds i: only it renews the time on its claim (D-43); since #107 no hook does
-    that for a session, whose claim shows how long it is held instead."""
+    """Whether a run of pulse go holds i: it keeps its own signs of life (D-43); a session's come from its beat
+    comment (#195, holding)."""
     return (i.get("claimed_holder") or "").startswith("go:")
 
 
@@ -437,6 +444,21 @@ def _life(phase: str, beat: str) -> str:
     if (_secs(beat) or 0) >= SILENT:
         return f"no sign of life for {_age(beat)}"
     return f"{PHASE.get(phase, phase)}, {_age(beat)} ago"
+
+
+def holding(i: dict) -> tuple:
+    """(words, step) for an item a session holds by hand (#195): its holder, session, phase, and the age of its last
+    sign of life; once that is SILENT old, the step a person takes. ("", "") for a run's claim, a result, or none."""
+    if not i.get("claim") or not i.get("claimed_holder") or _run(i) or i.get("result"):
+        return "", ""
+    n, who, beat, phase = i["number"], i.get("claimed_by") or "", i.get("claimed_beat"), i.get("claimed_phase")
+    by = f"held by {who}, " + state._name({"id": i["claimed_holder"], "mine": True, "author": "", "at": ""})
+    if not beat:
+        return by + (f": {PHASE.get(phase, phase)}" if phase else ""), ""
+    if (_secs(beat) or 0) < SILENT:
+        return f"{by}: {_life(phase or 'working', beat)}", ""
+    step = f"ask {who} or take it over: pulse release --take {n}"
+    return f"{by}; {_life(phase, beat)}; {step}", step
 
 
 def _refs(numbers: list, room: int) -> str:
@@ -566,6 +588,9 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         beat = i.get("claimed_beat")
         if beat and not mine(i) and _run(i):
             return "idle", _life(i.get("claimed_phase") or "working", beat), None
+        words, step = holding(i)
+        if words:                              # a session holds it by hand (#195); a silent one needs a person
+            return ("waiting" if step else "idle"), words, None
         return "idle", "work in progress; no published result", None
 
     def wants(row):
@@ -645,7 +670,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         st, words, _ = lit[i["number"]]
         held = i.get("claimed_at") or i.get("claimed_beat")
         since = f", held {_age(held)}" if held and not mine(i) and not i.get("result") \
-            and not (_run(i) and i.get("claimed_beat")) else ""
+            and not (_run(i) and i.get("claimed_beat")) and not holding(i)[0] else ""
         return st, words + since
 
     if stages is not None:
@@ -667,6 +692,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         held = i.get("claimed_at") or beat
         life = _life(phase or "working", beat) if beat and _run(i) else f"held {_age(held)}" if held and not _run(i) \
             else PHASE.get(phase, phase) if phase else ""
+        if holding(i)[0]:                          # the session, its phase, and its last sign of life (#195)
+            who, life = holding(i)[0].removeprefix("held by "), ""
         got = seen.get("approvals")                # a list, None when GitHub did not answer, or READING
         said = [got] if isinstance(got, str) else [f"integration by @{login}" + (f", {_when(at)}" if at else "") for g, login, at in got or ()] \
             or ["none" if got == [] else "could not be read"]
@@ -983,6 +1010,12 @@ def _settings_view(seen: dict, p, w: int, section, marks: dict, top: int) -> lis
         rows += [f" {label if k == 0 else '':<12}{piece}" for k, piece in enumerate(wrap(f"{value} ({where})", w - 13))]
         rows += [" " * 13 + p(piece, "90") for piece in wrap(effect, w - 13)]
     rows += ["", section("RULES")] + [" " + piece for line in seen["rules"] for piece in wrap(line, w - 1)] + [""]
+    if seen.get("levers"):                      # the person's lever grants and their latest uses (#197 FR-10)
+        rows.append(section("LEVERS"))
+        for label, value, where, effect in seen["levers"]:
+            rows += [f" {label if k == 0 else '':<12}{piece}" for k, piece in enumerate(wrap(f"{value} ({where})", w - 13))]
+            rows += [" " * 13 + p(piece, "90") for piece in wrap(effect, w - 13)]
+        rows.append("")
     menu = seen["offers"]
     pick, col = min(seen.get("pick", 0), len(menu) - 1), max((len(words) for _, words, _ in menu), default=0)
     for k, (_, words, note) in enumerate(menu):
@@ -1152,6 +1185,8 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
     if level == "map" and isinstance(n, tuple):  # a session row (#181): Enter jumps, m, a and → do nothing
         if ch in ENTER:
             return ui, ("jump", n[1])
+        if ch == "l":                            # its lever grants, in the settings (#197 FR-03)
+            return {"level": "settings", "at": n}, None
         if ch in ("m", "a") + RIGHT:
             return ui, None
     if level == "map":
@@ -1360,7 +1395,8 @@ def queue_action(root: Path, intent: dict) -> str:
 
 def retry_action(root: Path, ident: str) -> str:
     """Retry the existing operation locally. Conflicts require newly observed intent."""
-    if not auto.person(os.environ, True):
+    from pulse import levers
+    if not levers.may(root, os.environ, "retry"):      # a person, or a session under their grant (#197)
         raise state.StateError("only a person retries an action, in their own terminal or map")
     if not actions.retry(root, ident):
         raise state.StateError("no saved sync error to retry; refresh before submitting a new action")
@@ -1405,6 +1441,8 @@ def brief(root: Path, vm: dict, action: tuple) -> tuple:
                 *(f"{key}: {value}" for key, value in selection.items()),
                 "No planner starts. Implementation waits for confirmed exact publication."], \
                ("publish-plan", number, selection)
+    if kind.startswith("levers:"):              # a grant or revocation of the person's levers (#197)
+        return settings.lever_preview(root, kind), ("levers", number, kind)
     if kind.startswith("setting:"):             # a commit on a branch of its own, after Enter (#182)
         key_, _, value = kind.partition(":")[2].partition("=")
         lines, intent = settings.preview(root, key_, value)
@@ -1738,6 +1776,8 @@ def act(root: Path, vm: dict, action: tuple):
         if intended.get("expected") != auto.read(root)["policy"]["revision"]:
             return "Approval policy changed; review the current settings before confirming."
         return queue_policy(root, intended["enabled"], expected=intended["expected"])
+    if kind == "levers":                        # the person's own map grants or revokes (#197 FR-03, FR-09)
+        return settings.lever_act(root, action[2])
     if kind == "setting":                       # what brief() showed, against the base fetched anew (#182)
         return settings.change(root, **action[2])
     if kind == "retry-sync":
@@ -2558,7 +2598,7 @@ def main(args) -> int:
                         status = str(error)
                     action = None
                 if action and level in ("map", "item", "settings", "value") and (action[0].startswith(
-                        ("publish-plan:", "retry-sync:", "setting:")) or action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
+                        ("publish-plan:", "retry-sync:", "setting:", "levers:")) or action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
                     try:
                         text, sure = brief(root, view, action)
                     except (state.StateError, ValueError) as error:

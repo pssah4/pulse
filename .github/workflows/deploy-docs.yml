@@ -20,6 +20,8 @@ concurrency:
 
 jobs:
   build:
+    # the mirror publishes the site; the dev repository has no Pages, as release.yml (deploy needs build)
+    if: github.repository == 'pssah4/pulse'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

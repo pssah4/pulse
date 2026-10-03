@@ -5,6 +5,18 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-10-03
+
+### Added
+
+- `/pulse-go` (in Codex `$pulse:pulse-go`) starts `pulse go` from the chat with your whole text as its goal; `/pulse-go pause`, `resume`, `stop` and `steer <direction>` control a running runner. A runner that already works is named, never started twice. In Claude Code only you invoke the command (Codex has no such switch for a skill); runner agents and unattended sessions still cannot start a runner (#196).
+- An item a session holds by hand names its holder, the session, its phase and the age of its last sign of life in the Map, in `pulse status <n>` and in the activity of an idle `pulse go`. The session leaves the sign of life as one `pulse:beat` comment on the item's issue when it claims the item or changes phase; its hook renews it at most every ten minutes in a detached process while the session works, also from another clone and without a commit. Only a beat by the claim's own account and session counts. After 30 minutes without one the item says `no sign of life` with the next step: ask the holder, or take it over with `pulse release --take <n>`. Runs of `pulse go` keep their own signs of life (#195).
+- Lever grants for attended Claude Code sessions. A session asks once with `pulse levers allow run`, `session` or `always`, run on its own; Claude Code shows you its permission dialog, and only your confirmation makes the grant. In the Map, `l` on a session line opens the settings, where you grant or revoke. Under a grant the session pulls approve, defer, resume, revoke, handoff, retry, discard, delete, `pulse auto merge on|off` and the takeovers itself, plus `gh pr ready|merge`, pushes to the base and `--force-with-lease` on an item branch; force pushes, `--no-verify`, disabled hooks and removed markers stay closed. Every use is logged (`pulse levers`, the Map's settings) and named in a comment on the item; `pulse levers off` ends every grant at once. Unattended sessions, agents of `pulse go` and Codex get no grant (#197).
+
+### Fixed
+
+- Two Pulse commands that open the local action outbox at once no longer end with "unsafe action outbox ownership, permissions or link". A journal that the other command's transaction removes between open and check counts as missing; foreign owners, loose permissions, symlinks and extra hard links are still refused (#189).
+
 ## [0.3.2] - 2026-10-03
 
 ### Fixed
