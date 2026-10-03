@@ -5,6 +5,12 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-10-03
+
+### Fixed
+
+- Two hooks of a session that come due at once start one writer of its sign of life on Linux too, where the file system gives the fresh stamp the inode number of the old one (#202).
+
 ## [0.3.4] - 2026-10-03
 
 ### Changed

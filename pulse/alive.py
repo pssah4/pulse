@@ -116,7 +116,8 @@ def kick(payload: dict, env: dict) -> bool:
             old = stamp.with_name(f".{stamp.name}.{os.getpid()}.{os.urandom(4).hex()}")
             os.rename(stamp, old)           # of several hooks at once, one takes the turn; the others fail here
             taken = os.stat(old)
-            if (taken.st_ino, taken.st_dev) != (seen.st_ino, seen.st_dev):
+            # its time too: Linux gives the fresh stamp the freed inode number at once (#202)
+            if (taken.st_ino, taken.st_dev, taken.st_mtime_ns) != (seen.st_ino, seen.st_dev, seen.st_mtime_ns):
                 os.rename(old, stamp)       # or here: that was the fresh stamp of the hook that took this turn
                 return False
             os.unlink(old)
