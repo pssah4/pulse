@@ -32,6 +32,7 @@ from pulse import config, spec, state
 
 FETCH_EVERY = 30                     # seconds between two fetches of one clone, whoever asks
 GIT_TIMEOUT = 60                     # seconds for git over the network, as for gh
+PUSH_TIMEOUT = 1800                  # a push runs the project's pre-push hook, which may take minutes (#194)
 NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": "",
              "SSH_ASKPASS_REQUIRE": "never", "GCM_INTERACTIVE": "0"}   # no inherited GUI/TTY auth prompt
 PLANS = "_devprocess/plans"
@@ -40,6 +41,7 @@ TICK = re.compile(r"`([^`\s]+)`")
 CODE = re.compile(r"`[^`\n]*`")         # inline code: braces there are code, not a placeholder
 REF = re.compile(r"#(\d+)(?=[\s,:;]|$)")  # a needs: entry that names an item first (pulse go makes it a blocker)
 WAITS = ("plan waits", "plan changed", "spec changed")      # a gate at which a PLAN waits for a person (#115)
+SUPERSEDED = "result is not the published item branch head"
 MOVED = "docs PR changed since approval"      # gate 1 waits again: no approval names its head and spec path (M-1)
 SAID = re.compile(r"^(?=(?:error|fatal|warning|hint):)", re.M)     # where each message of git starts
 HEADS = re.compile(r"^([0-9a-f]{40}(?:[0-9a-f]{24})?)\trefs/heads/(.+)$", re.M)   # a line git ls-remote writes
@@ -52,21 +54,28 @@ def _git(root: Path, *args) -> str:
                           encoding="utf-8", errors="replace").stdout      # one bad byte in a PLAN stops nothing
 
 
+def _kill(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def net_git(cwd, *args, timeout=None) -> subprocess.CompletedProcess:
     """git over the network: no prompt, no terminal, stdin closed, and a time limit (GIT_TIMEOUT unless given) that
     ends git with everything it started (ssh, a remote helper, a hook). A run out of time reads as a failure."""
-    timeout = timeout or GIT_TIMEOUT
+    timeout = timeout or (PUSH_TIMEOUT if args[:1] == ("push",) else GIT_TIMEOUT)
     with subprocess.Popen(["git", "-C", str(cwd), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, errors="replace", env={**os.environ, **NO_PROMPT},
                           start_new_session=True) as p:
         try:
             out, err = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill(p)
             out, err = "", f"no answer within {timeout} s"
+        except BaseException:          # Ctrl-C: git runs in its own session and would push on unseen (#194)
+            _kill(p)
+            raise
     return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
 
@@ -604,8 +613,7 @@ def gates(root: Path, items: list, cfg: dict, found: dict = None, sources: dict 
             out[n] = "failed (pulse:failed): inspect the preserved work before resuming"
         elif i.get("draft"):
             out[n] = "spec in progress"
-        elif i.get("result"):
-            why = result_reason(root, i)
+        elif i.get("result") and (why := result_reason(root, i)) != SUPERSEDED:   # newer commits go back to the build (#191)
             approval, result = i.get("approval") or {}, i["result"]
             approved = not why and (approval.get("proof") or approval.get("policy")) and \
                 all(approval.get(k) == result[k] for k in ("head", "base"))
@@ -645,6 +653,14 @@ def plan_gate(plan_text: str, spec_text, cfg: dict, waits: str = ""):
     return f"plan: {wrong[0]}" if wrong else None
 
 
+def current(root: Path, items: list) -> list:
+    """The items as the ramp sees them: a stored result for another head than the published item branch is
+    set aside under `superseded`, and the item goes through spec, Plan and build again like one without a
+    result (#191). Approvals stay bound to their head and base, so nothing old becomes integrable."""
+    return [dict(i, result=None, superseded=i["result"])
+            if i.get("result") and not i.get("done") and result_reason(root, i) == SUPERSEDED else i for i in items]
+
+
 def result_reason(root: Path, item: dict) -> str:
     """Why a cached published result cannot yet be offered for approval. This reads fetched refs only;
     the integration path checks the real remote and authenticated approval again before publishing."""
@@ -653,13 +669,19 @@ def result_reason(root: Path, item: dict) -> str:
     if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", sha)
                for sha in (head, starting)) or not isinstance(branch, str) or state.item_of(branch) != item["number"]:
         return "no published result"
+    tip = _git(root, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}").strip()
+    if not tip:
+        return "result branch is not on origin"
+    if tip != head:                              # a result holds only for the head it checked (#191)
+        known = _git(root, "cat-file", "-t", head).strip() == "commit"
+        behind = known and subprocess.run(["git", "-C", str(root), "merge-base", "--is-ancestor", tip, head],
+                                          capture_output=True).returncode == 0
+        # an unknown head or a tip behind it is this clone's stale ref, never newer work
+        return SUPERSEDED if known and not behind else "result is newer than the fetched item branch"
     gates = result.get("gates") or {}
     if not isinstance(gates, dict) or any(gates.get(g) != "pass" for g in ("tests", "review", "audit")) or \
             any(v != "pass" for v in gates.values()):
         return "result checks have not all passed"
-    remote = f"refs/remotes/origin/{branch}"
-    if _git(root, "rev-parse", "--verify", "-q", f"{remote}^{{commit}}").strip() != head:
-        return "result is not the published item branch head"
     base_branch = config.load(root).get("base_branch") or config.default_branch(root)
     tip = _git(root, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base_branch}^{{commit}}").strip()
     if tip != starting:

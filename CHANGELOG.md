@@ -5,6 +5,16 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-10-03
+
+### Fixed
+
+- A stored result holds only for the head it checked. When the item branch moved after a red result, for example after a correction and `pulse resume`, `pulse go` builds and gates the new head instead of waiting on the old verdict for good (#191).
+- The Map's Herdr pane no longer vanishes with an error. An error while the Map reads the board or draws a view leaves it running; the status line names the error and the Map reads again. The pane closes when the Map ends with exit code 0 (`q`, `Ctrl-C`, SIGTERM, SIGHUP), and otherwise stays open with the Map's last output and the command that starts it again; the next `pulse map --ensure` starts the Map in that pane. An error while the Map builds the item view still ends it, with the pane left open. A switch to a newer Pulse that cannot start names the reason once.
+- `pulse map --ensure` in Herdr reports "opened beside" only once the Map runs. A Map that does not note its process within 10 seconds is reported as not started, with the last lines of its pane.
+- A `pulse go` run with nothing it can start no longer reports "supervising work": `report.json` and the Map name each item it waits for, the reason and the next step, and how long it has waited.
+- A push from Pulse waits for the project's pre-push hook for up to 30 minutes. Before, every push ended after the 60 s network limit, so a hook that runs lint and type checks stopped publication, shared state and claims with "no answer within 60 s" (#194).
+
 ## [0.3.1] - 2026-10-03
 
 ### Added

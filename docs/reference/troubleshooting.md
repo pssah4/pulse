@@ -101,7 +101,7 @@ When they go on, the line goes to stderr. `pulse status`, also for one item, pri
 
 `git fetch --prune origin` shows git's whole message. When origin does not answer at all, `pulse new` and `pulse number` refuse with `origin did not answer` and hand out nothing; `pulse claim` makes the claim and says `start point not checked: origin did not answer`.
 
-Pulse's Git network calls also disable terminal, SSH Askpass and Git Credential Manager prompts, including during checks of preserved work and feature removal. Existing credentials and SSH configuration still apply. If authentication needs your attention, run `git fetch origin` in your own terminal, resolve the reported login or host-key issue there, then retry Pulse. A transport that does not respond stops after 60 seconds.
+Pulse's Git network calls also disable terminal, SSH Askpass and Git Credential Manager prompts, including during checks of preserved work and feature removal. Existing credentials and SSH configuration still apply. If authentication needs your attention, run `git fetch origin` in your own terminal, resolve the reported login or host-key issue there, then retry Pulse. A transport that does not respond stops after 60 seconds. A push may take up to 30 minutes, because it runs your project's pre-push hook; settings changes from the Map stop after 5 minutes.
 
 ### `pulse approve` says to open or refresh the Map
 

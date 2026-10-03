@@ -293,8 +293,9 @@ def cmd_map(args):
     root = config.find_root()
     if root is None or not sys.stdout.isatty():
         return pmap.main(args)
-    with mapstart.noted(root):
-        return pmap.main(args)
+    with mapstart.noted(root) as end:
+        end["code"] = pmap.main(args)
+    return end["code"]
 
 
 def cmd_migrate(args):
@@ -636,7 +637,7 @@ def cmd_claim(args):
     if files:
         # ponytail: read, then claim; two claims on different items that share a file in the same
         # seconds can both win, and the ramp shows both. A read after the claim would close it.
-        items = state.load(root, repo, run=run, fresh=True)
+        items = ready.current(root, state.load(root, repo, run=run, fresh=True))
         others = [i for i in items if i["number"] != args.n]
         hit = ready.clash([posixpath.normpath(f) for f in files], ready.held(others, plans))
         if hit:

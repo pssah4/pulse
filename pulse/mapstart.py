@@ -79,7 +79,10 @@ def noted(root: Path):
     """While a live map runs: its pid on a line of map.pid, beside those of the clone's other live
     maps, and in a Herdr or tmux pane its pane in map-pane. map.main turns SIGTERM and SIGHUP into an
     end, so its line and its pane go with it, the file with the last map, and the label --ensure gave
-    its Herdr pane (FR-03); a map killed outright leaves a pid no process has, which the next one drops."""
+    its Herdr pane (FR-03); a map killed outright leaves a pid no process has, which the next one drops.
+    The caller sets end["code"] to the map's exit code. A map in Herdr that ends otherwise than with 0 (an
+    error, a failed switch) keeps its pane's entry and label without its pid: the pane stays open with the
+    reason, and the next --ensure starts the map in it again (#192)."""
     path, me = pid_file(root), os.getpid()
     pane = os.environ.get("HERDR_PANE_ID") or os.environ.get("TMUX_PANE")
     labelled = (panes(root).get(pane) or {}).get("label") if pane else None     # by --ensure, in Herdr
@@ -100,14 +103,20 @@ def noted(root: Path):
                                                             "started_at": time.time()}), "pid": me})
     except OSError:
         pass                   # the map runs all the same
+    end = {"code": 0}
     try:
-        yield
+        yield end
+    except BaseException:
+        end["code"] = 1
+        raise
     finally:
+        kept = end["code"] != 0 and os.environ.get("HERDR_PANE_ID")      # q, Ctrl-C, a signal end with 0
         with contextlib.suppress(OSError):
             note()
             if pane:
-                _note_pane(root, pane, None)
-        if labelled and os.environ.get("HERDR_PANE_ID"):
+                entry = {k: v for k, v in panes(root).get(pane, {}).items() if k != "pid"}
+                _note_pane(root, pane, {**entry, "started_at": 0} if kept and entry else None)
+        if labelled and os.environ.get("HERDR_PANE_ID") and not kept:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
                 subprocess.run([_herdr_bin(os.environ), "pane", "rename", pane, "--clear"], stdin=subprocess.DEVNULL,
                                capture_output=True, timeout=3)
@@ -116,16 +125,36 @@ def noted(root: Path):
 STARTING = 10                  # seconds a map opened in Herdr may take to note its pid
 
 
+def _shown(env, pane: str) -> str:
+    """The last lines pane shows, in one printable line of 300 characters at most: why its map did not start,
+    as far as the pane says."""
+    try:
+        out = subprocess.run([_herdr_bin(env), "pane", "read", pane, "--source", "recent-unwrapped", "--lines", "20"],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    with contextlib.suppress(ValueError, KeyError, TypeError):
+        out = json.loads(out)["result"]["read"]["text"]
+    return config.printable(" | ".join([line.strip() for line in str(out).splitlines() if line.strip()][-3:]))[-300:]
+
+
 def _herdr(root: Path, env, repo: str) -> str:
     """The map beside the session's Herdr pane, one per tab and repository (#121 FR-01 to FR-03), and the line
     that says so. Under a lock per tab: a pane of this repository's map (its label, or its entry in map-pane)
     whose map runs, or started less than STARTING s ago, is left be; one whose map is gone, as after a cold
     start, gets the map again; else a new pane to the right, the focus staying. Entry and label come before
-    the map runs, so a session that starts at the same moment finds them and types into no pane."""
+    the map runs, so a session that starts at the same moment finds them and types into no pane. The pane's
+    shell runs the map and closes only when it ends with exit 0 (q, Ctrl-C); else it keeps what the map said
+    and a hint. "opened beside" comes once the map noted its pid, within STARTING s (#192)."""
     import fcntl                               # Herdr runs on macOS and Linux
 
     pane = env.get("HERDR_PANE_ID") or env.get("HERDR_ACTIVE_PANE_ID")
     label = f"pulse map {repo}"               # two repositories in one tab get two maps
+    pulse = str(pulse_bin())
+    # fish reads a backslash inside '...', and a control character can end the line typed into the pane
+    if any(c == "\\" or not c.isprintable() for c in str(root) + pulse):
+        return ("pulse map: no map beside: the path of this clone or of pulse has a backslash or a control "
+                "character, which the pane's command line cannot carry; run pulse map in a terminal of its own")
 
     def call(*args):
         out = subprocess.run([_herdr_bin(env), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
@@ -147,8 +176,16 @@ def _herdr(root: Path, env, repo: str) -> str:
                                         "--cwd", str(root))["pane"]["pane_id"]
         _note_pane(root, new, {"tab": tab, "started_at": time.time(), "label": label})
         call("pane", "rename", new, label)
-        call("pane", "run", new, f"exec {shlex.quote(str(pulse_bin()))} map")
-    return "pulse map: opened beside"
+        pulse = shlex.quote(pulse)
+        hint = f"pulse map ended; the lines above say why. To start it again: {pulse} map"
+        call("pane", "run", new, f"cd {shlex.quote(str(root))} && {pulse} map && exit || echo {shlex.quote(hint)}")
+    end = time.monotonic() + STARTING          # outside the lock: a second session leaves the starting map be
+    while time.monotonic() < end:
+        pid = (panes(root).get(new) or {}).get("pid") or 0
+        if pid > 0 and go._alive(pid):
+            return "pulse map: opened beside"
+        time.sleep(0.1)
+    return f"pulse map: the map in {new} did not start: {_shown(env, new) or f'no pid within {STARTING} s'}"
 
 
 def _repo(root: Path) -> str:

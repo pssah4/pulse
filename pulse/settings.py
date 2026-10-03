@@ -238,7 +238,7 @@ def change(root: Path, key: str, value, expected: str) -> str:
             _git(tree, "commit", "-q", "-m", f"chore: set Pulse {key} to {value}")
             created = _git(tree, "rev-parse", "HEAD")
             ref = f"refs/heads/{branch}"         # pinned: no remote.origin.push mapping sends it elsewhere
-            pushed = ready.net_git(tree, "push", "-q", "-u", "origin", f"{ref}:{ref}")
+            pushed = ready.net_git(tree, "push", "-q", "-u", "origin", f"{ref}:{ref}", timeout=WAIT)
             if pushed.returncode:
                 raise state.StateError(f"the push of {branch} failed ({ready.git_error(pushed.stderr)}); "
                                        "nothing written")

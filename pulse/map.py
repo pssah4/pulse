@@ -2002,6 +2002,7 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     done = merged(root, repo, items) if board else set()      # off the map at once, done for its epic (#57)
     finished = Counter(i["parent"] for i in items if i["number"] in done and i.get("parent"))
     items = [i for i in items if i["number"] not in done]
+    items = ready.current(root, items)      # a result for an old head goes back to the build (#191)
     phases = go.phases(root)
     base = cfg["base_branch"] or config.default_branch(root)
     report = go.last_run(root) or {}
@@ -2277,6 +2278,7 @@ def main(args) -> int:
     color = depth()
     vm, fetched, ui, status, seen, shown, waiting = None, 0.0, {"level": "map"}, "", None, [], ""
     restart, reading, todo = "", None, None          # a newer copy; the read beside the keys; an action to run
+    unread = ""                                      # why the last read failed, over the keys until one succeeds
     offered = {}                                     # item -> what its view offered on the last frame
     approved = {}                                    # item -> its approvals, once read beside the keys (L-3)
     detached = None
@@ -2300,9 +2302,21 @@ def main(args) -> int:
                     update = UPDATE.format(v=out, own=own)
             if time.time() - box["looked"] >= UPGRADE:
                 box["looked"], newer = time.time(), newer_copy()
+                if newer and not os.access(newer, os.X_OK):    # this map runs on and says so once (#192 FR-04)
+                    if box.get("refused") != newer:
+                        update = "\n".join(filter(None, [update, f"! the switch to the newer Pulse failed: {newer} "
+                                                                  "is not executable; this map runs on"]))
+                    box["refused"], newer = newer, ""
             box["new"] = (writes, board_, update, newer)
-        except Exception as e:                         # the map ends on it, as when it read in its loop
+        except Exception as e:                         # the loop names it and reads again (#192 FR-01)
             box["new"] = e
+
+    def draw(*args, **kw):
+        """render(), or one line that names why it could not: a frame never ends the map (#192 FR-01)."""
+        try:
+            return render(*args, **kw)
+        except Exception as e:
+            return [ready.printable(f"! this view could not be drawn: {type(e).__name__}: {e}")]
     try:
         sys.stdout.write("\033[?1049h\033[?25l")     # the alternate screen: the shell comes back as it was
         getattr(keys, "mouse", lambda: None)()       # clicks and the wheel; restore() switches them off (#180)
@@ -2311,9 +2325,18 @@ def main(args) -> int:
             while True:                                # take what the last read brought, start the next
                 if reading and not reading.is_alive():
                     new, reading = box.pop("new"), None
-                    if isinstance(new, Exception):
-                        raise new
+                    if isinstance(new, Exception):     # the last board stays; the next read after REFRESH (#192)
+                        unread = ready.printable(f"! the board could not be read: {type(new).__name__}: {new}; "
+                                                 "the map reads again")
+                        if vm is None:                 # no board yet: the reason alone until a read brings one
+                            sys.stdout.write("\033[H\033[2J" + "\n".join(wrap(unread, columns())))
+                            sys.stdout.flush()
+                            drawn_at = None
+                            if (read(REFRESH) if read else time.sleep(REFRESH)) == "q":
+                                return 0
+                        continue
                     writes, board_, update, restart = new
+                    unread = ""
                     waiting = "\n".join(filter(None, [waiting, update]))
                     if writes == box["writes"]:        # a read from before a write never lands after it
                         vm, fresh = board_, True
@@ -2368,7 +2391,7 @@ def main(args) -> int:
                     _beside(settings_of)
                 shown_settings = box["settings"] or {"reading": True, "offers": []}
                 acts = [a for a, *_ in shown_settings["offers"]]
-                lines = render(vm, frame=frame, color=color, width=width, marks=marks,
+                lines = draw(vm, frame=frame, color=color, width=width, marks=marks,
                                settings={**shown_settings, "pick": ui.get("pick", 0)})
             elif level == "item" or level == "confirm" and ui.get("from") != "map":   # a on the map asks over the map
                 if fresh or not seen or seen["number"] != n:
@@ -2388,12 +2411,12 @@ def main(args) -> int:
                     ui = {**ui, "pick": acts.index(was[k]) if was[k] in acts else 0}   # goes to the top,
                                                            # which never writes without asking first (#55)
                 offered = {n: acts}
-                lines = render(view, frame=frame, color=color, width=width, marks=marks,
+                lines = draw(view, frame=frame, color=color, width=width, marks=marks,
                                item=dict(seen, pick=ui.get("pick", 0), approvals=approved.get(n, READING)))
             elif level == "help":                      # under the header, as every screen (#57)
                 if width not in help_pages:
                     help_pages[width] = help_lines(width)
-                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + help_pages[width]
+                lines = draw(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + help_pages[width]
                 marks = {HEAD: ("back",)}
             elif level == "read":                      # the reader, under the header as the help (#180)
                 if ui.get("width") != width:           # its rows, wrapped once per width
@@ -2401,16 +2424,17 @@ def main(args) -> int:
                         wrap("source: " + ui["source"], width) + (wrap("cut: " + ui["cut"], width) if ui["cut"] else [])
                     ui = {**ui, "width": width, "rows": rows + [""] + [row for line in ui["text"]
                                                                       for row in (wrap(line, width) or [""])]}
-                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + ui["rows"]
+                lines = draw(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + ui["rows"]
                 marks = {HEAD: ("back",)}
             elif level == "move":
                 shown = []
-                lines = render(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown,
+                lines = draw(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown,
                                marks=marks)            # the rows of the live map, run report too (#180)
             else:
                 shown = []
-                lines = render(vm, frame=frame, color=color, width=width, selected=n, picks=shown, marks=marks)
-            notice = status or (vm.get("error", "") if vm.get("rate_limit") else (vm.get("order") or {}).get("why", ""))
+                lines = draw(vm, frame=frame, color=color, width=width, selected=n, picks=shown, marks=marks)
+            notice = status or unread or \
+                (vm.get("error", "") if vm.get("rate_limit") else (vm.get("order") or {}).get("why", ""))
             if level == "number":
                 notice = "Issue number: " + ui.get("typed", "")
             elif level == "value":
@@ -2461,6 +2485,7 @@ def main(args) -> int:
                             if isinstance(new, Exception):
                                 raise state.StateError(f"the board could not be refreshed: {new}")
                             writes, board_, update, restart = new
+                            waiting = "\n".join(filter(None, [waiting, update]))
                             if writes != box["writes"]:
                                 raise state.StateError("the board changed while confirming; inspect it again")
                             vm = board_
@@ -2565,5 +2590,9 @@ def main(args) -> int:
         except OSError:
             pass
     if restart:                                # the same terminal, the newer Pulse (IMP-14)
-        os.execv(restart, [restart, "map"])
+        try:
+            os.execv(restart, [restart, "map"])
+        except OSError as e:                   # the terminal is the shell's again: the reason stays in the pane
+            print(f"pulse map: the switch to the newer Pulse failed: {e}")
+            return 1
     return 0

@@ -21,6 +21,8 @@ Ask `/pulse` (in Codex `$pulse:pulse`) to show the Map. The skill runs `pulse ma
 
 Herdr session hooks use `pulse map --ensure`, with one Map per tab and repository. Outside Herdr, claims and draft registration can offer the Map; setup adds the "Pulse map" VS Code task when it can safely update `.vscode/tasks.json`. See [Setup](./pulse-setup). In VS Code the line names the "Pulse map" task where the project has it, else that setup can add it. Pulse never changes your harness's hook trust.
 
+In Herdr the Map's pane closes when the Map ends with exit code 0: `q`, `Ctrl-C`, or SIGTERM or SIGHUP. If the Map ends any other way, the pane stays open with its last output and the command that starts it again, and the next `pulse map --ensure` starts the Map in that pane. `pulse map --ensure` reports "opened beside" only once the Map runs; otherwise it says that the Map did not start and quotes the last lines of its pane. A clone or pulse path with a backslash or a control character gets no pane; the line says why. An error while the Map reads the board or draws a view does not end it: the status line names the error and the Map reads again. An error while it builds the item view still ends the Map, and the pane stays open with the message.
+
 ### Starting work
 
 The Map starts no backlog runner. Start `pulse go` in your terminal, or explicitly ask the skill to execute it. Without a TTY Pulse owns a managed process and returns its run ID, report and log. `pulse go --stop` requests a controlled stop; closing the Map leaves the runner and pending action synchronization alive. See [Runner](./pulse-go#start-a-run).

@@ -2089,6 +2089,17 @@ def _activity(rep: dict, phase="", title="", target="", next_="", detail="", **e
         print(f"  Pulse runner: {title} {target}. Next: {next_}", flush=True)
 
 
+def _waiting_for(root: Path, item: dict) -> tuple:
+    """(n, why, next step) for an item an idle run waits for (#193), in the words of ready.waiting."""
+    n = item["number"]
+    gate, _, why = ready.waiting(root, item)
+    if gate == 3:
+        return n, "integration waits for approval", f"approve its integration: pulse approve {n}"
+    why = why.removeprefix(f"#{n}: ")
+    return n, why, "publish a fix on its item branch" if why == "result checks have not all passed" else \
+        f"pulse status {n}"
+
+
 def activity(root: Path):
     """Keep the live supervisor visible between its reported preparation activities."""
     rep = last_run(root)
@@ -2884,6 +2895,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
     handlers = {}
     last, read = None, True    # read reads the board in the next round: a slot came free
     keys, said, told, quit_ = False, None, set(), False     # the terminal while go waits (FR-07 of #119)
+    idle = None                # the last "waiting" activity: its start stays while its reasons do (#193)
     who = state.run_holder(root)       # under the lock: one run makes the clone's id (M-4 of #118)
     # a job is no chat of the VS Code window the run began in: the map links it nowhere (#61)
     # no agent reaches GitHub (M2 of #119): no token, and gh finds no login in an empty config dir; go acts there
@@ -2989,6 +3001,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
             free = {a: n - sum(j.agent == a for j in jobs.values()) for a, n in slots.items() if a not in spent}
             if not rep["tainted"]:     # no git over the network once the clone's git setup changed (M-A)
                 ready.fetch(root)      # what the other clones planned and hold, at most every 30 s (D-10)
+            items = ready.current(root, items)      # a result for an old head goes back to the build (#191)
             sources = ready.plan_sources(root)
             found = ready.plans(root, sources=sources)
             # what this run holds is held on a board read before its claims too: a round without a read
@@ -3283,6 +3296,13 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 if waits and not parked and said != waits:
                     said = waits
                     print("  go idle, waits for " + ", ".join(f"#{n}" for n in waits), flush=True)
+                rows = [_waiting_for(root, i) for i in items if i["number"] in waits and i["number"] not in parked] + \
+                    [(n, f"usage limit until {_clock(j.until)}", f"pulse status {n}") for n, j in parked.items()]
+                detail = "; ".join(f"#{n}: {why}" for n, why, _ in rows)
+                rep["activity"] = idle if (idle or {}).get("detail") == detail else None
+                _activity(rep, "waiting", "waiting for", ", ".join(f"#{n}" for n, _, _ in rows),
+                          "; ".join(f"#{n}: {step}" for n, _, step in rows), detail)
+                idle = rep["activity"]
                 waiting()
                 nap = max(0.01, min([LIFECYCLE_POLL if managed else IDLE] +
                                    [at - time.time() for at in spent.values()]))
