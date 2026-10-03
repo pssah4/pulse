@@ -271,6 +271,19 @@ def items(text: str) -> list:
             if Path(m.group(2)).parent.name in FOLDERS]      # a board link or the BA is no item
 
 
+def add_under(parent: Path, number: int, title: str, path: Path) -> None:
+    """List the spec at path where C9 finds it (#203): under its parent in the grandparent's Items where that
+    list names the parent at its top level, else in the parent's own Items."""
+    grand = front(parent.read_text(encoding="utf-8")).get("parent")
+    top = _real(parent.parent / grand) if grand else None
+    if top is not None and top.is_file() and _real(parent) in {
+            _real(top.parent / link) for depth, link in items(top.read_text(encoding="utf-8")) if depth == 0}:
+        rel = lambda p: os.path.relpath(p, top.parent)
+        add_item(top, number, title, rel(path), under=rel(parent))
+    else:
+        add_item(parent, number, title, os.path.relpath(path, parent.parent))
+
+
 def add_item(epic: Path, number: int, title: str, link: str, under: str = None) -> None:
     """Append `- [#n title](link)` to the epic's Items list; under a feature when given. A line for
     the link without its number, as /pulse-realign lists an item that has no record, gets it."""

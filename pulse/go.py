@@ -488,9 +488,7 @@ def _specified(root, repo, job, gh_run, rep, who):
     if parents:
         parent = job.worktree / parents[0]["spec"]
         spec.set_front(path, "parent", os.path.relpath(parent, path.parent))
-        epic = job.worktree / parents[-1]["spec"]
-        spec.add_item(epic, job.number, job.title, os.path.relpath(path, epic.parent),
-                      under=os.path.relpath(parent, epic.parent) if len(parents) > 1 else None)
+        spec.add_under(parent, job.number, job.title, path)
     _commit_leftovers(job, f"docs(spec): #{job.number}")
     if job.hook:                       # no fix round for a spec: the decision (#178)
         return _refused(root, repo, job, gh_run, rep, who, fix=False)

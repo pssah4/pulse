@@ -5,6 +5,13 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-10-03
+
+### Fixed
+
+- `pulse new` lists a new item under its parent where `pulse check` finds it: nested under the parent in the grandparent's Items only where that list names the parent, otherwise in the parent's own Items. Before, a fix under an improvement made `pulse check` report C9 (#203).
+- `pulse go` no longer halts with "Probe cleanup failed" before planning: the commit-gate probe turns off git's background maintenance in its throwaway clone, which still held a lock while the probe removed the clone (#201).
+
 ## [0.3.5] - 2026-10-03
 
 ### Fixed

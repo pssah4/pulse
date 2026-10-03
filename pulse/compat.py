@@ -122,6 +122,8 @@ def probe(root: Path, cfg: dict, sha: str, force=False, timeout=120) -> dict:
             if key not in ("core.worktree", "extensions.worktreeconfig"):
                 _git(work, "config", "--add", key, value)
         _git(work, "config", "core.worktree", str(work))
+        # git commit starts no detached maintenance that still writes while the clone goes (#201)
+        _git(work, "config", "--replace-all", "maintenance.auto", "false")
         why = base.run(shlex.join(["git", "checkout", "-q", "--detach", sha]), work, timeout, log)
         if why:
             raise ValueError(why)

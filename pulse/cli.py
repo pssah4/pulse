@@ -437,7 +437,7 @@ def _spec_branch_here(root, branch, base) -> bool:
 
 
 def link(root, repo, n, args, run):
-    """Write issue and parent into the new spec; list it in the epic's Items (under its feature)."""
+    """Write issue and parent into the new spec; list it in Items where C9 finds it (spec.add_under)."""
     path = root / args.spec
     if not spec.split(path.read_text(encoding="utf-8"))[0]:
         return
@@ -447,12 +447,7 @@ def link(root, repo, n, args, run):
     if not up or not (root / up).is_file():
         return
     spec.set_front(path, "parent", os.path.relpath(root / up, path.parent))
-    feature, epic = None, root / up
-    grand = spec.front(epic.read_text(encoding="utf-8")).get("parent")
-    if grand:
-        feature, epic = epic, (epic.parent / grand).resolve()
-    rel = lambda p: os.path.relpath(p, epic.parent)
-    spec.add_item(epic, n, args.title, rel(path), under=rel(feature) if feature else None)
+    spec.add_under(root / up, n, args.title, path)
 
 
 def cmd_number(args):
