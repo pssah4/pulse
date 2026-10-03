@@ -166,7 +166,10 @@ class Job:
     gated: str = ""            # the head its last gate result went to in the gates' evidence (#118)
     guard: dict = None         # what no phase may change, as it was when the phase started (D-42)
     before: dict = None        # the worktree when a review or audit started: that session must leave it so
-    hook: str = ""             # the project hook that refused a commit or push of pulse go (FR-05)
+    hook: str = ""             # the project hook that refused a commit, push, or merge of pulse go (#178)
+    refusal: tuple = ()        # (step, all its output) of the git step that hook refused
+    hooked: str = ""           # the phase a hook refused while its fix round runs: a build goes on with RED
+    resumes: bool = False      # a build that waited after a refusal goes on from its preserved work (FR-06 of #178)
     again: bool = False        # a crash in this run gave it one more try: the next failure flags it (#114)
     retry: bool = False        # it crashed and goes back for that one more try
     item: dict = field(default_factory=dict)       # the item as the board read it when its job began: its approvals
@@ -341,20 +344,16 @@ def _start(root: Path, cfg: dict, template: str, job: Job, plans: dict, specs: d
     job.spec = specs.get(job.number) or ""
     job.documents = phase == "documents" or phase == "refresh" and job.item.get("type") == "epic"
     if phase in ("spec", "documents", "build", "plan", "refresh") and not preserved:
-        m = _git(job.worktree, "merge", "-q", "--no-edit", job.start)
-        if m.returncode:
-            clash = _git(job.worktree, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
-            _git(job.worktree, "merge", "--abort")
-            if clash:
-                return f"conflicts with the base {job.base_sha} in {', '.join(clash)}; resolve them in {job.worktree}"
-            job.hook = _hook(job.worktree, "pre-merge-commit", "prepare-commit-msg", "commit-msg")
-            if job.hook:
-                job.why = ready.git_error(m.stderr or m.stdout)
-            return f"hook rejected: {job.hook}" if job.hook else \
-                f"the merge of the base {job.base_sha} failed: {ready.git_error(m.stderr or m.stdout)}"
+        why = _take_base(job)
+        if why:
+            return why
         why = _setup(job, cfg, logs)   # the base brought another lockfile
         if why:
             return why
+        if job.resumes:                # its preserved work, through the normal hooks at the new base (FR-06 of #178)
+            _commit_leftovers(job)
+            if job.hook:
+                return f"hook rejected: {job.hook}"
     if job.documents:
         why = _document_problem(job) or "; ".join(_drift(job))
         if why:
@@ -407,6 +406,39 @@ def _start(root: Path, cfg: dict, template: str, job: Job, plans: dict, specs: d
     return ""
 
 
+def _take_base(job: Job) -> str:
+    """The base job.start into the item's worktree: "" when it is there, else why not. git merges into no staged
+    index, so what is staged goes back to the worktree first and is staged again after, on success and failure
+    alike (FR-06 of #178). A conflict is aborted and named. A hook is blamed only when git reached the merge commit
+    (MERGE_HEAD): then a project hook that refused it sets job.hook and job.refusal. Before that git refuses when
+    the preserved work and the base change the same files, and those files are the cause."""
+    if _git(job.worktree, "merge-base", "--is-ancestor", job.start, "HEAD").returncode == 0:
+        return ""
+    staged = [p for p in _git(job.worktree, "diff", "--cached", "--name-only", "-z").stdout.split("\0") if p]
+    if staged:
+        _git(job.worktree, "reset", "-q")
+    m = _git(job.worktree, "merge", "-q", "--no-edit", job.start)
+    why = ""
+    if m.returncode:
+        merging = _git(job.worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode == 0
+        clash = _git(job.worktree, "diff", "--name-only", "--diff-filter=U").stdout.splitlines() if merging else []
+        if merging:
+            _git(job.worktree, "merge", "--abort")
+        both = [] if merging else re.findall(r"^\t(.+)$", m.stderr + m.stdout, re.M)     # git lists them indented
+        job.hook = _hook(job.worktree, "pre-merge-commit", "prepare-commit-msg", "commit-msg") \
+            if merging and not clash else ""
+        if job.hook:
+            job.why, job.refusal = ready.git_error(m.stderr or m.stdout), ("merge", m.stdout + m.stderr)
+        why = f"conflicts with the base {job.base_sha} in {', '.join(clash)}; resolve them in {job.worktree}" \
+            if clash else f"hook rejected: {job.hook}" if job.hook else \
+            f"its preserved work and the base {job.base_sha} both change {', '.join(map(ready.printable, both))}; " \
+            f"resolve them in {job.worktree}" if both else \
+            f"the merge of the base {job.base_sha} failed: {ready.git_error(m.stderr or m.stdout)}"
+    if staged:
+        _git(job.worktree, "add", "-A", "--", *staged)
+    return why
+
+
 def _spec_parents(root, job, parents):
     """Bring published ancestor documents onto this item branch; its ordinary gates judge them."""
     for parent in reversed(parents):
@@ -455,12 +487,12 @@ def _specified(root, repo, job, gh_run, rep, who):
         spec.add_item(epic, job.number, job.title, os.path.relpath(path, epic.parent),
                       under=os.path.relpath(parent, epic.parent) if len(parents) > 1 else None)
     _commit_leftovers(job, f"docs(spec): #{job.number}")
-    if job.hook:
-        return _pause(root, repo, job, gh_run, rep, who)
+    if job.hook:                       # no fix round for a spec: the decision (#178)
+        return _refused(root, repo, job, gh_run, rep, who, fix=False)
     wrong = _drift(job)
     if wrong:
         return _fail(root, repo, job, gh_run, rep, who, "; ".join(wrong), log=_log_path(job))
-    if not _pushed(root, repo, job, gh_run, rep, who):
+    if not _pushed(root, repo, job, gh_run, rep, who, fix=False):
         return True
     ok, why = state.attach(root, repo, job.number, job.item["type"], path=job.spec,
                             parent=job.item.get("parent"), run=gh_run, who=who)
@@ -583,23 +615,33 @@ def _check_base(root: Path, repo: str, cfg: dict, gh_run, rep: dict, base_branch
             rep["base"] = {"sha": sha, "ok": None, "final": False,
                            "why": "configuration: " + ready.printable(str(error)),
                            "next": "correct and publish the base configuration; Pulse checks it again"}
-    if rep["paused"] and sha and rep["paused"]["sha"] != sha:
-        rep["paused"] = None           # a new base SHA ends the pause of a rejected hook (FR-05)
     b = rep["base"] or {}
-    rep["halt"] = rep["paused"]["why"] if rep["paused"] else f"base red: {b['why']}" if b.get("ok") is False else \
+    rep["halt"] = f"base red: {b['why']}" if b.get("ok") is False else \
         f"base not known yet: {b['why']}" if b and b.get("ok") is None else ""
+    rep["halt_kind"] = "base" if rep["halt"] else ""
     _save(rep)
     return changed
 
 
-def _held(rep: dict, item: dict, kind="build") -> bool:
-    """Whether item may not start now: a project hook refused pulse go (FR-05), the state of the base is not
-    known yet (FR-04), or the base is red and item no fix for it with pulse:base (FR-03)."""
+def _held(rep: dict, item: dict, kind="build", open_=None) -> bool:
+    """Whether item may not start now: the state of the base is not known yet (FR-04 of #113), the base is red and
+    item no fix for it with pulse:base (FR-03 of #113), or item waits after a hook refused it until what it named is
+    closed and the base moved (FR-07 of #178; open_: the open item numbers)."""
     status = rep["base"] or {}
     ok = status.get("ok")
     pending_plan = kind == "plan" and status.get("state") == "pending"
-    return bool(rep.get("tainted") or rep["paused"]) or (ok is None and not pending_plan) or \
-        (ok is False and not item.get("base_fix"))
+    refused = _records(rep).get(str(item.get("number"))) or {}
+    return bool(rep.get("tainted")) or (ok is None and not pending_plan) or \
+        (ok is False and not item.get("base_fix")) or \
+        refused.get("state") == "waits" and not _lifted(rep, refused, open_, status.get("sha"))
+
+
+def _lifted(rep: dict, r: dict, open_, tip: str) -> bool:
+    """A waiting refusal ends once every item it named is closed and the base, or the fingerprint of the commit
+    gates this run found, moved since (FR-06, FR-07 of #178); a restart alone ends nothing."""
+    found = (rep.get("compatibility") or {}).get("fingerprint")
+    moved = r.get("sha") != tip or bool(found and r.get("fingerprint") and found != r["fingerprint"])
+    return open_ is not None and not set(r.get("needs") or ()) & set(open_) and bool(tip) and moved
 
 
 def _hook(wt: Path, *names) -> str:
@@ -610,20 +652,170 @@ def _hook(wt: Path, *names) -> str:
     return next((h for h in names if os.access(hooks / h, os.X_OK)), "")
 
 
-def _pause(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, step="commit") -> bool:
-    """A commit or publication was refused: stop new work and preserve the concrete cause.
-    Nothing new starts until the base SHA changes or go starts again; the item goes back without
-    failing, and pulse go never skips a hook."""
-    if job.why:
-        _say(job, job.why)
-    why = f"hook rejected: {job.hook} at #{job.number}" if job.hook else \
-        ready.printable(job.why or f"commit rejected at #{job.number}; inspect the project hook log")[:4000]
-    work = _retained_plan(root, job, step, why)
-    rep["paused"], rep["halt"] = {"sha": (rep["base"] or {}).get("sha"), "why": why}, why
-    stays = _release(root, repo, job.number, gh_run, who, _handover(job, why), work=work)
-    _event(rep, "stopped", job.public(phase=job.phase, step=step, published=False, work=work,
-                                      log=_log_path(job), why=why + (stays or "; the claim went back")))
-    return True
+# npm's and pnpm's header before a script's output: "> shop@1.0.0 repo:hygiene", pnpm adds the folder
+NPM = re.compile(r"^> (?:@[\w.-]+/)?[\w.-]+@\S+ (\S+)", re.M)
+CSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")      # a terminal's colors in a hook's output
+
+
+def _hook_record(root: Path, job: Job, rep: dict, step: str, output: str, hook: str = "") -> dict:
+    """What a project hook refused, as Map and status show it (FR-01 of #178): item, phase, step, hook, the check
+    npm's last header names, time, base, the commit gates' fingerprint, and the last lines of the output, at most
+    12 and 1500 characters, printable; all of it in .git/pulse/go/<n>.hook.txt of this clone."""
+    path = config.pulse_dir(root) / "go" / f"{job.number}.hook.txt"
+    temporary = None
+    try:                       # a new file in its place, as _save writes the report: never through a link there
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".hook-", dir=path.parent)
+        temporary = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(output)
+        temporary.replace(path)
+    except OSError:
+        pass                   # the record still names the hook, the check, and the excerpt
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    shown = [ready.printable(CSI.sub("", line)).rstrip()[:300] for line in output.splitlines() if line.strip()]
+    lines = []
+    for line in reversed(shown):
+        if len(lines) == 12 or sum(map(len, lines)) + len(lines) + len(line) > 1500:
+            break
+        lines.insert(0, line)
+    sha = ready._git(root, "rev-parse", "--verify", "-q", f"{job.start}^{{commit}}").strip() if job.start else ""
+    return {"number": job.number, "phase": job.phase, "step": step, "hook": hook or job.hook,
+            "check": ready.printable(([""] + NPM.findall(output))[-1])[:80], "at": _now(), "sha": sha,
+            "fingerprint": (rep.get("compatibility") or {}).get("fingerprint", ""), "lines": lines,
+            "output": str(path), "state": "fixing", "needs": [], "why": ""}
+
+
+def _records(rep: dict) -> dict:
+    """The refusal records of a report; anything else a hand edit left there counts as none."""
+    found = rep.get("refused")
+    return {k: v for k, v in found.items() if isinstance(v, dict)} if isinstance(found, dict) else {}
+
+
+def _refusal(rep: dict, n: int, record) -> None:
+    """#n's refusal record into the report, None takes it out; _save merges it with what another writer saved."""
+    rep["refused"] = {k: v for k, v in _records(rep).items() if k != str(n)}
+    if record is not None:
+        rep["refused"][str(n)] = record
+    rep.setdefault("_updated_refused", {})[str(n)] = record
+    _save(rep)
+
+
+def _refused(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=True) -> bool:
+    """A project hook refused what pulse go commits, pushes, or merges for job (job.refusal; #178). Recorded first
+    (FR-01), then one fix round with the output and the open fix items, while the item has one (FR-02); refused
+    still, an item it named under needs: holds it with its work preserved and its claim back (FR-03), else it fails
+    and names the decision (FR-04). Nothing else stops, and pulse go never skips a hook. True: the job is done."""
+    n, (step, output) = job.number, job.refusal or ("commit", job.why)
+    record, job.hook = _hook_record(root, job, rep, step, output), ""
+    if job.phase == "plan" and not job.plan:   # the plan the refused commit held
+        staged = [p for p in _git(job.worktree, "diff", "--cached", "--name-only", "--", ready.PLANS).stdout.split()
+                  if re.fullmatch(rf"{re.escape(ready.PLANS)}/{n}(-.+)?\.md", p) and not p.endswith("-needs.md")]
+        job.plan = staged[0] if len(staged) == 1 else ""
+    then = job.phase
+    if fix and not job.rounds.get("hook") and then in ("plan", "build", "fix") and \
+            _fix(job, job.config or config.load(root), config.pulse_dir(root) / "go",
+                 "plan" if then == "plan" else "hook", _hook_findings(root, repo, job, gh_run, record)):
+        job.rounds["hook"], job.hooked = 1, then
+        _refusal(rep, n, record)
+        return False
+    needs, _ = _needs(root, repo, job, gh_run, tree=True)
+    cause = refusal_cause(record)
+    if needs:
+        why = f"waits for {', '.join(f'#{m}' for m in needs)}: {cause}"
+        _refusal(rep, n, {**record, "state": "waits", "needs": needs, "why": why})
+        work = _retained_plan(root, job, step, why)
+        stays = _release(root, repo, n, gh_run, who, _handover(job, why), work=work)
+        _event(rep, "stopped", job.public(phase=job.phase, step=step, published=False, work=work,
+                                          log=_log_path(job), why=why + stays))
+        return True
+    why = _decision(n, record, "resume it")
+    _refusal(rep, n, {**record, "state": "decision", "why": why, "label": True})     # pulse:failed holds it
+    return _fail(root, repo, job, gh_run, rep, who, why, log=_log_path(job))
+
+
+def _decision(n: int, record: dict, then: str) -> str:
+    """The decision a refusal leaves to a person (FR-04 of #178)."""
+    return (f"decide #{n}: change it so that {_checked(record)} passes, or name what it waits for under needs: in "
+            f"{ready.PLANS}/{n}-needs.md, then {then}")
+
+
+def _hook_findings(root: Path, repo: str, job: Job, gh_run, record: dict) -> str:
+    """The finding of a hook's fix round: the output, the open fix items, and where a shared cause goes."""
+    try:
+        fixes = [i for i in state.load(root, repo, run=gh_run)
+                 if (i["type"] == "fix" or i.get("base_fix")) and i["number"] != job.number]
+    except state.StateError:
+        fixes = []
+    listed = "; ".join(ready.printable(f"#{i['number']} {i['title']}") for i in fixes) or "none"
+    return (f"- [block] {refusal_cause(record)}. The end of its output (all of it in {record['output']}):\n\n"
+            + "\n".join(record["lines"]) + "\n\nWhen the cause lies in this item's own changes, fix it inside the "
+            "item. When it lies in a check the whole project shares, change nothing outside the item, never bypass "
+            "or switch off the hook, and write no placeholder files: name that prerequisite under needs: in the "
+            f"frontmatter of {ready.PLANS}/{job.number}-needs.md, '#m title' for one of the open fix items below, "
+            f"else a short title.\nOpen fix items: {listed}")
+
+
+def _checked(r: dict) -> str:
+    return (r.get("hook") or "a project hook") + (f" ({r['check']})" if r.get("check") else "")
+
+
+def refusal_cause(r: dict) -> str:
+    """What a refusal record says happened: "pre-commit (repo:hygiene) refused its plan"."""
+    if r.get("legacy"):
+        return r["legacy"]
+    what = {"plan": "its plan", "spec": "its spec"}.get(r.get("phase"), "its code")
+    step = {"push": "the push of ", "merge": "the base merge of "}.get(r.get("step"), "")
+    return ready.printable(f"{_checked(r)} refused {step}{what}")
+
+
+def refusal_standing(r: dict) -> str:
+    """Where a refusal leaves its item: "waits for #569", "needs your decision", "in a fix round"; "waits for the
+    base to move" once what it named is closed."""
+    if r.get("state") == "waits" and "waiting_on" in r and not r["waiting_on"]:
+        return "waits for the base to move"
+    refs = ", ".join(f"#{m}" for m in r.get("needs") or ())
+    return {"waits": f"waits for {refs}", "decision": "needs your decision",
+            "fixing": "in a fix round"}.get(r.get("state"), "was refused")
+
+
+def refusal_effect(r: dict) -> str:
+    """What a refusal does now (FR-08, FR-10 of #178): a current one holds its item alone; an earlier one, at a base
+    that moved or with its cause gone, is checked again. A wait follows _lifted: what it named closed, and the base
+    moved."""
+    n, wait = r.get("number"), r.get("waiting_on", r.get("needs")) or []
+    refs, be = ", ".join(f"#{m}" for m in wait), "is" if len(wait) == 1 else "are"
+    if r.get("legacy") or not r.get("current"):
+        return f"Pulse checks it again once {refs} {be} closed" if wait and r.get("state") == "waits" else \
+            "the next run checks it again"
+    if r.get("state") == "waits" and not wait:
+        return f"only #{n} is held; Pulse checks it again once the base moves"
+    return {"waits": f"only #{n} is held, until {refs} {be} closed and the base moved",
+            "decision": f"{r.get('why') or f'decide #{n}'}; nothing else is held",
+            "fixing": f"a fix round runs on #{n}; nothing else is held"}.get(r.get("state"), "nothing else is held")
+
+
+def _gates_held(root: Path, result: dict, items: list) -> tuple:
+    """(the probe's result with the check and the next step, the halt) when the Plan commit gates refused a valid
+    plan (FR-05 of #178): the hook and the check its output names, then the items with pulse:base that plan
+    anyway, or the decision which item repairs the gates. Pulse links no item on its own."""
+    if result.get("state") != "incompatible":
+        return result, "Plan commit gates: " + result.get("why", "")
+    try:
+        text = Path(result.get("log") or "").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    found = {"hook": _hook(root, "pre-commit", "prepare-commit-msg", "commit-msg"),
+             "check": ready.printable(([""] + NPM.findall(text))[-1])[:80]}
+    fixes = [f"#{i['number']}" for i in items if i.get("base_fix")]
+    nxt = (f"{', '.join(fixes)} marked as base fix (pulse:base) plan and build anyway; decide whether one of them "
+           "repairs the Plan commit gates, else mark the item that does") if fixes else \
+        ("decide which item repairs the Plan commit gates and mark it pulse:base (pulse new <type> <title> --spec "
+         "<path> --base, or the label on an existing item); then pulse setup --check-plan")
+    return {**result, **found, "next": nxt}, f"Plan commit gates: {_checked(found)} refused a valid plan; " \
+        f"planning waits; {nxt}"
 
 
 def _retained_plan(root, job, step="", cause="", observed=None):
@@ -683,9 +875,15 @@ def publish_plan(root: Path, repo: str, number: int, selection: dict, gh_run=sta
     rep.setdefault("items", {})
     rep.setdefault("run", {"id": uuid.uuid4().hex, "pid": os.getpid(), "started": _now(),
                            "ended": _now(), "stopped": ""})
-    step, work, published = "commit", {}, False
+    step, work, published = "merge", {}, False
+    prior = _records(rep).get(str(number)) or {}
     try:
         job.log = open(logs / f"{number}.log", "a", encoding="utf-8")
+        job.base_sha = starting[:12]
+        why = _take_base(job)          # the current base first: its hooks judge the commit (FR-06 of #178)
+        if why:
+            raise state.StateError(why)
+        step = "commit"
         fresh = ready.plan_state(root, item, cfg, selection=selection)
         if fresh["selected"] is None or fresh["validation"]["findings"]:
             raise state.StateError(fresh["why"])
@@ -695,6 +893,9 @@ def publish_plan(root: Path, repo: str, number: int, selection: dict, gh_run=sta
                 result = _git(job.worktree, *args)
                 job.log.write(result.stdout + result.stderr)
                 job.log.flush()
+                if result.returncode and args[0] == "commit":
+                    job.hook = _hook(job.worktree, "pre-commit", "prepare-commit-msg", "commit-msg")
+                    job.refusal = ("commit", result.stdout + result.stderr)
                 if result.returncode:
                     raise state.StateError(ready.git_error(result.stderr or result.stdout))
         step = "push"
@@ -709,9 +910,21 @@ def publish_plan(root: Path, repo: str, number: int, selection: dict, gh_run=sta
             raise state.StateError(checked["why"] or "exact Plan publication could not be confirmed")
         published, why = True, "Plan published; normal build checks may continue"
         work = _retained_plan(root, job, observed=checked)
+        if prior:
+            _refusal(rep, number, None)
     except (state.StateError, OSError) as error:
         why = ready.printable(str(error))[:4000]
         work = _retained_plan(root, job, step, why, observed=observed)
+        if job.hook:                   # recorded; a person or the next base decides, no label (#178)
+            record = _hook_record(root, job, rep, job.refusal[0], job.refusal[1])
+            needs = [m for m in prior.get("needs") or () if m in {i["number"] for i in items}]
+            _refusal(rep, number, {**record, "state": "waits" if needs else "decision", "needs": needs,
+                                   "why": why if needs else _decision(number, record, "publish its plan again")})
+        elif prior and step == "merge":    # the base did not go in: a person resolves it
+            _refusal(rep, number, {**prior, "state": "decision", "needs": [], "sha": starting, "at": _now(),
+                                   "why": f"decide #{number}: {why}"})
+        elif prior:                    # one try per base, whatever stopped it
+            _refusal(rep, number, {**prior, "sha": starting, "at": _now(), "why": why})
     finally:
         why = locals().get("why", "Plan publication interrupted")
         stays = _release(root, repo, number, gh_run, who, why, work=work)
@@ -942,6 +1155,7 @@ def _commit_leftovers(job: Job, subject: str = None) -> None:
         job.why = job.why or (f"commit failed: {c.stderr.strip()}" if c.returncode else "")
         if c.returncode:
             job.hook = _hook(job.worktree, "pre-commit", "prepare-commit-msg", "commit-msg")
+            job.refusal = ("commit", c.stdout + c.stderr)
 
 
 def _limited(job: Job) -> bool:
@@ -1185,6 +1399,7 @@ def _advance(root: Path, repo: str, cfg: dict, job: Job, gh_run, rep: dict, logs
         rep["tainted"] = rep["halt"] = (f"the git setup of this clone changed at #{job.number} "
                                         f"({_names(root, sorted(p for p in changed if not _mine(job, p)))}): "
                                         "pulse go launches and pushes nothing more until a person has looked")
+        rep["halt_kind"] = "tainted"
         _save(rep)
     if changed:
         return _hold(root, repo, job, gh_run, rep, logs, sorted(changed), who)
@@ -1194,13 +1409,16 @@ def _advance(root: Path, repo: str, cfg: dict, job: Job, gh_run, rep: dict, logs
     if job.phase in ("plan", "build", "fix"):
         if not (job.why or job.rc):    # what the agent left goes in first: every gate judges one state (N4.02)
             _commit_leftovers(job, f"docs(plan): #{job.number}" if job.phase == "plan" else None)
-            if job.hook:                   # a project hook refused the commit (FR-05 of #113)
-                return _pause(root, repo, job, gh_run, rep, who)
+            if job.hook:                   # a project hook refused the commit: its item alone (#178)
+                return _refused(root, repo, job, gh_run, rep, who)
+            if str(job.number) in _records(rep):
+                _refusal(rep, job.number, None)        # the hooks passed it now
             if job.phase != "fix":     # its needs: become edges, pushed with the rest (#114)
                 found = _needs(root, repo, job, gh_run)
-        if _git(job.worktree, "rev-parse", "HEAD").stdout.strip() != job.head and \
-                not _pushed(root, repo, job, gh_run, rep, who):
-            return True
+        if _git(job.worktree, "rev-parse", "HEAD").stdout.strip() != job.head:
+            pushed = _pushed(root, repo, job, gh_run, rep, who, fix=True)
+            if not pushed:
+                return pushed is not None      # None: a fix round for the pre-push hook runs
     agent = job.phase not in ("tests", "spec tests")
     if agent and (job.why or job.rc or not moved and job.phase in ("plan", "build")) and _limited(job):
         spent[job.agent] = job.until = at = _reset(_section(job.log.name, job.phase), time.time())
@@ -1232,6 +1450,8 @@ def _advance(root: Path, repo: str, cfg: dict, job: Job, gh_run, rep: dict, logs
             return _fail(root, repo, job, gh_run, rep, who, "; ".join(["nothing built", *cycles]), log=job.log.name)
         job.notes += cycles
     if job.phase == "fix" and (job.why or job.rc):
+        if job.fixing == "hook":       # the hook's round ended early: the refusal stands (#178)
+            return _refused(root, repo, job, gh_run, rep, who, fix=False)
         job.notes.append(f"The fix round for {job.fixing} ended early: {job.why or f'exit {job.rc}'}.")
         return _finish(root, repo, job, gh_run, rep, who, cfg)
     if job.phase in ("build", "fix"):
@@ -1246,7 +1466,8 @@ def _advance(root: Path, repo: str, cfg: dict, job: Job, gh_run, rep: dict, logs
         why = _setup(job, cfg, logs)   # the agent changed a lockfile: the gates judge its dependencies
         if why:
             return _fail(root, repo, job, gh_run, rep, who, why, log=job.log.name)      # pulse:failed (FR-08)
-        if job.phase == "build" or job.fixing == "spec tests":     # only these move the freeze
+        if job.phase == "build" or job.fixing == "spec tests" or job.hooked == "build":   # these move the freeze
+            job.hooked = ""
             return _red(job, cfg, logs)
         return _gates(job, cfg, logs)
     if job.phase == "spec tests":
@@ -1333,32 +1554,35 @@ def _trouble(job: Job, e: Exception, logs: Path = None) -> str:
 NEEDED = "Needed first by #{n}: pulse go made this draft from `needs:` in its Plan. Its spec comes next."
 
 
-def _needs(root: Path, repo: str, job: Job, gh_run) -> tuple:
+def _needs(root: Path, repo: str, job: Job, gh_run, tree=False) -> tuple:
     """needs: in the item's Plan and in _devprocess/plans/<n>-needs.md, as the phase committed them, become
     blocker edges before the push (FR-03, FR-04 of #114): an entry '#m' blocks the item; a title that is a draft
     already (an entry '#m title' of it, a blocker of the item with that title, open or closed, or an open draft)
     is that one; a new title becomes a draft with the item's type and parent, one new draft per round (a
     phase). Each title turns into '#m title' in its file, committed as docs(plan): #n, so no title makes a
     second draft once its first closed. An edge that would close a cycle is not made. -> (the blockers it
-    added, why an entry was left out). A file that names only items on the board asks gh nothing."""
+    added, why an entry was left out). A file that names only items on the board asks gh nothing.
+    tree: the files as they are in the worktree, where a hook refused their commit; nothing is committed, and the
+    first item comes back as every open item they name, a blocker already too (FR-03 of #178)."""
     n = job.number
     written = _git(job.worktree, "diff", "--name-only", "--diff-filter=d", f"{job.head}..HEAD", "--",
                    ready.PLANS).stdout.split()
-    texts = {p: ready._git(job.worktree, "show", f"HEAD:{p}")
+    texts = {p: _worktree_text(job.worktree, p) if tree else ready._git(job.worktree, "show", f"HEAD:{p}")
              for p in dict.fromkeys([job.plan or (written[:1] or [""])[0], f"{ready.PLANS}/{n}-needs.md"]) if p}
     entries = [e for t in texts.values() for e in ready.listed(t if t.startswith("---\n") else f"---\n{t}\n---\n",
                                                                 "needs")]
     refs = {e: int(r.group(1)) for e in entries for r in [ready.REF.match(e)] if r}
+    known = [refs[e] for e in entries if e in refs and refs[e] in (job.open_ or {refs[e]})]   # '#m' still open
     todo = [e for e in entries if e not in refs or refs[e] not in job.blockers and refs[e] in (job.open_ or {refs[e]})]
     if not todo:               # every #m blocks it already or is closed: nothing to ask
-        return [], []
+        return (list(dict.fromkeys(known)) if tree else []), []
     items = {i["number"]: i for i in state.load(root, repo, run=gh_run)}
     me = items.get(n) or {}
     blockers = set(me.get("blocked_by") or job.blockers)
     drafts = {_key(i["title"]): m for m, i in items.items() if i.get("draft")}
     drafts.update({_key(t): m for m, t in me.get("edges") or [] if t})         # its blockers, closed ones too
     drafts.update({_key(e[ready.REF.match(e).end():].lstrip(" :,;")): m for e, m in refs.items()})
-    added, wrong, named, made = [], [], {}, False
+    added, wrong, named, made, found = [], [], {}, False, []
     for e in todo:
         m = refs.get(e) or drafts.get(_key(e))
         if m is None and made:                 # the next round makes it
@@ -1376,6 +1600,7 @@ def _needs(root: Path, repo: str, job: Job, gh_run) -> tuple:
             continue
         if e not in refs:
             named[e] = m
+        found.append(m)
         if m not in blockers:
             blockers.add(m)
             added.append(m)
@@ -1389,10 +1614,23 @@ def _needs(root: Path, repo: str, job: Job, gh_run) -> tuple:
                 f.resolve().is_relative_to(job.worktree.resolve()):
             f.write_text(new, encoding="utf-8")
             _git(job.worktree, "add", "--", p)
+    if tree:
+        return list(dict.fromkeys(known + found)), wrong
     if _git(job.worktree, "diff", "--cached", "--quiet").returncode:
         _git(job.worktree, "commit", "-q", "-m", f"docs(plan): #{n}\n\nRefs: #{n}\nCommitted by pulse go: the drafts it "
              "made from needs: in place of their titles.")
     return added, wrong
+
+
+def _worktree_text(tree: Path, path: str) -> str:
+    """A file of the worktree as it is, "" for none or one that leads out of it."""
+    f = tree / path
+    try:
+        if f.is_symlink() or not f.resolve().is_relative_to(tree.resolve()):
+            return ""
+        return f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _key(title: str) -> str:
@@ -1609,7 +1847,7 @@ def _finish(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, cfg: 
     findings += [f"{gate}: {report}" for gate, report in job.reports.items()
                  if gate in ("review", "audit") and report and job.results.get(gate) != "pass"]
     job.notes.extend(note for note in findings if note not in job.notes)
-    if not _pushed(root, repo, job, gh_run, rep, who):
+    if not _pushed(root, repo, job, gh_run, rep, who, fix=False):
         return True
     gates = GATES + tuple(g for g in job.results if g not in GATES)
     green = all(job.results.get(g) == "pass" for g in gates)
@@ -1641,8 +1879,10 @@ def _finish(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, cfg: 
     return True
 
 
-def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict) -> bool:
-    """Publish branch and claim-bound state atomically; a concurrent handoff fences this writer."""
+def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=None):
+    """Publish branch and claim-bound state atomically; a concurrent handoff fences this writer. A pre-push hook
+    that refuses goes to _refused, with a fix round when fix (then None comes back while it runs), unless fix is
+    None: publish_plan records it itself."""
     if _lifecycle_stop(root, repo, job, gh_run, rep, config.pulse_dir(root) / "go", who, strict=True):
         return False
     current = shared.read(root)[1]["items"].get(str(job.number), {})
@@ -1679,13 +1919,16 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict) -> bo
     except state.StateError as error:
         # Keep project output before Git's generic error line, including custom hook diagnostics.
         job.why = "publication blocked: " + ready.printable(" ".join(str(error).split()))
-        if _hook(job.worktree, "pre-push"):
+        hook = _hook(job.worktree, "pre-push")
+        if hook and _push_refused_by_hook(str(error)):
+            job.hook, job.refusal = hook, ("push", str(error))
+            if fix is not None:
+                return False if _refused(root, repo, job, gh_run, rep, who, fix=fix) else None
+        elif hook:                     # the network or a timeout, as far as git's words tell
             job.why += "; inspect the installed pre-push hook; its rejection is not confirmed"
-            _pause(root, repo, job, gh_run, rep, who, step="push")
-        else:
-            work = _retained_plan(root, job, "push", job.why)
-            _event(rep, "stopped", job.public(step="push", published=False, log=_log_path(job), work=work,
-                why=job.why + _release(root, repo, job.number, gh_run, who, _handover(job, job.why), work=work)))
+        work = _retained_plan(root, job, "push", job.why)
+        _event(rep, "stopped", job.public(step="push", published=False, log=_log_path(job), work=work,
+            why=job.why + _release(root, repo, job.number, gh_run, who, _handover(job, job.why), work=work)))
         return False
     if receipt["status"] != "confirmed":
         why = f"publication blocked: {receipt['reason']}; local work is preserved"
@@ -1694,6 +1937,12 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict) -> bo
             why=why + _release(root, repo, job.number, gh_run, who, _handover(job, why), work=work)))
         return False
     return True
+
+
+def _push_refused_by_hook(said: str) -> bool:
+    """Whether git's words say its pre-push hook refused the push: git names no failure of its own (fatal:) and
+    no time limit ran out, yet some refs failed."""
+    return "failed to push some refs" in said and not re.search(r"^fatal: |no answer within ", said, re.M)
 
 
 def _bytes(path: Path):
@@ -1824,7 +2073,8 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-REPORTED = ("run", "items", "took", "unclean", "halt", "activity", "base", "compatibility", "goal")
+REPORTED = ("run", "items", "took", "unclean", "halt", "halt_kind", "refused", "activity", "base", "compatibility",
+            "goal", "workers")
 
 
 def _activity(rep: dict, phase="", title="", target="", next_="", detail="", **extra) -> None:
@@ -1850,11 +2100,12 @@ def activity(root: Path):
         return None
     if pid <= 0 or pid != rep["run"]["pid"]:
         return None
+    named = {"workers": rep["workers"]} if rep.get("workers") else {}      # the map names them (#182)
     if isinstance(rep.get("activity"), dict):
-        return rep["activity"]
+        return {**rep["activity"], **named}
     return {"phase": "supervisor", "title": "supervising work", "target": "",
             "started": rep["run"].get("started", ""), "detail": "runner is alive",
-            "next": "continue ready work or wait for its prerequisites"}
+            "next": "continue ready work or wait for its prerequisites", **named}
 
 
 def _event(rep: dict, kind: str, entry: dict) -> None:
@@ -1888,13 +2139,17 @@ def _save(rep: dict) -> None:
                 {k: rep[k] for k in REPORTED if k in rep}
             report["items"] = {**rep.get("items", {}), **previous.get("items", {}),
                                **rep.get("_updated_items", {})}
+            # what another writer recorded stays, what this one changed wins, None takes it out (#178)
+            report["refused"] = {k: v for k, v in {**_records(previous),
+                                                   **rep.get("_updated_refused", {})}.items() if v}
             fd, name = tempfile.mkstemp(prefix=".report-", dir=path.parent)
             temporary = Path(name)
             with os.fdopen(fd, "w", encoding="utf-8") as out:
                 json.dump(report, out, indent=1)
             temporary.replace(path)
-            rep["items"] = report["items"]
+            rep["items"], rep["refused"] = report["items"], report["refused"]
             rep.pop("_updated_items", None)
+            rep.pop("_updated_refused", None)
     except OSError:
         pass                   # the run goes on; its output on stdout still has everything
     finally:
@@ -1902,10 +2157,53 @@ def _save(rep: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+LEGACY = ("hook rejected:", "commit rejected at", "publication blocked:")      # run-wide pauses before #178
+OWN_REMEDY = ("compatibility", "pause", "tainted")       # holds whose next step is not the base's (#178)
+
+
+def halt_kind(rep: dict) -> str:
+    """What holds the whole run: base, compatibility, tainted, startup, or "" (#178). A report from before says it
+    in its halt text only, "pause" for a hook's pause."""
+    if "halt_kind" in rep:
+        return rep["halt_kind"] or ""
+    text = rep.get("halt") or ""
+    return "base" if text.startswith("base ") else "compatibility" if text.startswith("Plan commit gates") else \
+        "pause" if text.startswith(LEGACY) else ""
+
+
 def halt(root: Path) -> str:
-    """Why the last run of pulse go started nothing new, for the map head: "base red: <check>", "hook
-    rejected: <hook> at #n", or "" (FR-03, FR-05)."""
-    return (last_run(root) or {}).get("halt") or ""
+    """Why pulse go starts nothing new at all, for the map head: the base, the Plan commit gates, a changed git
+    setup, a failed start; or "". A hook refusal holds its item alone (refusals); the pause an ended run from
+    before #178 left is an earlier event (FR-08 of #178)."""
+    rep = last_run(root) or {}
+    return "" if halt_kind(rep) == "pause" and not rep["run"].get("running") else rep.get("halt") or ""
+
+
+def refusals(root: Path, items=None) -> list:
+    """The hook refusals the last report keeps, each with current: recorded at the base origin has now and, with
+    the open items given, its cause not gone (FR-08 of #178); then waiting_on, the items it names that are open.
+    The pause an ended run from before #178 left comes as one more, never current."""
+    rep = last_run(root) or {}
+    run, records = rep.get("run") or {}, _records(rep).values()
+    tip = ready._tip(root, "refs/remotes/origin/" + (config.load(root).get("base_branch") or
+                                                     config.default_branch(root))) if records else ""
+    open_ = None if items is None else {i["number"]: i for i in items}
+    out = []
+    for r in records:
+        if not isinstance(r, dict) or type(r.get("number")) is not int:
+            continue
+        needs = [m for m in r.get("needs") or () if open_ is None or m in open_]
+        # what holds it is what _held holds: a wait until _lifted, a labelled decision while pulse:failed stays
+        gone = open_ is not None and (r["number"] not in open_ or
+                                      r.get("state") == "waits" and _lifted(rep, r, set(open_), tip) or
+                                      r.get("label") and not open_[r["number"]].get("failed"))
+        live = r.get("state") != "fixing" or run.get("running")
+        out.append({**r, "waiting_on": needs, "current": bool(tip) and r.get("sha") == tip and not gone and bool(live)})
+    if halt_kind(rep) == "pause" and not run.get("running"):
+        m = re.search(r"#(\d+)", rep["halt"])
+        out.append({"number": int(m.group(1)) if m else 0, "legacy": ready.printable(rep["halt"]),
+                    "at": run.get("ended") or "", "current": False, "needs": []})
+    return sorted(out, key=lambda r: r["number"])
 
 
 def last_run(root: Path):
@@ -1988,6 +2286,22 @@ def _slots(spec: str, cap: int, cfg: dict) -> dict:
             raise state.StateError(why)            # nobody left to build
         print(f"pulse go: {why}; it claims nothing in this run", file=sys.stderr)
     return {a: n for a, n in slots.items() if a not in gone}
+
+
+HARNESS = {"claude": "Claude Code", "codex": "Codex"}
+
+
+def workers(cfg: dict, env=os.environ) -> tuple:
+    """(agent spec, why) a start runs with (#182): workers = "fixed" takes agent; else a start from a Claude Code or
+    Codex session takes that harness with all slots, where [agents] has a template for it, a terminal takes agent."""
+    if cfg.get("workers") == "fixed":
+        return cfg["agent"], 'workers = "fixed" in .pulse/config.toml'
+    kind = state.holder(env)["id"].partition(":")[0]          # Codex before Claude, as a claim holder
+    if kind not in HARNESS:
+        return cfg["agent"], "started in a terminal: agent of .pulse/config.toml"
+    if not str(cfg["agents"].get(kind) or "").strip():
+        return cfg["agent"], f"no [agents] template for {kind}"
+    return kind, f"started from {HARNESS[kind]}"
 
 
 def _program(cfg: dict, agent: str) -> str:
@@ -2424,6 +2738,7 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
                           f"native goal session exited {job.rc}" if job.rc else "")
         if _guard(job, logs.parents[1]) != job.guard:
             rep["tainted"] = rep["halt"] = "read-only goal session changed the clone's Git setup"
+            rep["halt_kind"] = "tainted"
             why = rep["halt"]
         if snapshot() != before:
             why = "read-only goal session changed the project or its Git setup"
@@ -2441,11 +2756,13 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
         # Controls and signals take this path too. Never silently discard an unexpected write.
         if job.guard and _guard(job, logs.parents[1]) != job.guard:
             rep["tainted"] = rep["halt"] = "read-only goal session changed the clone's Git setup"
+            rep["halt_kind"] = "tainted"
             preserve = True
         if before is not None and snapshot() != before:
             preserve = True
         if preserve:
             rep["halt"] = (rep.get("halt") or "read-only goal session changed its checkout") + f"; inspect {stage}"
+            rep["halt_kind"] = "tainted"
         if job.log:
             job.log.close()
             _record(job, cfg, logs)
@@ -2483,8 +2800,9 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0, *, managed=
     (common / "go.pid").write_text(str(os.getpid()))
     rep = {"agent": agent, "started": [], "specified": [], "planned": [], "done": [],
            "failed": [], "limited": [], "skipped": [], "stopped": [], "merged": [],
-           "took": [], "unclean": [], "base": None, "paused": None, "halt": "", "tainted": "", "guard": None,
+           "took": [], "unclean": [], "base": None, "halt": "", "halt_kind": "", "tainted": "", "guard": None,
            "items": (last_run(root) or {}).get("items", {}), "activity": None,
+           "refused": dict(_records(last_run(root) or {})),     # a restart lifts none (FR-07 of #178)
            "report": str(common / "go" / "report.json"),
            "run": {"id": managed or uuid.uuid4().hex, "managed": bool(managed),
                    "pid": os.getpid(), "started": _now(), "ended": None, "stopped": ""}}
@@ -2507,7 +2825,7 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0, *, managed=
             "board": ("could not read approved work", "check GitHub access and retry pulse go"),
         }.get(phase, ("runner preparation failed", "inspect the CLI error and retry pulse go"))
         # The CLI still reports the original exception. Persist only bounded, known text, never its payload.
-        rep["halt"] = cause
+        rep["halt"], rep["halt_kind"] = cause, "startup"
         rep["base"] = {"state": "unknown", "cause": cause, "next": next_, "why": cause,
                        "sha": (rep.get("base") or {}).get("sha", ""), "ok": None, "final": False}
         raise
@@ -2548,10 +2866,12 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                                "}, commit, and push")
     _activity(rep, "board", "reading work", base_branch, "plan and build ready items")
     repo, login = state.repo(root, run=gh_run), state.me(root, run=gh_run)
-    spec, limit = agent or cfg["agent"], cap or cfg["cap"]
+    (spec, why), limit = (agent, "given to this run") if agent else workers(cfg), cap or cfg["cap"]
     slots = _slots(spec, limit, cfg)
     common = config.pulse_dir(root)
-    rep["agent"] = spec
+    rep["agent"], rep["workers"] = spec, {"spec": spec, "why": why}
+    if managed:                # its log; in a terminal pulse go named them before the run
+        print(f"  workers {spec} ({why})", flush=True)
     jobs: dict = {}
     tried: set = set()         # one plan and one build per item and run: nothing loops
     spent: dict = {}           # agent -> until when it is at its usage limit (#119)
@@ -2770,6 +3090,24 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                           [("refresh", i) for i in stale] +
                           [("documents", i) for i in ready.document_candidates(root, items, selected)],
                           key=lambda k: pos[k[1]["number"]])
+            tip, resumed = ready._tip(root, f"refs/remotes/origin/{base_branch}"), 0
+            numbers = {i["number"] for i in items}
+            for key, r in list(_records(rep).items()):     # FR-06 of #178: a waiting plan goes on
+                n, i = int(key), next((x for x in items if x["number"] == int(key)), {})
+                if not i or n not in selected or r.get("state") != "waits" or r.get("phase") != "plan" or \
+                        ("resume", n, tip) in tried or not _lifted(rep, r, numbers, tip) or actions.held(root, n) or \
+                        any(i.get(k) for k in ("hold", "failed", "assignees", "result")):
+                    continue
+                tried.add(("resume", n, tip))      # one try per base
+                chosen = ready.plan_state(root, i, cfg, sources)["selected"] or {}
+                if chosen.get("layer") == "file":
+                    _activity(rep, "plan", "publishing the preserved plan", f"#{n}", "build it", item=n)
+                    publish_plan(root, repo, n, {k: chosen[k] for k in ("worktree", "path", "content")}, gh_run)
+                    _save(rep)                     # what the publication recorded
+                    resumed += 1
+            if resumed:
+                read = True
+                continue
             for n, job in list(parked.items()):      # a usage limit parked it: the same phase, with an agent free now
                 local = job.phase != "plan" and _localhost(cfg, ready._git(job.worktree, "show", f"HEAD:{job.plan}")
                                                            if job.plan else "")
@@ -2807,15 +3145,18 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                           "start planning after a compatible result")
                 rep["compatibility"] = compat.probe(root, cfg, rep["base"]["sha"])
                 if rep["compatibility"]["state"] != "compatible":
-                    rep["halt"] = "Plan commit gates: " + rep["compatibility"]["why"]
+                    rep["compatibility"], rep["halt"] = _gates_held(root, rep["compatibility"], items)
+                    rep["halt_kind"] = "compatibility"
                 _save(rep)
             for kind, item in todo:
                 if stopping():
                     break
                 n = item["number"]
-                if kind == "plan" and (rep.get("compatibility") or {}).get("state") != "compatible":
+                if kind == "plan" and (rep.get("compatibility") or {}).get("state") != "compatible" and \
+                        not item.get("base_fix"):          # an item that repairs the gates plans anyway (FR-05 of #178)
                     continue
-                if n in jobs or n in parked or (kind, n) in tried or _held(rep, item, kind) or actions.held(root, n):
+                if n in jobs or n in parked or (kind, n) in tried or _held(rep, item, kind, numbers) or \
+                        actions.held(root, n):
                     continue
                 if len(jobs) >= limit:         # cap counts every running job, whatever its phase (FR-02 of #119)
                     break
@@ -2837,6 +3178,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 if (item.get("lifecycle") or {}).get("phase") == "resumed":
                     job.given = False
                 job.drafts = [(i["number"], i["title"]) for i in items if i.get("draft") and i.get("blocking")]
+                job.resumes = kind == "build" and (_records(rep).get(str(n)) or {}).get("state") == "waits"
                 claimed_files = ["_devprocess"] if kind in ("spec", "documents") or item.get("type") == "epic" else \
                     None if kind == "plan" else files.get(n)
                 ok, why = _claim(root, repo, item, gh_run, who, kind, claimed_files)
@@ -2890,14 +3232,19 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                             job.log.close()
                         except OSError:
                             pass
-                    if job.hook:       # a project hook refused the merge of the base: a pause (FR-05)
-                        _pause(root, repo, job, gh_run, rep, who)
+                    if job.hook:       # a project hook refused the base merge or the preserved work: this item alone
+                        _refused(root, repo, job, gh_run, rep, who, fix=False)
+                    elif job.resumes and not gone:      # its preserved work cannot take the base: a person decides
+                        _refusal(rep, n, None)
+                        _fail(root, repo, job, gh_run, rep, who, why, log=log)
                     elif gone:         # the agent's fault, not the item's
                         _event(rep, "failed", job.public(why=why + (_release(root, repo, n, gh_run, who, _handover(
                             job, why)) or " (the claim went back)"), log=log))
                     else:              # its worktree could not be set up: a person looks first (#114)
                         _fail(root, repo, job, gh_run, rep, who, why, log=log)
                     continue
+                if job.resumes and str(n) in _records(rep):
+                    _refusal(rep, n, None)     # its preserved work passed the hooks at the new base
                 free[a] -= 1
                 said = None
                 rep["started"].append(job.public(agent=a, phase=kind))

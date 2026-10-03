@@ -478,6 +478,25 @@ def run(root: Path, mode: str, cap: int, base_branch: str, files: list,
     return report
 
 
+def anchors(root: Path, mode: str, dry_run: bool = False) -> list:
+    """The Pulse block with mode, only where a file has one (IMP-14); the map's settings change it too (#182). A block
+    an older Pulse wrote into CLAUDE.md moves to AGENTS.md (#123). The changes, as pulse setup --anchors prints them."""
+    changes = []
+    claude = root / CLAUDE.path
+    moves = claude.is_file() and bool(CLAUDE.block_re(MARKERS).search(claude.read_text(encoding="utf-8")))
+    for t in TARGETS + (() if shared(root) else (CLAUDE,)):
+        path = root / t.path
+        before = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if not t.block_re(MARKERS).search(before) and not (moves and t == AGENTS):
+            continue
+        after = claude_import(before) if t == CLAUDE else write_anchor(before, t, mode)
+        if after != before and not dry_run:
+            path.write_text(after, encoding="utf-8")
+        changes.append({"path": t.path, "status": "unchanged" if after == before else
+                        "would change" if dry_run else "written"})
+    return changes
+
+
 def main(args) -> int:
     root = config.find_root()
     if root is None:
@@ -488,21 +507,8 @@ def main(args) -> int:
         print(json.dumps({"root": str(root), "compatibility": result}, indent=2))
         return 0 if result["state"] == "compatible" else 1
     known = config.load(root)
-    if getattr(args, "anchors", False):        # the Pulse block only, where a file has one (IMP-14)
-        changes = []
-        claude = root / CLAUDE.path             # a block an older Pulse wrote there moves to AGENTS.md (#123)
-        moves = claude.is_file() and bool(CLAUDE.block_re(MARKERS).search(claude.read_text(encoding="utf-8")))
-        for t in TARGETS + (() if shared(root) else (CLAUDE,)):
-            path = root / t.path
-            before = path.read_text(encoding="utf-8") if path.is_file() else ""
-            if not t.block_re(MARKERS).search(before) and not (moves and t == AGENTS):
-                continue
-            after = claude_import(before) if t == CLAUDE else write_anchor(before, t, known["mode"] or "on")
-            if after != before and not args.dry_run:
-                path.write_text(after, encoding="utf-8")
-            changes.append({"path": t.path, "status": "unchanged" if after == before else
-                            "would change" if args.dry_run else "written"})
-        print(json.dumps({"root": str(root), "changes": changes}, indent=2))
+    if getattr(args, "anchors", False):
+        print(json.dumps({"root": str(root), "changes": anchors(root, known["mode"] or "on", args.dry_run)}, indent=2))
         return 0
     rep = run(root, args.mode or known["mode"] or "on", args.cap or known["cap"],
               args.base_branch or known["base_branch"] or config.default_branch(root),

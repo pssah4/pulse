@@ -11,7 +11,7 @@ The Map shows who works on what, what needs your attention and what starts next:
 pulse map
 ```
 
-It updates in a terminal until you press `q`. Without a terminal it prints one frame; `pulse status` does the same. The layout follows the terminal width, including narrow panes. Long details scroll with `PgUp` and `PgDn`. The layout spans 44 to 160 columns. Below 60 columns the header omits its signet and keeps its words; nonterminal output uses `COLUMNS`, or 80 columns by default. A resize is applied on the next frame.
+It updates in a terminal until you press `q`. Without a terminal it prints one frame; `pulse status` does the same. In a terminal you can also click rows and scroll with the mouse wheel; see [Mouse](#mouse). The layout follows the terminal width, including narrow panes. Long details scroll with `PgUp` and `PgDn`. The layout spans 44 to 160 columns. Below 60 columns the header omits its signet and keeps its words; nonterminal output uses `COLUMNS`, or 80 columns by default. A resize is applied on the next frame.
 
 ## Open it from the chat
 
@@ -52,13 +52,17 @@ Local Claude Code and Codex sessions show their harness, session ID and reported
 
 Hook activity updates independently of board reads, within five seconds of a supported event. Permission requests remain visible until resolved. Ended sessions stop appearing; presence snapshots without new events expire after 30 minutes without changing claims. No transcripts, prompts, shell commands, patches or tool output are saved for this display. Set `PULSE_PRESENCE=off` to disable local presence. Without trusted hooks the Map still shows runner phases.
 
-Before a claim exists, **Pulse runner** shows preparation: fetching the base, reading configuration, preparing a worktree or cleaning completed work. This coordinator row takes no coding-agent slot. Its operation, target, elapsed time and next action distinguish preparation from idle time. A managed runner remains visible while it waits for final approval.
+Session and subagent lines can be selected like items. When the Map runs in Herdr, `Enter` or a click on such a line focuses the Herdr pane that runs the session now, also in another tab or workspace. The Map asks Herdr at that moment and matches only the session ID that Herdr reports for a pane, so it finds a moved pane and never takes a pane by its directory, name or title. The jump only moves the focus: the agent receives no input. A subagent without a pane of its own leads to its parent session, and the status line says so. Without a jump the status line names the reason: the Map does not run in Herdr, Herdr does not answer, Herdr reports no single pane with the session's ID, or the session has ended or another session replaced it.
+
+Before a claim exists, **Pulse runner** shows preparation: fetching the base, reading configuration, preparing a worktree or cleaning completed work. Once the run has read its configuration, the row also names its workers and why, for example `workers codex (started from Codex)`. This coordinator row takes no coding-agent slot. Its operation, target, elapsed time and next action distinguish preparation from idle time. A managed runner remains visible while it waits for final approval.
 
 An item shows its actual runner phase: `specifying`, `planning`, `building`, `checking documents`, `RED check running`, `tests running`, `review and audit running`, `review running`, `audit running` or `fix round`. A draft identifies its writer, for example `spec in progress by bob`, independently of implementation activity.
 
 ### Next
 
 Next separates runner work from your decisions. Published valid specs can be planned; valid Plans can be built. A missing publication or structural finding names what must change. A current checked result integrates automatically, unless manual final integration approval is configured. A changed head or base needs revalidation; a red or held result cannot be approved. There are no early spec or Plan approvals and no PR status to manage.
+
+A project hook that refused the runner holds only its item. The header warns about it only while it holds at the current base, for example `! #567 waits for #569: pre-commit (repo:hygiene) refused its plan`. Next says whether a fix round runs, which item it waits for and how that one stands, or the decision you need to make. Once the items it waits for are closed, it waits for the base to move; the item view's `effect` says what releases it. A refusal at an older base, or the pause an earlier Pulse version left, appears in grey with its time as an earlier event that the next run checks again. The base's remedy appears only when the base itself holds the run; when the Plan commit gates hold planning, Next names the decision and the probe's output.
 
 ### The ramp
 
@@ -76,6 +80,16 @@ Pick unclaimed work and press `m` to preview a move. Arrows change the proposed 
 
 Automatic approval requires the same verified result, exact head and base, current authority and absence of holds or revocation. An unconfirmed enable action grants no authority; a local disable action blocks automatic integration immediately. Destructive removal retains its separate personal confirmations. Historical automatic plan/build/merge settings do not grant authority.
 
+### Settings
+
+`s`, or a click on the approval line in the header, opens the settings of the project. Each setting shows its value, where it comes from and what it does: `mode`, the repository, the base branch, the slots (`cap`), `workers`, `agent` with its split of the slots, `verify` and the spec test runners. `verify` and `[spec_tests]` come from `.pulse/config.toml` on the base branch of origin, as `pulse go` reads them; the others come from your working tree.
+
+Rules shows, per harness, when a session in this clone last started with the Pulse rules and how large they were, against the 10,000 characters Claude Code takes from a hook. The session-start hook records this in `.git/pulse/rules-claude.json` and `.git/pulse/rules-codex.json` while `mode` is `on`. Without a record the line says "not proven" and names the way to one; for Codex that includes trusting its hooks: `/hooks` in the Codex CLI, the Hooks page of its settings in the IDE extension. "Rules now" measures what a session start would get today.
+
+The entries change `mode`, the slots, `workers` and `agent`; the approval entry takes the way of `3`. `Enter` on an entry previews the change and its effect; the slots ask for a number first. `Enter` on the preview fetches the base and commits the change on a branch of its own, `chore/pulse-settings-<YYYYMMDD>` (`-2`, `-3` when the name is taken), made from `origin/<base>` in a throwaway worktree: `.pulse/config.toml`, for `mode` also the Pulse block of `AGENTS.md`, committed with your project's hooks and pushed. Your working tree and the base stay as they are. The status line names the branch; the change counts for the team once that branch is integrated into the base.
+
+Only a person changes settings. A value that does not hold, a configuration on the base that cannot be read, or a base that cannot be fetched gives the reason and writes nothing. The Map never changes what runs a program (`verify`, `setup`, `[agents]`, `[spec_tests]`); those change in a reviewed commit.
+
 ### Offline state and rate limits
 
 Board refresh runs beside keyboard input, so navigation does not wait for GitHub. The Map checks for changes periodically and retains the last good snapshot during failures.
@@ -88,30 +102,46 @@ A GitHub rate-limit or connection warning keeps the last known board visible wit
 |---|---|---|
 | Map | `↑`, `↓`, `j`, `k` | select a row |
 | Map | `Enter`, `→` | open the selected item |
+| Map | `Enter` on a session line | focus its Herdr pane |
 | Map | `g` | open an item by number |
 | Map | `a` | preview final integration approval when available |
 | Map | `m` | preview a move of unclaimed work |
 | Map | `3` | show and configure the final approval policy |
+| Map | `s`, a click on the approval line | open the [settings](#settings) |
+| Map | `r` | read the report of the last run |
 | Map | `?`, `q` | help, quit |
 | Item | arrows, `Enter` | select and execute an offered action |
 | Item | `o`, `a` | read spec, preview final approval |
 | Item | `PgUp`, `PgDn` | scroll details |
+| Settings | arrows, `Enter` | select an entry, preview its change |
+| Settings | `PgUp`, `PgDn` | scroll the view |
+| Reader | arrows, `PgUp`, `PgDn`, wheel | scroll the text |
+| Reader | `Esc`, `q`, `←`, a click on `‹ back` | return to the view and entry it opened from |
 | Confirmation | `Enter`, `Esc` | confirm after reading, cancel |
 | Other views | `Esc`, `q`, `←`, `Backspace` | go back and discard an unconfirmed action |
 | any | `Ctrl-C` | quit the Map |
 
-The footer shows the main keys of the level; `?` opens all help. No key but `?` needs Shift. `g` opens a closed item by number without reopening it or adding it to the active-work counts. Navigation only reads.
+The footer shows the main keys of the level below a line that separates them from the status; `?` opens all help. No key but `?` needs Shift. `g` opens a closed item by number without reopening it or adding it to the active-work counts. Navigation only reads.
 
 A confirmation names the item, action and binding. It ignores `Enter` within the first second. If a resize hides any of that context, it cancels; a resize that still fits redraws it and restarts that interval. Navigation itself writes nothing.
 
+## Mouse
+
+A click on an item row opens that item, as selecting it and pressing `Enter` does. A click on a session line focuses its Herdr pane, as `Enter` does there. A click on the approval line in the header opens the [settings](#settings), as `s` does. In the item view a click on an entry selects it and acts as `Enter`: a write still opens its confirmation first, and only `Enter` confirms. A click never confirms anything. A click on the spec, plan or checks line opens that text in the reader; a click on "run report" in Next opens the report of the last run. The wheel moves the selection on the Map and scrolls the item view, the help and the reader three lines per notch.
+
+While the Map runs, the terminal sends it the clicks, so a plain drag no longer selects text. Hold `Shift` (`Option` or `Alt` in some terminals) to select text or to open a terminal link. The Map turns mouse reporting off whenever it ends: `q`, `Ctrl-C`, a closed terminal or a restart on a newer Pulse. On Windows the Map uses keys only. Every mouse action has a key.
+
 ## Actions
 
-The item view shows its goal, stage, holder, blockers, published result, gates, findings and Plan. Only actions appropriate to that observed state are offered.
+The item view shows its goal, stage, holder, blockers, published result, gates, findings and Plan. After a hook refusal it adds what the hook refused and when (`refused`), what that does now (`effect`) and the last lines of the output. Only actions appropriate to that observed state are offered.
 
 | Action | Effect |
 |---|---|
-| read spec / read Plan | open the document, using a read-only copy for a published branch when needed |
-| read result diff | open the complete published diff with its checks and findings |
+| read spec / read Plan | show the document in the reader, as the base or a branch of origin has it when the working tree differs |
+| read parent spec / read ADR-nn | show the spec this item's spec names as parent, or a decision record its Plan names |
+| read run log | show the gate and hook output of the item's last run |
+| read result diff | show the complete published diff with its checks and findings |
+| read check output | show the whole output of the check a project hook refused, in any phase |
 | approve integration | approve exactly the reviewed result head and base |
 | revoke approval | withdraw the observed approval |
 | defer | pause locally immediately and synchronize a shared hold while preserving work |
@@ -119,6 +149,10 @@ The item view shows its goal, stage, holder, blockers, published result, gates, 
 | hand off claim | request the current writer to stop and preserve work before releasing its claim |
 | discard | close as not planned without rolling back code |
 | delete | enter the separate removal and irreversible issue-deletion workflow |
+
+### The reader
+
+Read actions show their text in a reader inside the Map, below its header, which keeps updating. A line names the source: the file, the path and the branch of origin it came from, or the run's file. Lines wrap at the terminal width. The reader reads at most 256 KiB, the start of a document or the end of a log, and a `cut:` line says so. It removes terminal control sequences and shows any other control character as `?`, so nothing in the text acts. It reads only files of the repository, of a branch of origin or of this clone's Pulse directory. When a file is missing, empty, unreadable or outside the repository, the status line names the reason instead. `r` on the Map shows the report of the last `pulse go` run: how it ended, a halt, the base and, per item, its result, time, phase, reason and log.
 
 Approval, defer, resume, revoke and handoff are durable local actions. Confirming saves the request before network work begins. A background process synchronizes it, including after the Map closes. Its visible state is `queued`, `syncing`, `confirmed`, `conflict` or `error`. `confirmed` means shared state accepted it; the other states never grant integration authority. Defer and revoke block locally while pending. A conflicting revision requires a fresh selection and preview, never silent rebinding to a new result.
 
@@ -142,7 +176,7 @@ Discard and delete have different consequences. Discard closes the item while re
 
 ### Links
 
-Read actions open files through `PULSE_EDITOR` or an available system application. Branch documents open as read-only copies when appropriate. Repository links and warnings are data; their text never becomes shell instructions.
+Read actions show files in the reader and write no copies. With color, each `#n` is a terminal link to its issue that your terminal opens. Repository links and warnings are data; their text never becomes shell instructions.
 
 ## It starts nothing
 

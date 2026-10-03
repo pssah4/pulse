@@ -5,6 +5,29 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-03
+
+### Added
+
+- The Map takes clicks and the mouse wheel. A click on an item row opens the item; a click on an entry of the item view acts as `Enter`, so a write still opens its confirmation and only `Enter` confirms. The wheel moves the selection or scrolls. Mouse reporting ends with the Map on `q`, `Ctrl-C`, a signal or a restart; Windows keeps keys only.
+- In Herdr, `Enter` or a click on a session line in Who is doing what focuses the pane that runs the session now, in any tab or workspace. A subagent leads to its parent session, and without a jump the status line names the reason. The jump only moves the focus.
+- A reader inside the Map shows spec, Plan, the decisions the Plan names, the parent spec, the item's run log and, with `r`, the report of the last run. It names the source, wraps and scrolls the text, reads at most 256 KiB and returns to the entry it opened from.
+- `s`, or a click on the approval line, opens the settings of the project in the Map: each setting with its source and effect, and per harness the last session start that got the Pulse rules in this clone with their size against Claude Code's 10,000 characters. A change of `mode`, the slots, `workers` or `agent` is previewed first and, after `Enter`, committed on a pushed branch `chore/pulse-settings-<date>` from the base; it counts for the team once that branch is integrated.
+- `workers` in `.pulse/config.toml`: `session` (default) or `fixed`.
+
+### Changed
+
+- Read actions no longer open a window or write a copy to the cache. A line now separates the status from the key row on every level of the Map.
+- `pulse go` starts the workers of the session that starts it: `claude` from Claude Code, `codex` from Codex, `agent` from a terminal. The start line, `report.json` and the Map name the workers and why. Upgrading: an `agent` such as `"codex"` now applies to terminal starts only; set `workers = "fixed"` to keep it for every start.
+
+### Fixed
+
+- Claude Code sessions and subagents get the whole Pulse rules again. Since 0.3.0 the rules a hook adds had grown past the 10,000 characters Claude Code passes on whole, so every session saw only a 2 KB preview; the rules now stay below 7,500 characters and the added context below 9,000.
+- An attended Claude Code session starts `pulse go` and `pulse publish-plan` again when you ask for it in the chat. Claude Code marks every process of a session with `CLAUDE_CODE_CHILD_SESSION`; only runner agents and unattended sessions such as `claude -p` are refused now, with the reason and the way through your own terminal.
+- A project hook that refuses a commit, push or base merge of `pulse go` holds only that item instead of the whole run. The item gets one fix round with the check's output; a cause in a shared check makes it wait for a named fix item, otherwise it fails with the decision it needs. The record survives restarts, and the preserved work resumes on its own once the fix is closed and the base moved.
+- The Map, `pulse status` and the end of `pulse go` name the hook, the check, its effect and the next step, and open the whole output from the item view in every phase. A refusal at an older base shows as an earlier event, and the base's remedy appears only for a base that holds the run.
+- Items labelled `pulse:base` plan while the Plan commit gates hold; `pulse new --base` sets the label.
+
 ## [0.3.0] - 2026-10-02
 
 ### Changed

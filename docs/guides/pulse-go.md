@@ -41,7 +41,7 @@ A goal is complete only when its assigned work and completion evidence are verif
 
 In your terminal the runner stays in the foreground and Ctrl-C stops it. You can also explicitly ask `/pulse` (in Codex `$pulse:pulse`) to execute it from your interactive chat. Without a TTY, Pulse owns a managed process: the command returns a receipt with its run ID, PID, report and log after the child has saved its startup report. The process survives the calling tool's exit. A quick completed run reports its actual outcome; an unconfirmed start reports an error.
 
-A second managed start reuses the existing run, including a foreground run. No shell detachment, `nohup`, Herdr or additional LLM coordinator is required. Source markers stay intact; runner agents and child sessions cannot start another runner. The Map and hooks never start backlog work automatically.
+A second managed start reuses the existing run, including a foreground run. No shell detachment, `nohup`, Herdr or additional LLM coordinator is required. Source markers stay intact. An attended Claude Code or Codex session may start it when you ask for it in the chat; runner agents (`PULSE_HOLDER`) and unattended sessions such as `claude -p` (`CLAUDE_CODE_SESSION_ATTENDED=0`) cannot start another runner and are told to use your own terminal. Claude Code sets `CLAUDE_CODE_CHILD_SESSION=1` in every process of a session, so that variable alone decides nothing. The Map and hooks never start backlog work automatically.
 
 ```bash
 pulse go --stop
@@ -100,17 +100,33 @@ The runner starts from the fetched base SHA and the configuration stored there. 
 
 Pulse verifies the completed result before integration. The supervisor runs full `verify` once for that result; agents run targeted checks during implementation. Tests, review and audit must cover the exact result and base being integrated. A changed head or base requires revalidation. External CI results do not replace that evidence.
 
-A rejected project hook is a finding. The run preserves work and reports the hook; it never disables it or substitutes an empty hook directory.
+### A hook that refuses
+
+A project hook that refuses a commit, push or base merge of the runner holds only that item; other items keep starting. Pulse records the item, phase, step, hook, the check npm or pnpm names in its last `> package@version script` header, the time and the base commit, with the last lines of the output. The whole output stays in `.git/pulse/go/<n>.hook.txt` of this clone.
+
+The item then gets one fix round within its usual round limit. The round receives the output and the open fix items on the board. When the cause lies in the item's own change, the round fixes it and the build continues. When it lies in a check the whole project shares, the round changes nothing outside the item and names the prerequisite under `needs:` in `_devprocess/plans/<n>-needs.md`: `'#m title'` for an open fix item, otherwise a short title, which becomes one draft. The item then waits for it with its work preserved and its claim released. Without a named prerequisite the item fails and names the decision: change the item so the check passes, or name what it waits for.
+
+The record survives restarts. A restart alone starts nothing again: a waiting item stays held until every item it names is closed and the base has moved. Then the runner takes the current base into the preserved worktree, runs the hooks again and publishes the preserved plan without a new planner, once per base. `pulse publish-plan` takes the current base in before its commit as well.
+
+When the commit gates refuse the compatibility probe's valid plan, ordinary planning waits. The hold names the hook, the check and the probe's output, and the decision which item repairs the gates. Items labelled `pulse:base` plan and build anyway; `pulse new <type> <title> --base` sets that label. Pulse never links an item to a refusal on its own and never disables a hook or substitutes an empty hook directory.
 
 ## The report
 
-`.git/pulse/go/report.json` (under the shared Git directory for worktrees) retains the run ID, managed/foreground mode, PID, start/end, stop reason, current preparation, base assessment and per-item outcomes. `pulse status` shows the current activity or last result. Item logs record each phase; a managed start also names its persistent process log. Preparation does not count as a working coding agent.
+`.git/pulse/go/report.json` (under the shared Git directory for worktrees) retains the run ID, managed/foreground mode, PID, start/end, stop reason, current preparation, base assessment and per-item outcomes. `halt` and `halt_kind` (`base`, `compatibility`, `tainted`, `startup`) name what holds the whole run; `refused` keeps one record per item a hook refused, with its state: `fixing`, `waits` with the items it needs, or `decision`. `pulse status` shows the current activity or last result. Item logs record each phase; a managed start also names its persistent process log. Preparation does not count as a working coding agent.
 
-A successful start receipt confirms process ownership. Read the current report for finished, failed, held or waiting work and the saved goal's progress. A managed runner can wait for an explicitly configured manual approval; closing the Map does not stop it or its action synchronizer.
+A successful start receipt confirms process ownership. Read the current report for finished, failed, held or waiting work and the saved goal's progress. The end of `pulse go` and `pulse status` name each item a hook refusal holds, with the cause and its effect. A managed runner can wait for an explicitly configured manual approval; closing the Map does not stop it or its action synchronizer.
 
 ## Agents and permissions
 
 Agents use the configured templates and retain their sandboxes. The supervisor owns network publication and shared state. Agent processes receive no GitHub token or `gh` login; Codex has no network access in its workspace sandbox. A localhost spec test requires an agent whose configured sandbox permits it. Review and audit run separately from the builder's session and leave the worktree unchanged.
+
+### Which workers a run starts
+
+With `workers = "session"`, the default, the session that starts `pulse go` picks its workers. Started from Claude Code, the run starts `claude` workers with all slots; started from Codex, `codex` workers; started in a terminal, the workers of `agent`. Pulse tells the harnesses apart by `CODEX_THREAD_ID` and `CLAUDE_CODE_SESSION_ID`, Codex first, so a Codex session started from a Claude Code shell counts as Codex. An empty template for that harness in `[agents]` falls back to `agent`. With `workers = "fixed"` every start runs `agent`.
+
+The start line names the workers and the reason, for example `workers claude (started from Claude Code)`; a managed start prints the same line after its receipt. `report.json` keeps them under `workers`, and the Pulse runner row of the [Map](./pulse-map) shows them. The [settings view](./pulse-map#settings) of the Map shows which of the two holds and changes it.
+
+Upgrading: an `agent` that named one harness for every start, such as `agent = "codex"`, now applies to terminal starts only. Set `workers = "fixed"` to keep it for starts from a session too.
 
 ### Two agents at once
 

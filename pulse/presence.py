@@ -108,6 +108,18 @@ def _snapshot(directory, name):
         return json.loads(stream.read(16384))
 
 
+def harness(payload, env, default="claude") -> str:
+    """codex or claude: the transcript under ~/.codex or ~/.claude first, since a Codex started from a Claude Code
+    shell inherits CLAUDECODE; then a Codex turn's turn_id, a Codex shell's CODEX_THREAD_ID without CLAUDECODE;
+    anything else keeps default. The rules evidence of a session start (#182) asks the same."""
+    # ponytail: a CODEX_HOME or CLAUDE_CONFIG_DIR named otherwise falls back to the environment; compare those
+    # variables with the path when someone moves them
+    parts = Path(str(payload.get("transcript_path") or "")).parts
+    if ".codex" in parts or ".claude" in parts:
+        return "codex" if ".codex" in parts else "claude"
+    return "codex" if "turn_id" in payload or env.get("CODEX_THREAD_ID") and not env.get("CLAUDECODE") else default
+
+
 def record(payload, env, now=None):
     """One bounded atomic snapshot per actor; an event never changes approval or claim state."""
     try:
@@ -152,8 +164,7 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
         waiting = {}
     status = "ended" if event in {"SessionEnd", "SubagentStop"} else \
         "waiting" if waiting else "idle" if event in {"Stop", "SessionStart"} else "working"
-    harness = "codex" if "turn_id" in payload or env.get("CODEX_THREAD_ID") and not env.get("CLAUDECODE") \
-        else previous.get("harness", "claude")
+    kind = harness(payload, env, previous.get("harness", "claude"))
     try:
         holder = json.loads(env.get("PULSE_HOLDER") or "null")
     except ValueError:
@@ -162,7 +173,7 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
     head = _small(gitdir / "HEAD").strip()
     row = {"id": who, "parent": session if agent else previous.get("parent", ""),
            "cwd": str(root), "branch": head[16:] if head.startswith("ref: refs/heads/") else "",
-           "harness": harness, "holder": holder,
+           "harness": kind, "holder": holder,
            "waiting": waiting,
            "state": status, "tool": next(iter(waiting.values())) if waiting else
            tool if event in {"PreToolUse", "PermissionRequest"} else "",

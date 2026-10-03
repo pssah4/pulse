@@ -69,7 +69,8 @@ def cmd_status(args):
     if welcome and unknown:
         print(ready.printable("No current board state is available; readiness is unknown. " + vm["error"]))
     else:
-        print(json.dumps(vm, indent=2) if args.json else pmap.once(vm, sys.stdout.isatty()) + _last_run(vm["last_run"]))
+        print(json.dumps(vm, indent=2) if args.json else
+              pmap.once(vm, sys.stdout.isatty()) + _last_run(vm["last_run"], vm.get("refusals")))
     if welcome:
         if vm["error"]:
             if not unknown:
@@ -80,8 +81,9 @@ def cmd_status(args):
     return 2 if unknown else 0   # nothing known: no board to show
 
 
-def _last_run(rep) -> str:
-    """How the last pulse go run went: when it ended, its results per kind, and what failed and why."""
+def _last_run(rep, refusals=None) -> str:
+    """How the last pulse go run went: when it ended, its results per kind, what failed and why, and each item a
+    hook's refusal holds, with cause and effect (FR-10 of #178)."""
     if not rep:
         return ""
     run, items = rep["run"], rep.get("items") or {}
@@ -91,7 +93,16 @@ def _last_run(rep) -> str:
             if run.get("ended") else "ended without its cleanup; the next pulse go takes over what it held")
     lines = [f"last pulse go run: {when}: " + (", ".join(f"{c} {k}" for k, c in counts.items()) or "no results")]
     lines += [f"  #{n} failed: {i.get('why')}" for n, i in items.items() if i.get("result") == "failed"]
+    lines += [_held(r) for r in refusals or ()]
     return "\n" + "\n".join(map(ready.printable, lines))     # a why quotes foreign text (#56)
+
+
+def _held(r: dict) -> str:
+    """One line for a hook's refusal: the item, where it stands, what happened, and what that does now."""
+    if r.get("legacy"):
+        return f"  earlier: {r['legacy']}; {go.refusal_effect(r)}"
+    return f"  #{r['number']} {go.refusal_standing(r) if r.get('current') else 'earlier'}: {go.refusal_cause(r)}; " \
+        f"{go.refusal_effect(r)}"
 
 
 def _fetch(root, now=False):
@@ -151,8 +162,9 @@ def _item(args):
 
 def cmd_go(args):
     """An explicit runner request, owned by the terminal or by Pulse when no TTY exists."""
-    if os.environ.get("PULSE_HOLDER") or os.environ.get("CLAUDE_CODE_CHILD_SESSION"):
-        print("pulse go: no nested runner from a runner agent or child session")
+    why = auto.nested(os.environ)        # an attended session may start it; its own agents never (#183)
+    if why:
+        print(f"pulse go: no nested runner from {why}; start it in your own terminal")
         return 1
     objective = " ".join(getattr(args, "objective", [])).strip()
     epic, item = getattr(args, "epic", None), getattr(args, "item", None)
@@ -202,6 +214,14 @@ def cmd_go(args):
                 print(ready.printable(f"  {key}: {receipt[key]}"))
         if receipt.get("goal"):
             print(ready.printable(f"  runner goal revision: {receipt['goal'].get('revision', '')}"))
+        if receipt["status"] == "started":         # the managed run picks the same (#182)
+            spec, why = go.workers(config.load(root), os.environ)
+        else:                                     # a run already active or done: the workers its report names
+            seen = (go.last_run(root) or {}).get("workers") if receipt["status"] in ("running", "finished") else None
+            spec, why = (seen.get("spec"), seen.get("why")) if isinstance(seen, dict) else ("", "")
+        if spec:
+            warn = setup.untrusted(spec)
+            print(ready.printable(f"  workers {spec} ({why})" + (f"; {warn}" if warn else "")))
         print("  pulse map shows progress; pulse go --stop requests a controlled stop")
         return 1 if receipt["status"] == "error" else 0
     cfg = config.load(root)
@@ -209,8 +229,9 @@ def cmd_go(args):
         if not (go.last_run(root) or {}).get("run", {}).get("running"):
             mapstart.ensure(root)          # the live map where the user works (D-48), beside no run of this clone
         who = state.who(root, run=state.gh)          # the account the run acts as (#111)
-        warn = setup.untrusted(cfg["agent"])
-        print(f"pulse go: {'as ' + who + ', ' if who else ''}cap {cfg['cap']}, agents {cfg['agent']}; "
+        spec, why = go.workers(cfg, os.environ)          # the workers of the session that starts it (#182)
+        warn = setup.untrusted(spec)
+        print(f"pulse go: {'as ' + who + ', ' if who else ''}cap {cfg['cap']}, workers {spec} ({why}); "
               f"Ctrl-C stops it{'; ' + warn if warn else ''}", flush=True)
     rep = go.run(root)
     stopped = rep.get("run", {}).get("stopped")
@@ -247,9 +268,14 @@ def cmd_go(args):
         print(ready.printable(f"  stopped #{j['number']} in {j['phase']} ({j['why']})"))
     for u in rep.get("unclean", []):
         print(ready.printable(f"  kept the worktree of closed #{u['number']}, it has changes: {u['worktree']}"))
+    for r in go.refusals(root):         # each item a hook's refusal holds, with cause and effect (FR-10 of #178)
+        print(ready.printable(_held(r)))
     if rep.get("halt"):
         print(ready.printable(f"  held: {rep['halt']}"))     # a hook's name and git's words (L-4)
-        detail = rep.get("base") or {}
+        kind = go.halt_kind(rep)
+        probe = rep.get("compatibility") or {}
+        detail = {"next": probe.get("next"), "url": probe.get("log")} if kind == "compatibility" else \
+            {} if kind in go.OWN_REMEDY else rep.get("base") or {}
         for key, label in (("cause", "Cause"), ("next", "Next"), ("url", "Details")):
             if detail.get(key):
                 print(ready.printable(f"  {label}: {str(detail[key])[:512]}"))
@@ -358,6 +384,8 @@ def cmd_new(args):
                 print(f"pulse new: {args.spec} is not on origin as committed here; "
                       f"commit it, then: git push -u origin {shlex.quote(branch)}")
                 return 2
+    if getattr(args, "base", False):       # it repairs the base or the Plan commit gates (FR-05 of #178)
+        labels.append(state.BASE)
     if args.draft and not args.issue:      # one draft per type and title: two people start the same realign or BA
         same = next((i for i in state.load(root, repo, run=run, fresh=True) if i.get("draft")
                      and i["type"] == args.type and i["title"].casefold() == args.title.casefold()), None)
@@ -688,8 +716,9 @@ def cmd_retry(args):
 
 def cmd_publish_plan(args):
     """Publish exactly the local Plan bytes selected by the person or interactive parent session."""
-    if os.environ.get("PULSE_HOLDER") or os.environ.get("CLAUDE_CODE_CHILD_SESSION"):
-        print("pulse publish-plan: no nested publication from a runner agent or child session")
+    why = auto.nested(os.environ)
+    if why:
+        print(f"pulse publish-plan: no nested publication from {why}; run it in your own terminal")
         return 1
     root, repo, run = _ctx()
     selection = {key: getattr(args, key) for key in ("worktree", "path", "content")}
@@ -843,6 +872,9 @@ def parser() -> argparse.ArgumentParser:
     what.add_argument("--draft", action="store_true", help="no spec yet: a record claimed for the work on it")
     c.add_argument("--phase", choices=["analysis", "spec"], default="spec",
                    help="with --draft: the work (default: spec)")
+    c.add_argument("--base", action="store_true",
+                   help="label it pulse:base: it repairs the base or the Plan commit gates, and pulse go plans and "
+                        "builds it while they hold other work")
     c.add_argument("--issue", type=int,
                    help="an open issue without a spec (a draft, an issue from the BA) instead of a new one: "
                         "with --spec it links the spec and takes <title> as its title, "

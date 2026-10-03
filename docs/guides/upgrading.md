@@ -7,6 +7,14 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.3.0 to 0.3.1
+
+Update the plugin in Claude Code and Codex and start new sessions: the Pulse rules a session gets now fit the context Claude Code passes on whole, and an attended Claude Code session can start `pulse go` from the chat again. Codex asks for its normal review of changed hooks.
+
+`pulse go` now starts the workers of the session that starts it: claude workers from Claude Code, codex workers from Codex, those of `agent` from a terminal. A project that needs one kind of worker for every start, for example because it relies on the Codex sandbox, sets `workers = "fixed"` in `.pulse/config.toml`, or in the Map's settings (`s`).
+
+A project hook that refuses a commit of `pulse go` now holds only its item. Earlier reports still show their old hook pause as an earlier event; the next run checks it again. The Map takes clicks and the mouse wheel and opens specs, Plans, decisions and check output in its reader.
+
 ## From 0.2.6 to 0.3.0
 
 Update every participating clone's Claude Code and Codex plugin, refresh Codex rules with `pulse setup --codex-rules`, and start new agent sessions. Codex asks for its normal review of changed hooks. Keep existing item branches and worktrees; Pulse resumes retained work rather than replacing it.

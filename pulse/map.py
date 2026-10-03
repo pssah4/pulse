@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import select
 import shlex
@@ -26,7 +27,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from pulse import actions, auto, config, go, goals, lifecycle, merge, order, presence, ready, remove, setup, spec, state
+from pulse import (actions, auto, config, go, goals, lifecycle, mapstart, merge, order, presence, ready, remove,
+                   settings, setup, spec, state)
 
 WIDTH = 80                      # columns without a terminal (D-45)
 TITLE = 60                      # the most of a file name a row keeps (FIX-02-04-03)
@@ -72,19 +74,40 @@ PHASE = {"spec": "specifying", "documents": "checking documents", "plan": "plann
 # the map every way back drops what is not written yet, q too (#55)
 UP, DOWN, ENTER, RIGHT = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n"), ("\x1b[C",)
 BACK = ("\x1b", "\x1b[D", "\x7f", "\x08", "q")
+MOUSE_ON, MOUSE_OFF = "\033[?1000h\033[?1006h", "\033[?1006l\033[?1000l"   # button and wheel reports, SGR form (#180)
+SGR = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+WHEEL = 3                       # rows one notch of the mouse wheel scrolls
+READ_MOST = 256 * 1024          # the most of a file the reader reads: the start of a text, the end of a log
+# what the reader drops of a line: a color, an OSC closed on that line; any other ESC shows as ? (#180)
+CONTROL = re.compile(r"\x1b\[[0-9;]*m|\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)")
+BACK_ROW = " ‹ back"            # the first row under the header of the help and the reader: a click goes back
 KEYS = {"map": "↑↓ pick m move enter open ? help q quit",       # one key row at 44 columns; a still approves
         "item": "↑↓ pick a approve enter do ? help esc back",
         "move": "↑ ↓ move  enter save  esc cancel",
         "confirm": "enter confirm  esc cancel",
         "number": "type issue number  enter open  esc cancel",
-        "help": "↑↓ scroll PgUp/PgDn page esc back"}
+        "help": "↑↓ scroll PgUp/PgDn page esc back",
+        "read": "↑↓ wheel scroll PgUp/PgDn page esc back",
+        "settings": "↑↓ pick enter change ? help esc back",
+        "value": "type slots  enter preview  esc cancel"}
+JUMP_KEYS = "↑↓ pick enter/click jump ? help q quit"   # the map's keys on a session row (#181)
+HERDR_WAIT = 2                  # seconds the map waits for each Herdr call of a jump (#181)
 HELP = """map      ↑ ↓ or j k pick a line, enter or →
            opens it, a previews approval
          m moves unclaimed ramp work;
            arrows move it, enter saves,
            esc cancels; dependencies first
          g opens an issue by number
+         s or a click on the approval line
+           opens the settings
+         r reads the report of the last run
          ? shows this help, q quits
+session  enter or a click on a session in
+           WHO IS DOING WHAT shows its
+           Herdr pane, in any tab or
+           workspace; only the focus moves
+         a subagent leads to its session
+         without a pane the line says why
 item     goal, stage, holder, blockers,
            result, checks and plan
          ↑ ↓ or j k pick, enter acts;
@@ -100,10 +123,19 @@ item     goal, stage, holder, blockers,
            before releasing its claim
          these actions save locally first;
            their sync state stays on the map
-         read plan and spec open in a window
-           (PULSE_EDITOR or the system app)
+         read spec, read plan, read run log
+           and read result diff show the
+           text in the reader of the map
          discard closes without rollback
          delete prepares removal of work
+settings each setting with where it comes
+           from and what it does, and the
+           last session start per harness
+           that got the Pulse rules here
+         enter previews a change; enter
+           again commits it on a pushed
+           branch of its own, which counts
+           once it is integrated
 policy   3 shows final approval settings;
            automatic is the default
          manual waits for a person with
@@ -113,6 +145,17 @@ policy   3 shows final approval settings;
 help     ↑ ↓ or j k scroll one line
          PgUp PgDn scroll a page
          enter and action keys do nothing
+reader   ↑ ↓, wheel, PgUp PgDn scroll
+         esc, q, ← or a click on ‹ back
+           return to where it opened
+mouse    a click on a row opens it, on an
+           entry acts as enter; a write
+           still asks, only enter confirms
+         the wheel picks on the map and
+           scrolls a long view
+         shift with the mouse selects text
+           and opens terminal links
+         Windows: keys only, no mouse
 confirm  enter confirms after one second;
            esc cancels
 back     q, esc, ← or backspace go back and
@@ -145,21 +188,23 @@ OFFER = {"approve": ("approve integration", "approve the reviewed result and bas
          "revoke": ("revoke approval", "withdraw integration approval"),
          "handoff": ("hand off claim", "stop the current writer and preserve its work"),
          "read-result": ("read result diff", "open the published result, checks and findings"),
-         "read-plan": ("read plan", "open it in a window"),
-         "open": ("read spec", "open it in a window")}
+         "read-plan": ("read plan", "show it here"),
+         "open": ("read spec", "show it here")}
 OFFER.update({"defer": ("defer", "pause as-is in the backlog"),
               "resume": ("resume", "continue the preserved work"),
               "discard": ("discard", "close as not planned; keep code and specs"),
               "delete": ("delete", "review removal of code, specs, issue and comments")})
-READS = ("read-result", "read-plan", "open")
+READS = ("read-result", "read-plan", "open", "read-plan-error", "read-log", "read-doc", "read-report",
+         "read-check-output")
 # the approval a writes at each gate (#115): its words in the item view, and what it lets happen
 GATE = {3: ("approve integration", "approve this result and base after reviewing the diff and checks")}
 # the line an action shows while it runs; the ones not named here only open a window
 DOING = {"auto": "saving approval policy…", "publish-plan": "starting plan publication #{}…",
+         "setting": "committing the setting on a branch of its own…",
          "retry-sync": "queueing synchronization retry #{}…"}
 DOING.update({action: action + " #{}…" for action in lifecycle.ACTIONS})
 LOCAL_ACTIONS = {"approve", "defer", "resume", "revoke", "handoff"}
-LOCAL_WRITES = LOCAL_ACTIONS | {"publish-plan", "retry-sync", "auto"}
+LOCAL_WRITES = LOCAL_ACTIONS | {"publish-plan", "retry-sync", "auto", "setting"}
 DOING.update({action: "queueing " + action + " #{}…" for action in LOCAL_ACTIONS})
 SMALL = "the terminal is too low or too narrow to show what enter would confirm: make it larger"   # #76, #56
 SOON = 1.0                      # seconds after a confirmation opened in which an Enter came unread (#86, #90)
@@ -444,19 +489,28 @@ def board(vm: dict) -> dict:
 
 
 def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, selected: int = None,
-           picks: list = None, item: dict = None, stages: dict = None) -> list:
+           picks: list = None, item: dict = None, stages: dict = None, marks: dict = None,
+           settings: dict = None) -> list:
     """color: how many colors the terminal shows (depth()), 0 for none; selected: the item the
     terminal cursor is on (marked ›); picks: gets the items on the map top down, the way the cursor
     walks them; item: the item view in place of the map (D-44), its number and what look() read;
-    stages: gets the stage of every item in the map's words, as pulse status <n> prints it (#99 FR-14).
-    Only the map writes escapes: every string of vm and item loses its control characters first (#56)."""
+    stages: gets the stage of every item in the map's words, as pulse status <n> prints it (#99 FR-14);
+    marks: gets {row: what a click there does} (#180), ("item", n) for an item row, ("offer", k) for an entry of
+    the item view, ("read", action) for its spec, plan and checks rows and, only with marks, the NEXT row of the
+    run report, and ("settings",) for the approval line of the header (#182); settings: the settings view in place of
+    the map, settings.read() and its pick. Only the map writes escapes: every string of vm and item loses its control
+    characters first (#56)."""
     if vm.get("goal"):
         vm = {**vm, "goal": {**vm["goal"], "objective": " ".join(vm["goal"]["objective"].splitlines())}}
-    vm, item, p, w = _plain(vm), _plain(item), Paint(color), width
+    vm, item, settings, p, w = _plain(vm), _plain(item), _plain(settings), Paint(color), width
     by_number = {i["number"]: i for i in vm["items"]}
     shown = [] if picks is None else picks
+    live, marks = marks is not None, {} if marks is None else marks
     runner = vm.get("runner") if isinstance(vm.get("runner"), dict) else {}
-    diagnostic = vm.get("base_status") if vm.get("halt") and isinstance(vm.get("base_status"), dict) else {}
+    # the base's remedy for a base or a failed start that holds the run, never for the commit gates or a hook (#178)
+    diagnostic = vm.get("base_status") if vm.get("halt") and vm.get("halt_kind") not in go.OWN_REMEDY and \
+        isinstance(vm.get("base_status"), dict) else {}
+    refused = [r for r in vm.get("refusals") or () if isinstance(r, dict)]
     doing = " ".join(filter(None, (runner.get("title") or runner.get("phase"), runner.get("target"))))
     remedy = diagnostic.get("next") or ""
     destination = _diagnostic_url(diagnostic.get("url"))
@@ -640,8 +694,15 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                               (source.get("worktree") or source.get("ref") or "unknown")))
             failure = observed.get("failure") or {}
             if failure:
-                facts += [("plan failure", ("previous: " if failure.get("stale") else "") +
+                facts += [("plan failed", ("previous: " if failure.get("stale") else "") +
                            f"{failure.get('step', 'publication')} blocked: {failure.get('cause', '')}")]
+        r = next((x for x in refused if x.get("number") == n and not x.get("legacy")), None)
+        if r:                                  # what a hook refused, what it does now, how its output ends (#178)
+            facts += [("refused", f"{go.refusal_cause(r)}, {_when(r.get('at'))}" +
+                       (f", base {str(r['sha'])[:12]}" if r.get("sha") else "")),
+                      ("effect", f"{go.refusal_standing(r)}; {go.refusal_effect(r)}" if r.get("current") else
+                       "earlier; " + go.refusal_effect(r))]
+            facts += [("output" if k == 0 else "", line) for k, line in enumerate((r.get("lines") or [])[-4:])]
         menu = offers(vm, seen)
         pick = min(seen.get("pick", 0), len(menu) - 1)
         choice = [(p(f" › {words:<14} ", "1") if k == pick else f"   {words:<14} ")
@@ -650,19 +711,30 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         title = wrap(f"#{n} {i['title']}", w)
         title[0] = title[0].replace(f"#{n}", p.link(f"#{n}", i.get("url")), 1)
         heading = [section(title[0])] if len(title) == 1 else [p(line, "1;36") for line in title]
-        details = []
+        details, top = [], len(out) + len(heading) + 1          # the row of the first detail
+        reads = {"spec": ("open", n) if i.get("spec") else None,
+                 "plan": ("read-plan", n) if seen["plan"] not in ("", "versions differ") else None,
+                 "checks": ("read-log", n) if seen.get("log") else None,
+                 "refused": ("read-check-output", n) if r and r.get("output") else None,     # #178 in the reader
+                 "output": ("read-check-output", n) if r and r.get("output") else None}
         for label, value in facts:
             pieces = wrap(value, w - 13) if label in ("goal", "stage", "plan", "plan blob", "plan issue",
-                         "plan state", "commit", "publication", "plan source", "plan failure") else [value]
+                         "plan state", "commit", "publication", "plan source", "plan failed", "refused",
+                         "effect", "output", "") else [value]
+            if reads.get(label):                # a click on the row reads it (#180)
+                marks.update({top + len(details) + k: ("read", reads[label]) for k in range(len(pieces))})
             details += [f" {label if index == 0 else '':<12}{piece}" for index, piece in enumerate(pieces)]
+        first = len(out) + len(heading) + 1 + len(details) + 1          # the row of the first entry
+        marks.update({first + k: ("offer", k) for k in range(len(menu))})
         return heading + [""] + details + [""] + choice
     parts = [(dot("working") if counts["working"] else dot("idle")) + f" {counts['working']} working"]
     if counts["waiting"]:
         parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
     if counts["error"]:
         parts.append(dot("error") + f" {counts['error']} failing")
-    warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
-                                  (vm.get("order") or {}).get("why"))))
+    warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), *(
+        f"#{r['number']} {go.refusal_standing(r)}: {go.refusal_cause(r)}" for r in refused if r.get("current")),
+        vm.get("untrusted"), (vm.get("order") or {}).get("why"))))
     inset = INSET if w >= 60 else 0       # beside a session the header keeps its words and leaves out the signet
     if remedy:
         # The action stays in the fixed header even on a short screen. NEXT keeps the complete explanation.
@@ -674,6 +746,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     mark = signet(p.color)
     mode = p(vm["auto_why"], "31") if vm.get("auto_why") else auto.line(vm.get("auto") or {})
     out = [(fit(mark[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
+    if live:
+        marks[3] = ("settings",)               # a click on the approval line opens the settings (#182)
     out.append("")
     goal = vm.get("goal")
     if goal:
@@ -707,6 +781,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         out.append("")
     if item:
         return [fit(line, w) for line in out + inside(item)]
+    if settings is not None:
+        return [fit(line, w) for line in out + _settings_view(settings, p, w, section, marks, len(out))]
 
     # --- board ------------------------------------------------------------
     total = max(1, sum(map(len, groups.values())))
@@ -732,6 +808,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         ref = p.link(f"#{number}", epic.get("url"))
         title = ("› " if number == selected else " ") + ref + " " + epic["title"]
         label = fit(short(title, title_width), title_width)
+        marks[len(out)] = ("item", number)
         out.append((p(label, "1") if number == selected else label) + "  " +
                    p("█" * filled, "32") + p("░" * (10 - filled), "90") + " " + fit(count, count_width))
     out.append("")
@@ -747,9 +824,18 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """What the agents on one line do: the one focus picks."""
         return _doing(focus(agents))
 
-    def details(agents, pad):
-        return [lr(pad + "└ " + dot(a["state"]) + " " + a["harness"] + " " + a["id"][:8],
-                   p(_doing(a)[0] or "thinking", _doing(a)[1]), w) for a in agents if a.get("harness")]
+    def details(agents, pad, at):
+        """A row per agent with a harness from row at of out on: each a pick and a target, Enter or a click
+        jumps to its Herdr pane (#181)."""
+        rows = []
+        for a in (a for a in agents if a.get("harness")):
+            target = ("session", a["id"])
+            if target not in shown:
+                shown.append(target)
+            marks[at + len(rows)] = target
+            rows.append(lr((p("› ", "1") if target == selected else pad) + "└ " + dot(a["state"]) + " " +
+                           a["harness"] + " " + a["id"][:8], p(_doing(a)[0] or "thinking", _doing(a)[1]), w))
+        return rows
 
     def tree(entries):
         """Features, each with what its agent does below it; agents outside any feature by branch."""
@@ -760,7 +846,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             if isinstance(e, str):            # an agent on a branch that is no open feature
                 doing, code = said(agents)
                 rows.append(lr(stem + dot(roll(states)) + " " + e, p(doing, code), w))
-                rows += details(agents, pad)
+                rows += details(agents, pad, len(out) + len(rows))
                 continue
             st, words = gate(e)
             label = p.link(f"#{e['number']}", e.get("url")) + f" {e['title']}"
@@ -768,10 +854,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 shown.append(e["number"])
             if e["number"] == selected:
                 stem, label = p("› ", "1"), p(label, "1")
+            marks[len(out) + len(rows)] = ("item", e["number"])     # out takes these rows next
             rows.append(lr(stem + dot(roll(states + [st])) + " " + label, p(words, tone.get(st, "90")), w))
             if agents:
                 if any(a.get("harness") for a in agents):
-                    rows += details(agents, pad)
+                    rows += details(agents, pad, len(out) + len(rows))
                 else:
                     doing, code = said(agents)
                     rows.append(lr(pad + "└ " + p(doing, code), "", w))
@@ -800,7 +887,9 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         elapsed = f"{max(0, int(seconds))} s" if seconds is not None and 0 <= seconds < 60 else \
             _age(runner.get("started"))
         out.append(lr(dot("working") + " " + p("Pulse runner", "1"), p(elapsed, "90"), w))
-        for text in filter(None, (doing, runner.get("detail"))):
+        named = runner.get("workers") if isinstance(runner.get("workers"), dict) else {}
+        for text in filter(None, (doing, runner.get("detail"),
+                                  named and f"workers {named.get('spec')} ({named.get('why')})")):     # #182
             out += ["  " + p(line, "90") for line in wrap(text, w - 2)]
     for login in sorted(others, key=str.lower):
         items = list(others[login].values())
@@ -832,12 +921,37 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         for text in filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
                                   (vm.get("order") or {}).get("why"))):
             out += [" " + line for line in wrap(text, w - 1)]
+    if vm.get("halt_kind") == "compatibility":     # the decision and the whole output of the probe (FR-05 of #178)
+        probe = vm.get("compatibility") or {}
+        for text in filter(None, ("You: " + probe["next"] if probe.get("next") else "",
+                                  "check output: " + probe["log"] if probe.get("log") else "")):
+            out += [" " + line for line in wrap(text, w - 1)]
+    for r in refused:                         # a hook's refusal: its item, its state, and what comes next (FR-09)
+        n, cause, effect = r.get("number"), go.refusal_cause(r), go.refusal_effect(r)
+        if r.get("legacy") or not r.get("current"):
+            when = f"run ended {_when(r.get('at'))}" if r.get("legacy") else _when(r.get("at"))
+            text = f"earlier, {when}: " + (cause if r.get("legacy") else f"#{n} {cause}" +
+                                            (f" on base {str(r['sha'])[:12]}" if r.get("sha") else "")) + f"; {effect}"
+            out += [" " + p(line, "90") for line in wrap(text, w - 1)]
+            continue
+        if r.get("state") == "decision":
+            text = "You: " + (r.get("why") or f"decide #{n}")
+        elif r.get("state") == "waits":
+            stand = "; ".join(f"#{m} {by_number[m]['title']}: {gate(by_number[m])[1] or 'open'}" if m in by_number
+                              else f"#{m} closed" for m in r.get("needs") or ())
+            text = f"#{n} {go.refusal_standing(r)} ({stand}): {cause}; {effect}"
+        else:
+            text = f"Runner: fix round for #{n}: {cause}"
+        out += [" " + line for line in wrap(text, w - 1)]
     for state_ in NEXT:
         if state_ in todo:
             step = ("You: " if (runner or remedy) and NEXT[state_] == "33" and
                     not todo[state_].startswith("You:") else "") + todo[state_]
             out += [" " + line for line in wrap(step, w - 1)] if state_ in ("plan repair", "plan needs you", "integration") else \
                 [lr(" " + p(state_, NEXT[state_]), step, w)]
+    if live and vm.get("run"):                  # the live map only: pulse status prints as before (#180)
+        marks[len(out)] = ("read", ("read-report", None))
+        out.append(lr(" " + p("run report", "90"), "r reads the last run of pulse go", w))
     out.append("")
 
     # --- ramp ---------------------------------------------------------------
@@ -850,12 +964,33 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         if row["number"] == selected:
             left = p("› " + title, "1")
         stage, code = says(row, beside(left, w))
+        marks[len(out)] = ("item", row["number"])
         out.append(lr(left, p(stage, code), w))
     if len(rows) > ROWS_SHOWN:
         out.append(p(f"  +{len(rows) - ROWS_SHOWN} more", "90"))
     if not rows:
         out.append(p("  nothing ready", "90"))
     return [fit(l, w) for l in out]
+
+
+def _settings_view(seen: dict, p, w: int, section, marks: dict, top: int) -> list:
+    """The settings view under the header (#182): each setting with its value, where it comes from and what it does,
+    the rules evidence, and the changes Enter previews; marks gets ("offer", k) for the rows of entry k."""
+    rows = [section("SETTINGS")]
+    if seen.get("reading"):
+        return rows + [p("  " + READING, "90")]
+    for label, value, where, effect in seen["rows"]:
+        rows += [f" {label if k == 0 else '':<12}{piece}" for k, piece in enumerate(wrap(f"{value} ({where})", w - 13))]
+        rows += [" " * 13 + p(piece, "90") for piece in wrap(effect, w - 13)]
+    rows += ["", section("RULES")] + [" " + piece for line in seen["rules"] for piece in wrap(line, w - 1)] + [""]
+    menu = seen["offers"]
+    pick, col = min(seen.get("pick", 0), len(menu) - 1), max((len(words) for _, words, _ in menu), default=0)
+    for k, (_, words, note) in enumerate(menu):
+        first = (" › " if k == pick else "   ") + f"{words:<{col}}  "
+        lines = [first + note] if vlen(first + note) <= w else [first.rstrip()] + ["     " + x for x in wrap(note, w - 5)]
+        marks.update({top + len(rows) + j: ("offer", k) for j in range(len(lines))})
+        rows += [p(lines[0], "1") if k == pick else lines[0]] + [p(x, "90") for x in lines[1:]]
+    return rows
 
 
 def terminal_size():
@@ -900,9 +1035,10 @@ def _plan_entries(observed: dict) -> list:
     return out
 
 
-def _plan_log(root: Path, number: int, value: str) -> Path | None:
-    """Only this item's existing ordinary log inside this clone's common directory may open."""
-    expected = config.pulse_dir(root) / "go" / f"{number}.log"
+def _plan_log(root: Path, number: int, value: str, suffix: str = ".log") -> Path | None:
+    """Only this item's existing ordinary log (or hook output, .hook.txt) inside this clone's common directory may
+    open."""
+    expected = config.pulse_dir(root) / "go" / f"{number}{suffix}"
     try:
         if value and Path(value) == expected and expected.resolve() == expected and \
                 stat.S_ISREG(expected.lstat().st_mode):
@@ -961,8 +1097,13 @@ def offers(vm: dict, seen: dict) -> list:
             out.append(("read-plan-error", "read plan error", "open the publication log"))
     elif seen.get("plan"):
         out.append(("read-plan", *OFFER["read-plan"]))
+    if any(r.get("number") == item["number"] and r.get("output") for r in vm.get("refusals") or ()):
+        out.append(("read-check-output", "read check output", "show the whole output of the refused check"))
     if item.get("spec"):
         out.append(("open", *OFFER["open"]))
+    out += [("read-doc:" + path, "read " + label, path) for label, path in seen.get("docs", ())]
+    if seen.get("log") and not (observed or {}).get("error_log"):     # read plan error shows it already
+        out.append(("read-log", "read run log", "output of gates and hooks in the last run"))
     out += [("retry-sync:" + entry["id"], "retry sync", f"{entry['kind']}: {entry['id']}")
             for entry in vm.get("actions", []) if entry["item"] == item["number"] and entry["status"] == "error"]
     if item.get("type") in state.WORK:
@@ -977,7 +1118,7 @@ def offers(vm: dict, seen: dict) -> list:
 
 def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
     """(ui, action) for one key of the live map, a tree walked without Shift (D-44). ui: the level
-    (map, item, confirm, help), the item it is at, in the item view the action picked, the approval
+    (map, item, confirm, help, read), the item it is at, in the item view the action picked, the approval
     Enter confirms, and the level the help began on. picks: the items on the map, top down; acts:
     what the item view offers (offers())."""
     level, n = ui["level"], ui.get("at")
@@ -988,8 +1129,10 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
             target = max(0, min(ui["count"] - 1, ui["target"] + (-1 if ch in UP else 1)))
             return ui, ("move-preview", n, target)
         return ui, ("move-save", n) if ch in ENTER and not ui.get("invalid") else None
-    if level == "number" or level == "confirm" and "expected" in ui:
-        back = {"level": "map" if level == "number" else ui.get("from", "item"), "at": n}
+    if level in ("number", "value") or level == "confirm" and "expected" in ui:
+        back = {"level": {"number": "map", "value": "settings"}.get(level) or ui.get("from", "item"), "at": n}
+        if level == "value":                    # back in the settings, on the entry it came from (#182)
+            back["pick"] = ui.get("pick", 0)
         typed = ui.get("typed", "")
         if ch in ("\x1b", "\x1b[D"):
             return back, None
@@ -998,12 +1141,19 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
         if ch in ENTER:
             if level == "number" and typed and int(typed) > 0:
                 return back, ("lookup", int(typed))
+            if level == "value" and typed:      # the preview says whether the value holds
+                return back, (f"setting:{ui['key']}={typed}", n)
             if level == "confirm" and typed == ui["expected"]:
                 return back, ui["sure"]
             return ui, None
-        allowed = ch in "0123456789" if level == "number" else len(ch) == 1 and ch.isprintable()
-        limit = 10 if level == "number" else len(ui["expected"])
+        allowed = ch in "0123456789" if level in ("number", "value") else len(ch) == 1 and ch.isprintable()
+        limit = {"number": 10, "value": 3}.get(level) or len(ui["expected"])
         return ({**ui, "typed": typed + ch} if allowed and len(typed) < limit else ui), None
+    if level == "map" and isinstance(n, tuple):  # a session row (#181): Enter jumps, m, a and → do nothing
+        if ch in ENTER:
+            return ui, ("jump", n[1])
+        if ch in ("m", "a") + RIGHT:
+            return ui, None
     if level == "map":
         if ch == "m" and n in picks:
             return ui, ("move", n)
@@ -1020,20 +1170,27 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
             return ui, ("auto", "merge") if ch == "3" else None
         if ch == "?":
             return {"level": "help", "at": n, "from": "map"}, None
+        if ch == "r":                             # the report of the last run, in the reader (#180)
+            return ui, ("read-report", n)
+        if ch == "s":                             # the settings of the project (#182)
+            return {"level": "settings", "at": n}, None
         return ui, ("say", "q quits the map") if ch in BACK else None     # Esc never ends it (D-44)
-    back = {"level": ui.get("from", "item"), "at": n}     # the help ends where it began
-    if back["level"] == "item":
-        back["pick"] = ui.get("pick", 0)
+    if level == "read":                         # the reader goes back to the view it opened from (#180)
+        back = ui["back"]
+    else:
+        back = {"level": ui.get("from", "item"), "at": n}     # the help ends where it began
+        if back["level"] in ("item", "settings"):
+            back["pick"] = ui.get("pick", 0)
     if ch in BACK:                              # one level up, and what is not written yet is dropped
-        return (back if level != "item" else {"level": "map", "at": n}), None
-    if level == "help":
+        return (back if level not in ("item", "settings") else {"level": "map", "at": n}), None
+    if level in ("help", "read"):
         if ch in UP + DOWN + ("\x1b[5~", "\x1b[6~"):
             step = -1 if ch in UP + ("\x1b[5~",) else 1
             if ch in ("\x1b[5~", "\x1b[6~"):
                 step *= ui.get("page", 1)
             return {**ui, "scroll": max(0, ui.get("scroll", 0) + step)}, None
         return ui, None
-    if level == "item":
+    if level in ("item", "settings"):          # the settings walk as the item view, without a and o (#182)
         if ch in ("\x1b[5~", "\x1b[6~"):
             step = ui.get("page", 1) * (-1 if ch == "\x1b[5~" else 1)
             return {**ui, "scroll": max(0, ui.get("scroll", 0) + step)}, None
@@ -1043,12 +1200,50 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
                      "pick": max(0, pick - 1) if ch in UP else min(len(acts) - 1, pick + 1)}
                     if acts else ui), None
         if ch == "?":
-            return {"level": "help", "at": n, "from": "item", "pick": pick}, None
+            return {"level": "help", "at": n, "from": level, "pick": pick}, None
+        if ch in ENTER and acts and acts[pick].startswith("setting:") and "=" not in acts[pick]:
+            return {"level": "value", "at": n, "key": acts[pick].partition(":")[2], "typed": "", "pick": pick,
+                    "from": "settings"}, None          # the settings stay on screen while it is typed
         if ch in ENTER and acts:
             return ui, (acts[pick], n)
-        return ui, {"a": ("approve", n), "o": ("open", n)}.get(ch)
+        return ui, {"a": ("approve", n), "o": ("open", n)}.get(ch) if level == "item" else None
     if level == "confirm":                      # any other key: no approval
         return back, ui["sure"] if ch in ENTER else None
+    return ui, None
+
+
+def mouse(ch: str):
+    """(button, column, row, pressed) of a mouse report in SGR form, 1-based as the terminal sends it; None for
+    anything else (#180). Buttons 64 and 65 are the wheel."""
+    m = SGR.fullmatch(ch or "")
+    return (int(m[1]), int(m[2]), int(m[3]), m[4] == "M") if m else None
+
+
+def pointer(ui: dict, picks: list, event: tuple, target, acts=()) -> tuple:
+    """(ui, action) for one mouse report, as key() for a key (#180): the wheel moves the pick on the map and
+    scrolls a view; a press of the left button on a target does what Enter does there. Only render() makes
+    targets. A click confirms nothing: on a confirmation, a move, and the number prompt it does nothing."""
+    button, _, _, pressed = event
+    level, n = ui["level"], ui.get("at")
+    if level in ("confirm", "move", "number", "value") or not pressed:
+        return ui, None
+    if button in (64, 65):
+        if level == "map":
+            return key(ui, picks, (UP if button == 64 else DOWN)[0])
+        return {**ui, "scroll": max(0, ui.get("scroll", 0) + (WHEEL if button == 65 else -WHEEL))}, None
+    kind = target[0] if button == 0 and target else ""
+    if kind == "item" and level == "map":
+        return {"level": "item", "at": target[1]}, None
+    if kind == "session" and level == "map":     # picks the row and jumps, as Enter there (#181)
+        return {**ui, "at": target}, ("jump", target[1])
+    if kind == "offer" and level in ("item", "settings") and target[1] < len(acts):
+        return key({**ui, "pick": target[1]}, picks, ENTER[0], acts)
+    if kind == "settings" and level in ("map", "item"):
+        return {"level": "settings", "at": n}, None
+    if kind == "read" and level in ("map", "item") and target[1][0].partition(":")[0] in READS:
+        return ui, target[1]
+    if kind == "back" and level in ("help", "read"):
+        return key(ui, picks, "\x1b")
     return ui, None
 
 
@@ -1210,6 +1405,10 @@ def brief(root: Path, vm: dict, action: tuple) -> tuple:
                 *(f"{key}: {value}" for key, value in selection.items()),
                 "No planner starts. Implementation waits for confirmed exact publication."], \
                ("publish-plan", number, selection)
+    if kind.startswith("setting:"):             # a commit on a branch of its own, after Enter (#182)
+        key_, _, value = kind.partition(":")[2].partition("=")
+        lines, intent = settings.preview(root, key_, value)
+        return lines, (("setting", number, intent) if intent else None)
     if kind in LOCAL_ACTIONS:
         item = next((x for x in vm["items"] if x["number"] == number), None)
         if not item:
@@ -1313,20 +1512,42 @@ def latest(root: Path) -> str:
 
 def look(root: Path, vm: dict, n: int) -> dict:
     """What the item view reads from git: the goal of the spec on the base, else on the branch of origin
-    that has it (#68), and where the PLAN is."""
+    that has it (#68), and where the PLAN is; docs, what else it offers to read, and log, the run log (#180)."""
     i = next((x for x in vm["items"] if x["number"] == n), {})
+    text = spec.find(root, i["spec"])[0] if i.get("spec") else None
     observed = vm.get("plans", {}).get(n)
     if observed is not None:
         selected = observed["selected"]
-        return {"number": n, "goal": _goal(spec.find(root, i["spec"])[0] if i.get("spec") else None),
+        seen = {"number": n, "goal": _goal(text),
                 "plan": selected["path"] if selected else "versions differ" if observed["conflict"] else "",
                 "plan_blob": observed["publication"]["blob"],
                 "plan_findings": observed["validation"]["findings"]}
-    p = ready.plans(root).get(n)
-    return {"number": n, "goal": _goal(spec.find(root, i["spec"])[0] if i.get("spec") else None),
-            "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else "",
-            **({"plan_blob": p.get("blob"), "plan_findings": ready.plan_validation(root, p["text"], i.get("spec"))}
-               if p else {})}
+        plan = (selected or {}).get("text")
+    else:
+        p = ready.plans(root).get(n)
+        seen = {"number": n, "goal": _goal(text),
+                "plan": p["path"] + (f" on {p['ref']}" if p["ref"] else "") if p else "",
+                **({"plan_blob": p.get("blob"), "plan_findings": ready.plan_validation(root, p["text"], i.get("spec"))}
+                   if p else {})}
+        plan = p["text"] if p else None
+    docs = _docs(root, i.get("spec"), text, plan)
+    log = _plan_log(root, n, str(config.pulse_dir(root) / "go" / f"{n}.log"))
+    return {**seen, **({"docs": docs} if docs else {}), **({"log": str(log)} if log else {})}
+
+
+def _docs(root: Path, path, text, plan) -> list:
+    """[(label, path)] to read beside spec and plan (#180): the spec its spec names as parent, and each decision
+    record its plan names, found as _devprocess/decisions/ADR-nn-*.md."""
+    out = []
+    parent = spec.front(text or "").get("parent")
+    if isinstance(parent, str) and path:
+        out.append(("parent spec", posixpath.normpath(posixpath.join(posixpath.dirname(path), parent))))
+    names = spec.front(plan or "").get("decisions") or []
+    for name in list(dict.fromkeys([names] if isinstance(names, str) else names))[:20]:    # each once, 20 at most
+        found = sorted((root / "_devprocess" / "decisions").glob(name + "-*.md")) if re.fullmatch(r"ADR-\d+", name) \
+            else []
+        out += [(name, found[0].relative_to(root).as_posix())] if found else []
+    return out
 
 
 def by_number(root: Path, vm: dict, number: int) -> dict:
@@ -1356,18 +1577,82 @@ def opener(env=os.environ) -> list:
     return ["xdg-open"] if shutil.which("xdg-open") else []
 
 
-def _show(path, name: str, cmd: list = None) -> str:
-    """Open path (or a link) in a window and give the terminal back at once (D-44), with cmd, else
-    the opener(); the line for the status bar."""
-    cmd = opener() if cmd is None else cmd
+def _show(path, name: str, cmd: list = None):
+    """A file for the reader in the map (#180), or a link (https://) opened in its window with cmd, else the
+    opener(), giving the terminal back at once (D-44). What the reader shows, else the line for the status bar.
+    It reads a regular file only, through no link at its place, and READ_MOST bytes at most: the end of a log,
+    else the start, and names the cut."""
+    if str(path).startswith("https://"):
+        cmd = opener() if cmd is None else cmd
+        try:
+            if cmd:                     # never waits for it: the map runs on (D-44)
+                subprocess.Popen(cmd + [str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                return f"opened {name} with {Path(cmd[0]).name}"
+        except OSError:
+            pass
+        return f"open it yourself: {path}"
+    got = _read(path)
+    if got is None:
+        return f"{name} cannot be read"
+    data, size, tail = got
+    if b"\0" in data:
+        return f"{name}: no text to show"
+    text = data.decode("utf-8", "replace")
+    cut = f"the {'last' if tail else 'first'} {READ_MOST // 1024} KiB of {size // 1024} KiB" if size > READ_MOST else ""
+    return _reading(name, str(path), text.partition("\n")[2] if tail else text, cut)
+
+
+def _read(path):
+    """(bytes, size, from the end) of a regular file, read through no link at its place and never waiting on a
+    pipe (#180): READ_MOST bytes at most, the end of a .log, else the start; None when it cannot be read."""
     try:
-        if cmd:                         # never waits for it: the map runs on (D-44)
-            subprocess.Popen(cmd + [str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            return f"opened {name} with {Path(cmd[0]).name}"
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            tail = info.st_size > READ_MOST and str(path).endswith(".log")
+            if tail:
+                f.seek(info.st_size - READ_MOST)
+            return f.read(READ_MOST), info.st_size, tail
     except OSError:
-        pass
-    return f"open it yourself: {path}"
+        return None
+
+
+def _reading(title: str, source: str, text: str, cut: str = ""):
+    """What the reader shows (#180): {title, source, text: its rows, cut}, else why it shows nothing. A text
+    longer than READ_MOST keeps its start and says so. Per line, colors and OSC sequences closed on that line
+    go; any other escape or control character shows as ?, so no text acts on the terminal or disappears."""
+    if not text.strip() or "\0" in text:
+        return f"{ready.printable(title)}: no text to show"
+    raw = text.encode("utf-8", "replace")
+    if not cut and len(raw) > READ_MOST:
+        text = raw[:READ_MOST].decode("utf-8", "ignore")
+        cut = f"the first {READ_MOST // 1024} KiB of {len(raw) // 1024} KiB"
+
+    def plain(s):
+        return ready.printable(CONTROL.sub("", s).expandtabs(4))
+    return {"title": plain(title), "source": plain(source),
+            "text": [plain(row) for row in text.splitlines()], "cut": cut}
+
+
+def _report_text(rep: dict) -> str:
+    """The last run of pulse go as its report has it (#180): the run, its end, a halt, the base, and per item
+    its result, time, phase, reason and log, the latest first."""
+    run, base = rep.get("run") or {}, rep.get("base") if isinstance(rep.get("base"), dict) else {}
+    end = "still running" if run.get("running") else run.get("ended") or "unknown"
+    lines = [f"run: {run.get('id', '')}", f"started: {run.get('started', '')}",
+             f"ended: {end}" + (f", stopped ({run['stopped']})" if run.get("stopped") else "")]
+    lines += [f"halt: {rep['halt']}"] if rep.get("halt") else []
+    lines += ["base: " + "; ".join(str(base[k]) for k in ("state", "cause", "next") if base.get(k))] if base else []
+    items = [(n, e) for n, e in (rep["items"] if isinstance(rep.get("items"), dict) else {}).items()
+             if isinstance(e, dict)]
+    for n, entry in sorted(items, key=lambda x: str(x[1].get("at", "")), reverse=True):
+        lines += ["", f"#{n} {entry.get('result', '')}"] + [
+            f"  {word}: {entry[k]}" for k, word in (("at", "time"), ("phase", "phase"), ("why", "why"), ("log", "log"))
+            if entry.get(k)]
+    return "\n".join(lines)
 
 
 def _publish_plan(root: Path, vm: dict, number: int, selection: dict) -> str:
@@ -1402,10 +1687,50 @@ def _publish_plan(root: Path, vm: dict, number: int, selection: dict) -> str:
     return f"#{number}: plan publication started; not yet published; log: {log}"
 
 
-def act(root: Path, vm: dict, action: tuple) -> str:
-    """Carry out one action from the map; returns a line for the status bar. An approval writes what brief()
-    showed, and only while the item still waits for it: the gate and blobs come with the action (#115)."""
+def jump(root: Path, ident: str, env=os.environ) -> str:
+    """Focus the Herdr pane that runs session ident now, in any tab or workspace (#181), and the line that says so.
+    Presence, read anew, tells an ended or replaced session; Herdr's agent list, read at this moment, names the one
+    pane that reports ident as its session, so a moved pane is found under its new id. A subagent without a pane
+    of its own leads to its parent session. Only agent list and agent focus: the agent gets no input."""
+    if env.get("HERDR_ENV") != "1":
+        return "no jump: this map does not run in Herdr"
+    found = next(((s, a) for s in presence.read(root) for a in [s, *s["agents"]] if a["id"] == ident), None)
+    if not found:
+        return "no jump: the session has ended or another session replaced it"
+    session, actor = found
+
+    def herdr(*args) -> dict:
+        out = subprocess.run([mapstart._herdr_bin(env), *args], stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=HERDR_WAIT, check=True).stdout
+        return json.loads(out)["result"]
+    try:
+        agents = herdr("agent", "list")["agents"]
+
+        def pane(who):                         # the one pane that reports who as its session, else None
+            held = [a.get("pane_id") for a in agents if isinstance(a, dict) and
+                    isinstance(a.get("agent_session"), dict) and a["agent_session"].get("value") == who]
+            ok = len(held) == 1 and isinstance(held[0], str) and held[0][:1] not in ("", "-")   # never an option
+            return held[0] if ok else None
+        own = pane(ident)
+        target = own or actor["parent"] and pane(actor["parent"])
+        if not target:
+            return "no jump: Herdr reports no single pane with this session's identity"
+        herdr("agent", "focus", target)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return "no jump: Herdr does not answer"
+    if own:
+        return f"jumped to the Herdr pane of {actor['harness']} {ident[:8]}"
+    return f"jumped to the Herdr pane of its parent session {session['harness']} {actor['parent'][:8]}; " \
+        f"subagent {ident[:8]} has no pane of its own"
+
+
+def act(root: Path, vm: dict, action: tuple):
+    """Carry out one action from the map; returns a line for the status bar, or a text for the reader (#180).
+    An approval writes what brief() showed, and only while the item still waits for it: the gate and blobs
+    come with the action (#115)."""
     kind, n = action[0], action[1]
+    if kind == "jump":
+        return jump(root, n)
     if kind == "auto":
         if not auto.person(os.environ, True):
             return "only a person changes approval policy, in their own terminal or map"
@@ -1413,6 +1738,8 @@ def act(root: Path, vm: dict, action: tuple) -> str:
         if intended.get("expected") != auto.read(root)["policy"]["revision"]:
             return "Approval policy changed; review the current settings before confirming."
         return queue_policy(root, intended["enabled"], expected=intended["expected"])
+    if kind == "setting":                       # what brief() showed, against the base fetched anew (#182)
+        return settings.change(root, **action[2])
     if kind == "retry-sync":
         ident = action[2] if len(action) == 3 else None
         if not any(entry["id"] == ident and entry["item"] == n and entry["status"] == "error"
@@ -1441,9 +1768,22 @@ def act(root: Path, vm: dict, action: tuple) -> str:
         raise state.StateError("the board is not current; wait for a successful fresh read before writing")
     if kind == "publish-plan":
         return _publish_plan(root, vm, n, action[2] if len(action) > 2 else None)
+    if kind == "read-check-output":
+        r = next((r for r in vm.get("refusals") or () if r.get("number") == n and r.get("output")), {})
+        log = _plan_log(root, n, r.get("output"), ".hook.txt")
+        return _show(log, f"check output #{n}") if log else f"#{n}: the check output is unavailable"
     if kind == "read-plan-error":
         log = _plan_log(root, n, vm.get("plans", {}).get(n, {}).get("error_log"))
         return _show(log, f"plan publication log #{n}") if log else f"#{n}: plan error log is unavailable"
+    if kind == "read-log":                      # gate and hook output of the last run (#180)
+        log = _plan_log(root, n, str(config.pulse_dir(root) / "go" / f"{n}.log"))
+        return _show(log, f"run log #{n}") if log else f"#{n}: its run log is unavailable"
+    if kind == "read-report":
+        rep = go.last_run(root)
+        return _reading("run report", str(config.pulse_dir(root) / "go" / "report.json"), _report_text(rep)) \
+            if rep else "no run of pulse go in this clone yet"
+    if kind.startswith("read-doc:"):            # the parent spec, a decision of the plan
+        return _doc(root, n, kind.partition(":")[2], "document")
     if kind.startswith("read-plan:"):
         entry = next((row for row in _plan_entries(vm.get("plans", {}).get(n, {}))
                       if row[0] == kind.partition(":")[2]), None)
@@ -1489,38 +1829,32 @@ def act(root: Path, vm: dict, action: tuple) -> str:
     item = next((i for i in vm["items"] if i["number"] == n), {})
     if not item.get("spec"):
         return f"#{n} has no spec"
-    path = item["spec"]                         # from the issue text: it may point anywhere (#56)
-    here = (root / path).resolve()
+    return _doc(root, n, item["spec"], "spec")
+
+
+def _doc(root: Path, n: int, path: str, what: str):
+    """A Markdown file of the repository for the reader (#180): as the base has it, else the branch of origin
+    that has it (#68), else the working tree; what names it in a refusal."""
+    here = (root / path).resolve()              # from the issue text: it may point anywhere (#56)
     if not here.is_relative_to(root.resolve()):
-        return f"#{n}: its spec path leads out of the repository; nothing opened"
-    if not path.endswith(".md") or here.suffix != ".md":    # the opener picks a program by it, a link's target
-        return f"#{n}: its spec is no Markdown file; nothing opened"       # too (audit and final check of #68)
+        return f"#{n}: its {what} path leads out of the repository; nothing opened"
+    if not path.endswith(".md") or here.suffix != ".md":    # a link's target too (audit and final check of #68)
+        return f"#{n}: its {what} is no Markdown file; nothing opened"
     text, ref = spec.find(root, path)           # what agents plan from, else its branch (#68)
     if text is None:
         try:
             there = here.is_file()
         except OSError as e:                    # a path the system refuses, longer than it takes (#56 L-5)
-            return f"#{n}: the system cannot read its spec path ({e.strerror}); nothing opened"
-        return _show(root / path, path) if there else f"#{n}: its spec {path} is on no branch of origin and not here"
-    try:
-        same = here.read_text(encoding="utf-8") == text
-    except (OSError, UnicodeDecodeError):
-        same = False
+            return f"#{n}: the system cannot read its {what} path ({e.strerror}); nothing opened"
+        return _show(root / path, path) if there else f"#{n}: its {what} {path} is on no branch of origin and not here"
+    got = _read(root / path)                    # the reader's own read: no pipe holds the map (#180)
+    same = got is not None and got[1] <= READ_MOST and got[0].decode("utf-8", "replace") == text
     return _show(root / path, path) if same else _copy(root, "specs", n, path, text, ref)
 
 
-def _copy(root: Path, kind: str, n: int, path: str, text: str, ref: str) -> str:
-    """Open a copy to read of path as ref has it, named by the item, in the clone's cache: a new file,
-    never written through a link at its place (audit of #55)."""
-    copy = state.cache_dir(root) / kind / f"{n}-{Path(path).name}"
-    try:
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        if copy.is_symlink() or copy.exists():
-            copy.unlink()
-        copy.write_text(text, encoding="utf-8")
-    except OSError as e:
-        return f"no copy of {path} to read: {e}"
-    return _show(copy, f"a copy of {path} from {ref}")
+def _copy(root: Path, kind: str, n: int, path: str, text: str, ref: str):
+    """path as ref has it, for the reader (#180): read from git, written to no file."""
+    return _reading(path, f"{path} from {ref}", text)
 
 
 def _fetch(root: Path) -> None:
@@ -1692,9 +2026,11 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
             "person": state.who(root, me) or "you", "me": me,      # Klarname (@login), as every surface (#111)
             "items": items, "sessions": [], "error": error, "order": order_info,
             "phases": phases, "failed": failures(root, items),
-            "halt": go.halt(root),              # base red, or a hook refused pulse go (#113)
+            "halt": go.halt(root),              # what holds the whole run (#113, #178)
+            "halt_kind": go.halt_kind(report), "compatibility": report.get("compatibility") or {},
+            "refusals": go.refusals(root, items),       # a hook's refusals, current or earlier (#178)
             "runner": go.activity(root),        # live preparations too, before a claim or an agent exists (#149)
-            "base_status": report.get("base") or {}, "plans": plans,
+            "base_status": report.get("base") or {}, "plans": plans, "run": report.get("run"),
             "closed": dict(Counter(closed(root, repo, items) if board else {}) + finished),
             "nowhere": [], "unready": [],
             "branches": {},
@@ -1815,8 +2151,11 @@ def _keys():
     except ImportError:
         return None
     fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
+    saved, on = termios.tcgetattr(fd), []
     tty.setcbreak(fd)
+
+    def byte() -> str:
+        return os.read(fd, 1).decode(errors="ignore") if select.select([sys.stdin], [], [], 0.05)[0] else ""
 
     def read(wait: float):
         if not select.select([sys.stdin], [], [], wait)[0]:
@@ -1826,9 +2165,29 @@ def _keys():
             ch += os.read(fd, 2).decode(errors="ignore")
             if ch in ("\x1b[5", "\x1b[6") and select.select([sys.stdin], [], [], 0.01)[0]:
                 ch += os.read(fd, 1).decode(errors="ignore")
+            if ch == "\x1b[M":                     # an X10 report: its three bytes are no keys (#180)
+                ch += byte() + byte() + byte()
+            while ch.startswith("\x1b[<") and len(ch) < 16 and not ch.endswith(("M", "m")):
+                more = byte()                         # an SGR report, one key up to its M or m
+                if not more:
+                    break
+                ch += more
         return ch
 
+    def mouse():
+        """Clicks and the wheel as reports (#180), until restore()."""
+        sys.stdout.write(MOUSE_ON)
+        sys.stdout.flush()
+        on.append(True)
+
     def restore():
+        if on:
+            on.clear()
+            try:
+                sys.stdout.write(MOUSE_OFF)
+                sys.stdout.flush()
+            except (OSError, ValueError):
+                pass                   # the terminal is gone (SIGHUP)
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
         except termios.error:
@@ -1841,7 +2200,7 @@ def _keys():
         except termios.error:
             pass
 
-    read.restore, read.drop = restore, drop
+    read.restore, read.drop, read.mouse = restore, drop, mouse
     return read
 
 
@@ -1867,29 +2226,36 @@ def _windows_keys():
     return read
 
 
-def fitted(lines: list, height: int, keep: int, offset: int = None) -> list:
+def fitted(lines: list, height: int, keep: int, offset: int = None, kept: list = None, top: int = HEAD) -> list:
     """At most height lines, so a frame taller than the terminal never scrolls it: the header (the
-    first HEAD lines, #57) and the last keep lines (status and keys) stay, the rest is cut around
+    first top lines, #57) and the last keep lines (status and keys) stay, the rest is cut around
     the picked row, the one that starts with › (a title may hold one too, #56), and one line says
-    how much is hidden. A terminal too low for all of it gives header lines up first."""
+    how much is hidden. A terminal too low for all of it gives header lines up first. kept gets, per
+    row returned, its index in lines, None for the line that counts what is hidden (#180)."""
+    kept = [] if kept is None else kept
     if len(lines) <= height:
+        kept[:] = range(len(lines))
         return lines
-    head = lines[:min(HEAD, max(0, height - keep - 2))]
+    head = lines[:min(top, max(0, height - keep - 2))]
     body, foot = lines[len(head):len(lines) - keep], lines[len(lines) - keep:]
     room = max(1, height - len(head) - len(foot) - 1)
-    at = next((i for i, line in enumerate(body) if ANSI.sub("", line).lstrip().startswith("›")), 0)
-    top = max(0, min(at - room // 2 if offset is None else offset, len(body) - room))
+    if offset is None:
+        at = next((i for i, line in enumerate(body) if ANSI.sub("", line).lstrip().startswith("›")), 0)
+    start = max(0, min(at - room // 2 if offset is None else offset, len(body) - room))
+    shown = body[start:start + room]
+    kept[:] = [*range(len(head)), *range(len(head) + start, len(head) + start + len(shown)), None,
+               *range(len(lines) - len(foot), len(lines))]
     hint = "PgUp/PgDn scroll" if offset is not None else "a taller terminal shows them"
-    return head + body[top:top + room] + [f"  … {len(body) - room} more lines; {hint}"] + foot
+    return head + shown + [f"  … {len(body) - room} more lines; {hint}"] + foot
 
 
 def shows(text: list, width: int, height: int) -> bool:
     """Whether a confirmation shows whole, so Enter binds nothing the person did not see (#76, #56 audit
     M-1): fitted keeps a row of the map and the row that counts what it hides beside the footer (the
-    text, the keys), and a terminal narrower than the map wraps every row. The footer counts every
+    text, the line over the keys, the keys), and a terminal narrower than the map wraps every row. The footer counts every
     character that is not ASCII as two columns: a text the terminal draws wider than the map counts it
     can make the map refuse, never hide a line (final check M-2)."""
-    return len(footer("\n".join(text), KEYS["confirm"], width)) + 2 <= height and \
+    return len(footer("\n".join(text), KEYS["confirm"], width)) + 3 <= height and \
         terminal_size().columns >= width
 
 
@@ -1939,6 +2305,7 @@ def main(args) -> int:
             box["new"] = e
     try:
         sys.stdout.write("\033[?1049h\033[?25l")     # the alternate screen: the shell comes back as it was
+        getattr(keys, "mouse", lambda: None)()       # clicks and the wheel; restore() switches them off (#180)
         while True:
             fresh = False
             while True:                                # take what the last read brought, start the next
@@ -1985,7 +2352,25 @@ def main(args) -> int:
                 view = {**vm, "items": [*vm["items"], detached]}
             frame = int(time.time() / TICK)            # by the clock: all breathe in step
             acts = ()                                  # what the item view offers, as this frame draws it
-            if level == "item" or level == "confirm" and ui.get("from") != "map":   # a on the map asks over the map
+            marks = {}                                 # row of lines -> what a click there does (#180)
+            if level == "map":
+                box.pop("settings", None)              # the settings are read anew each time they open (#182)
+            if level == "settings" or level in ("value", "confirm") and ui.get("from") == "settings":
+                if "settings" not in box:              # beside the keys: git, and the hook measures the rules
+
+                    def settings_of(vm=vm):
+                        try:
+                            box["settings"] = settings.read(root, vm["repo"])
+                        except Exception as error:     # the view says so; the map goes on
+                            box["settings"] = {"rows": [], "offers": [],
+                                               "rules": [f"The settings could not be read: {error}"]}
+                    box["settings"] = None
+                    _beside(settings_of)
+                shown_settings = box["settings"] or {"reading": True, "offers": []}
+                acts = [a for a, *_ in shown_settings["offers"]]
+                lines = render(vm, frame=frame, color=color, width=width, marks=marks,
+                               settings={**shown_settings, "pick": ui.get("pick", 0)})
+            elif level == "item" or level == "confirm" and ui.get("from") != "map":   # a on the map asks over the map
                 if fresh or not seen or seen["number"] != n:
                     if not seen or seen["number"] != n:    # the view opens: its approvals come beside the keys
                         approved.pop(n, None)
@@ -2003,31 +2388,50 @@ def main(args) -> int:
                     ui = {**ui, "pick": acts.index(was[k]) if was[k] in acts else 0}   # goes to the top,
                                                            # which never writes without asking first (#55)
                 offered = {n: acts}
-                lines = render(view, frame=frame, color=color, width=width,
+                lines = render(view, frame=frame, color=color, width=width, marks=marks,
                                item=dict(seen, pick=ui.get("pick", 0), approvals=approved.get(n, READING)))
             elif level == "help":                      # under the header, as every screen (#57)
                 if width not in help_pages:
                     help_pages[width] = help_lines(width)
-                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + help_pages[width]
+                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + help_pages[width]
+                marks = {HEAD: ("back",)}
+            elif level == "read":                      # the reader, under the header as the help (#180)
+                if ui.get("width") != width:           # its rows, wrapped once per width
+                    rows = [Paint(color)(row, "1") for row in wrap(ui["title"], width)] + \
+                        wrap("source: " + ui["source"], width) + (wrap("cut: " + ui["cut"], width) if ui["cut"] else [])
+                    ui = {**ui, "width": width, "rows": rows + [""] + [row for line in ui["text"]
+                                                                      for row in (wrap(line, width) or [""])]}
+                lines = render(vm, frame=frame, color=color, width=width)[:HEAD] + [BACK_ROW] + ui["rows"]
+                marks = {HEAD: ("back",)}
             elif level == "move":
                 shown = []
-                lines = render(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown)
+                lines = render(ui["vm"], frame=frame, color=color, width=width, selected=n, picks=shown,
+                               marks=marks)            # the rows of the live map, run report too (#180)
             else:
                 shown = []
-                lines = render(vm, frame=frame, color=color, width=width, selected=n, picks=shown)
+                lines = render(vm, frame=frame, color=color, width=width, selected=n, picks=shown, marks=marks)
             notice = status or (vm.get("error", "") if vm.get("rate_limit") else (vm.get("order") or {}).get("why", ""))
             if level == "number":
                 notice = "Issue number: " + ui.get("typed", "")
+            elif level == "value":
+                notice = "Slots: " + ui.get("typed", "")
             elif level == "confirm" and "expected" in ui:
                 notice = status + "\n> " + ui.get("typed", "")
-            foot = footer(notice, KEYS[level], width) if read else []
-            if level in ("item", "help"):
-                kept = min(HEAD, max(0, height - len(foot) - 2))
+            # the status, a line over the keys on every level (#180), the keys
+            legend = JUMP_KEYS if level == "map" and isinstance(n, tuple) else KEYS[level]     # a session row (#181)
+            foot = footer(notice, "", width) + [Paint(color)("─" * width, "90")] + footer("", legend, width) \
+                if read else []
+            top = HEAD + 1 if level in ("help", "read") else HEAD      # the back row stays with the header
+            if level in ("item", "help", "read", "settings"):
+                kept = min(top, max(0, height - len(foot) - 2))
                 ui["page"] = max(1, height - kept - len(foot) - 1)
-                if "scroll" in ui or level == "help":
+                if "scroll" in ui or level not in ("item", "settings"):
                     ui["scroll"] = min(ui.get("scroll", 0), max(0, len(lines) - kept - ui["page"]))
+            where = []                                 # screen row -> row of lines, for a click
             cells = [fit(l, width) for l in fitted(lines + foot, height, len(foot),
-                                                  ui.get("scroll") if level in ("item", "help") else None)]
+                                                  ui.get("scroll") if level in ("item", "help", "read", "settings")
+                                                  else None,
+                                                  kept=where, top=top)]
             clear = (width, height) != drawn_at      # new or resized: cleared, then every row once (#98)
             if clear:
                 drawn = []
@@ -2061,9 +2465,14 @@ def main(args) -> int:
                                 raise state.StateError("the board changed while confirming; inspect it again")
                             vm = board_
                         view = vm = gather(root, fresh=True)
-                    status = act(root, view, todo)
+                    said = act(root, view, todo)
+                    if isinstance(said, dict):          # a text to read: the reader opens over this view (#180)
+                        ui, said = {"level": "read", "at": ui.get("at"), **said, "scroll": 0, "back": ui}, ""
+                    status = said
                 except (state.StateError, ValueError) as e:
                     status = f"! {e}"
+                if todo[0] == "jump":                  # keys typed while Herdr answered start no second jump
+                    getattr(read, "drop", lambda: None)()
                 if wrote:
                     box["writes"] += 1
                     if detached:
@@ -2071,6 +2480,7 @@ def main(args) -> int:
                     if todo[0] in LOCAL_WRITES:
                         local(root, vm)
                         seen = None
+                        box.pop("settings", None)      # the settings view shows what the write left
                     else:
                         vm = None
                 todo = None
@@ -2085,8 +2495,16 @@ def main(args) -> int:
             if ch in ENTER and "opened" in ui and time.monotonic() - ui["opened"] < SOON:
                 ui, ch = key(ui, shown, BACK[0])[0], None   # typed unread: it closes
                 status = "nothing done: enter came within a second of opening it; open it again, read, then enter"
+            if ch and ch.startswith(("\x1b[<", "\x1b[M")):    # a mouse report acts through pointer() only (#180)
+                event = mouse(ch)
+                target = marks.get(where[event[2] - 1]) if event and 0 < event[2] <= len(where) else None
+                new, action = pointer(ui, shown, event, target, acts) if event else (ui, None)
+                if new is ui and not action:           # a release, a click on no target: the status stays
+                    continue
+            elif ch:
+                new, action = key(ui, shown, ch, acts)
             if ch:
-                ui, action = key(ui, shown, ch, acts)
+                ui = new
                 if level not in ("confirm", "move") or ui["level"] != level:
                     status = ""
                 if action and action[0] == "say":
@@ -2114,8 +2532,8 @@ def main(args) -> int:
                     except (state.StateError, ValueError) as error:
                         status = str(error)
                     action = None
-                if action and level in ("map", "item") and (action[0].startswith(("publish-plan:", "retry-sync:")) or
-                        action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
+                if action and level in ("map", "item", "settings", "value") and (action[0].startswith(
+                        ("publish-plan:", "retry-sync:", "setting:")) or action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
                     try:
                         text, sure = brief(root, view, action)
                     except (state.StateError, ValueError) as error:
@@ -2127,12 +2545,13 @@ def main(args) -> int:
                     if sure and not shows([*text, *( ["> " + expected] if expected else [])], width, height):
                         status = SMALL
                     elif sure:
-                        ui = {"level": "confirm", "at": n, "sure": sure, "pick": ui.get("pick", 0), "from": level,
+                        ui = {"level": "confirm", "at": n, "sure": sure, "pick": ui.get("pick", 0), "from": ui["level"],
                               "size": size}
                         if expected:
                             ui.update(expected=expected, typed="")
                 if action:                             # the next frame says what runs, then it runs
-                    status, todo = DOING.get(action[0], "opening it…").format(action[1]), action
+                    status, todo = "asking Herdr for its pane…" if action[0] == "jump" else \
+                        DOING.get(action[0], "opening it…").format(action[1]), action
     except KeyboardInterrupt:
         return 0
     finally:

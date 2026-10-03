@@ -52,20 +52,21 @@ def _git(root: Path, *args) -> str:
                           encoding="utf-8", errors="replace").stdout      # one bad byte in a PLAN stops nothing
 
 
-def net_git(cwd, *args) -> subprocess.CompletedProcess:
-    """git over the network: no prompt, no terminal, stdin closed, and a time limit that ends git with
-    everything it started (ssh, a remote helper). A run out of time reads as a failure."""
+def net_git(cwd, *args, timeout=None) -> subprocess.CompletedProcess:
+    """git over the network: no prompt, no terminal, stdin closed, and a time limit (GIT_TIMEOUT unless given) that
+    ends git with everything it started (ssh, a remote helper, a hook). A run out of time reads as a failure."""
+    timeout = timeout or GIT_TIMEOUT
     with subprocess.Popen(["git", "-C", str(cwd), *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, errors="replace", env={**os.environ, **NO_PROMPT},
                           start_new_session=True) as p:
         try:
-            out, err = p.communicate(timeout=GIT_TIMEOUT)
+            out, err = p.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(p.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            out, err = "", f"no answer within {GIT_TIMEOUT} s"
+            out, err = "", f"no answer within {timeout} s"
     return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
 

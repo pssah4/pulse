@@ -25,6 +25,19 @@ def person(env, tty) -> bool:
     return bool(tty) and not any(env.get(k) for k in MARKERS)
 
 
+def nested(env) -> str:
+    """Why a runner, a Plan publication, or a map beside a session may not start here, else "": pulse go's own
+    agents carry PULSE_HOLDER, and a Claude Code session nobody attends (claude -p, background) has
+    CLAUDE_CODE_SESSION_ATTENDED=0. Claude Code gives every process of every session CLAUDE_CODE_CHILD_SESSION=1
+    (#183); without the attended flag that still counts as a child session, as before."""
+    if env.get("PULSE_HOLDER"):
+        return "a runner agent"
+    attended = env.get("CLAUDE_CODE_SESSION_ATTENDED")
+    if attended is not None:
+        return "" if attended == "1" else "an unattended session"
+    return "a child session" if env.get("CLAUDE_CODE_CHILD_SESSION") else ""
+
+
 def span(text: str) -> int:
     """--for: the seconds of <n>h or <n>d."""
     m = re.fullmatch(r"([1-9]\d*)([hd])", text.strip().lower())

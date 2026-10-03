@@ -11,6 +11,7 @@ description: Every setting in .pulse/config.toml.
 mode = "on"                 # on | off
 cap = 4                     # agents pulse go runs at once, in every phase and across all agents
 agent = "claude"            # which [agents] templates pulse go starts, e.g. "claude:2,codex:2"
+workers = "session"         # session: Claude Code starts claude, Codex codex, a terminal agent | fixed: always agent
 agent_timeout = 60          # minutes before a hung agent is stopped
 base_branch = "main"
 verify = "npm test"         # pulse go needs it: the tests gate after the build
@@ -36,7 +37,8 @@ artifacts = ["dist/app.js"]
 |---|---|---|
 | `mode` | none (not active) | `on` injects the rules at a session start and in each subagent, and runs the stop check; `off` silences every hook but keeps the files |
 | `cap` | `4` | agents `pulse go` runs at once for you, see [Parallel work](../concepts/parallel-work); a teammate's work takes none of your slots |
-| `agent` | `claude` | the headless agents `pulse go` starts; several as `claude:2,codex:2`, where a number caps that agent and a bare name gets `cap`, while `cap` counts all of them together, see [pulse go](../guides/pulse-go#two-agents-at-once) |
+| `agent` | `claude` | the headless agents `pulse go` starts from a terminal, or from anywhere with `workers = "fixed"`; several as `claude:2,codex:2`, where a number caps that agent and a bare name gets `cap`, while `cap` counts all of them together, see [pulse go](../guides/pulse-go#two-agents-at-once) |
+| `workers` | `session` | who picks the workers of a run. `session`: a start from Claude Code runs `claude` workers, a start from Codex `codex` workers, each with all slots, and a terminal start runs `agent`; an empty template for that harness in `[agents]` falls back to `agent`. `fixed`: every start runs `agent`. Another value warns and counts as `session`, see [pulse go](../guides/pulse-go#which-workers-a-run-starts) |
 | `agent_timeout` | `60` | minutes per phase, `verify` included; a phase that runs longer is stopped with its child processes. A plan or build that timed out gives its claim back; stopped work is preserved for recovery, and [the chain after the build](../concepts/verification-gates#the-chain-after-the-build) says what a timeout means for each step |
 | `base_branch` | origin's default branch, else `main` | the shared base from which item branches start and into which approved results integrate |
 | `spec_branch` | `docs/{n}-{slug}` | legacy spec-branch lookup for existing projects. New work reserves a draft number first and keeps spec, Plan and implementation on `<type>/<n>-<slug>`; it needs no separate docs branch or PR |

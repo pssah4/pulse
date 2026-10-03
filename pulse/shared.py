@@ -489,7 +489,8 @@ def publish(root, operation, branch, head, expected_head):
     reason = pushed.stderr.strip() or pushed.stdout.strip() or "atomic publication failed"
     if "[rejected]" in pushed.stdout or "[remote rejected]" in pushed.stdout:
         return {**result, "status": "conflict", "revision": revision, "reason": reason}
-    raise StateError(reason)
+    # a pre-push hook writes to stdout too, npm's header with the script's name (#178)
+    raise StateError("\n".join(filter(None, (pushed.stdout.strip(), pushed.stderr.strip()))) or reason)
 
 
 def update(root, operation):

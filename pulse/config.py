@@ -27,7 +27,8 @@ DEFAULTS = {"mode": None, "cap": 4, "base_branch": None, "repo": None,
             "setup": None, "setup_timeout": 20, "protected": (),   # setup_timeout in minutes
             "ids_since": None,             # other keys of an older config are read past (#107), plan_approval too
             "spec_branch": "docs/{n}-{slug}",                # where specs are written, {type} too (#116)
-            "spec_tests": None}                              # pattern -> {run, localhost}; pulse go needs it (#117)
+            "spec_tests": None,                              # pattern -> {run, localhost}; pulse go needs it (#117)
+            "workers": "session"}          # session: a start from Claude Code or Codex takes its harness; fixed: agent (#182)
 # What runs a program, with [agents]: pulse go takes these as the base branch on origin has them, where a
 # person merged them, never from a working tree a branch or an agent may have changed (IMP-03-08 FR-06).
 # base_branch runs nothing but names the base the rest comes from: pulse go refuses a working tree that names
@@ -272,6 +273,9 @@ def load(root: Path, ref: str = None) -> dict:
         _warn(f"{pulse}: spec_branch = {sb!r} needs {{n}} and a name no build branch has ({{type}}/{{n}}-{{slug}}); "
               f"{DEFAULTS['spec_branch']} applies")
         cfg["spec_branch"] = DEFAULTS["spec_branch"]
+    if cfg["workers"] not in ("session", "fixed"):
+        _warn(f"{pulse}: workers = {cfg['workers']!r} is session or fixed; session applies")
+        cfg["workers"] = DEFAULTS["workers"]
     return cfg
 
 

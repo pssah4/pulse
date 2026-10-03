@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 
-from pulse import auto, config, guard, presence, ready, setup, state  # noqa: E402
+from pulse import auto, config, guard, presence, ready, settings, setup, state  # noqa: E402
 
 KEPT = 86400                   # seconds a hook takes the login the CLI kept: it asks no network (#111)
 EDIT_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
@@ -62,6 +62,13 @@ def quick(args):
     return state.gh(args, timeout=2)
 
 
+def clip(text, n=100):
+    """A value from git or the board, printable and at most n characters: the whole context stays under the
+    10,000 characters Claude Code passes on in full (#179)."""
+    text = ready.printable(text)
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
 def active_item(root):
     """The item of the checked-out branch, from the board cache, else from one read of it (a claim or a take
     drops the cache); and who holds it when another login does (#99 FR-06)."""
@@ -86,11 +93,11 @@ def active_item(root):
         held = "" if not who or state.me(root, run=cached_only, ttl=KEPT) in who else ", ".join(who)
     except (OSError, subprocess.TimeoutExpired, state.StateError, ValueError, KeyError, TypeError):
         item = item or {}
-    line = f"Active item: #{n} {ready.printable(item.get('title') or '')}".rstrip() + f" (branch {branch})."
+    line = f"Active item: #{n} {clip(item.get('title') or '')}".rstrip() + f" (branch {clip(branch)})."
     if item.get("spec"):
-        line += f" Spec: {ready.printable(item['spec'])}."
+        line += f" Spec: {clip(item['spec'])}."
     if held:
-        line += f" It is held by {ready.printable(held)}: work on it only when the person says so."
+        line += f" It is held by {clip(held)}: work on it only when the person says so."
     return line + f" Details: `pulse status {n}`."
 
 
@@ -119,7 +126,7 @@ def context(event, root, cfg, env):
         login = ""
     person = state.who(root, login)
     if person:
-        parts.append(f"Pulse: {ready.printable(person)}.")
+        parts.append(f"Pulse: {clip(person)}.")
     try:                       # the auto switches as the CLI or the map last read them, never asked here (#124)
         parts.append(ready.printable(auto.said(auto.read(root, run=cached_only, ttl=KEPT), login)))
     except (OSError, state.StateError):
@@ -140,7 +147,7 @@ def beside(root, cfg, stdin_text, env):
         return
     if cfg["mode"] != "on" or source not in ("startup", "resume", "fork") or \
             not (env.get("HERDR_ENV") == "1" or env.get("HERDR_ACTIVE_PANE_ID")) or \
-            env.get("PULSE_HOLDER") or env.get("CLAUDE_CODE_CHILD_SESSION") or \
+            auto.nested(env) or \
             env.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk-") or env.get("PULSE_MAP", "").lower() == "off":
         return
     subprocess.Popen([str(ROOT / "bin" / "pulse"), "map", "--ensure"], cwd=root, env=env, stdin=subprocess.DEVNULL,
@@ -358,6 +365,12 @@ def main(argv, stdin_text, env):
         if event == "SessionStart":
             beside(root, cfg, stdin_text, env)
         text = context(event, root, cfg, env)
+        if event == "SessionStart" and cfg["mode"] == "on":
+            try:               # the evidence the map shows (#182); it never changes what the session gets
+                payload = json.loads(stdin_text or "{}")
+                settings.delivered(root, presence.harness(payload if isinstance(payload, dict) else {}, env), len(text))
+            except Exception:
+                pass
         return emit(event, text, env) if text else ""
     except Exception:          # a hook must never break the session
         return ""
