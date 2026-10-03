@@ -26,7 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from pulse import config, setup, state
+from pulse import config, setup, spec, state
 
 ROW_KINDS = {"feature": "feat", "improvement": "imp", "refactor": "imp", "fix": "fix", "bug": "fix",
              "security": "fix"}
@@ -38,7 +38,7 @@ ITEM_ID = r"[A-Z][A-Z0-9]*(?:-[A-Za-z0-9]+)+"              # any row id: FIX-SEC
 OWN_FILE = r"(?:ADR|PLAN)-\d+(?:-\d+)*|EPIC-\d+"           # rows whose content lives in their own file
 LEGACY_LINE = "Legacy DIA id: "                           # the body line that marks an issue this migration made
 CLAIM = re.compile(rf"^{LEGACY_LINE}(\S+)\s*$", re.M)
-STATE_KEYS = ("status", "phase", "claim", "last-change")
+STATE_KEYS = spec.STATE_KEYS                 # what pulse check reports, migrate removes (#92)
 DIA_HOOKS = ("pre-commit", "pre-merge-commit")
 
 
@@ -69,10 +69,7 @@ def _own(root: Path, rel) -> bool:
         return False
 
 
-def printable(text: str) -> str:
-    """text with a visible placeholder for each character a terminal would not show as itself (CR,
-    U+202E, U+200B, ...): what the preview prints from issues must look like what it is."""
-    return "".join(c if c.isprintable() else "\ufffd" for c in text)
+printable = config.printable                # the preview shows issue text as every other command does (#92)
 
 
 def _shown(root: Path, p: Path) -> str:
@@ -182,9 +179,8 @@ def parse_backlog(text: str) -> tuple:
 
 
 def _frontmatter(path: Path) -> tuple:
-    text = path.read_text(encoding="utf-8")
-    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
-    return (m.group(1), text[m.end():]) if m else (None, text)
+    lines, body = spec.split(path.read_text(encoding="utf-8"))
+    return ("\n".join(lines), body) if lines else (None, body)
 
 
 def _specs(root: Path) -> dict:
@@ -232,8 +228,7 @@ def issues(repo: str, run=state.gh) -> list:
     """Every issue with body, labels, and author. One that claims a row (the body line, or an open
     DIA-style title) learns whether its author is trusted: the gh user as GitHub names it now, not a
     cached login, or write access to the repository; each author is asked once."""
-    listed = json.loads(run(["issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
-                             "--json", "number,title,state,body,labels,author"]))
+    listed = state.issues(repo, run, "all", "number,title,state,body,labels,author")
     try:
         me = run(["api", "user", "--jq", ".login"]).strip()
     except state.StateError:

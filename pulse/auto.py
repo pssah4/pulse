@@ -120,8 +120,7 @@ def proof(root, repo, operation, actor, run):
     policy = shared.policy(shared.read(root)[1])
     issue = (policy.get("proof") or {}).get("issue")
     if not issue:
-        matches = json.loads(run(["issue", "list", "--repo", repo, "--state", "all", "--search",
-                                  CONTROL + " in:title", "--json", "number,title"]))
+        matches = state.issues(repo, run, "all", "number,title", search=CONTROL + " in:title")
         matches = [i for i in matches if i.get("title") == CONTROL]
         if len(matches) > 1:
             raise state.StateError("approval policy control issue is ambiguous")

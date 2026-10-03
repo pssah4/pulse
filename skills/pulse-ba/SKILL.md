@@ -82,8 +82,11 @@ Pulse set up with its labels: when `pulse status --json` says
 
 3. For an Item-BA, continue on `<type>/<n>-<slug>` from the draft's
    number and the fetched `refs/remotes/origin/<base>`. Its spec, Plan
-   and build stay on that branch. Project-wide discovery can use
-   `docs/<slug>`; `/pulse-re` creates each work item's own branch.
+   and build stay on that branch. Project-wide discovery uses
+   `docs/<n>-<slug>`, n being the number of the Project-BA's draft, so the
+   push checks see it; an older Project-BA on an unnumbered docs branch
+   goes on with `git switch -c docs/<n>-<slug>` from its head. `/pulse-re` creates
+   each work item's own branch.
 
 Push the item branch after every commit, from the first one. For project-wide
 discovery, publish its docs branch with the same frequency.
@@ -387,8 +390,8 @@ legacy project), move the full document to
    PoC and MVP, and the key output (HMW, value proposition, referenced personas
    by ID, unmapped KPIs).
 2. Commit the BA and Exploration Board on the item's branch with
-   `docs(ba): <title>` and `Refs: #<n>`, then push. A Project-BA can use
-   `docs/<slug>` and names `Refs: #<n>` of its draft in the commit. Keep scope, HMW,
+   `docs(ba): <title>` and `Refs: #<n>`, then push. A Project-BA commits on
+   `docs/<n>-<slug>` and names `Refs: #<n>` of its draft. Keep scope, HMW,
    critical hypotheses and unresolved questions in the artifact.
 3. Summarize the problem, audience, scope, evidence and top uncertainty
    in at most eight lines. Resolve missing facts through the interview;

@@ -46,12 +46,13 @@ A new project gets a Project-BA. It is no item, but while it is
 written it holds a draft on the board, so nobody starts a second one:
 the skill looks for one (`pulse status`), registers
 `pulse new epic "Project BA: <product>" --draft --phase analysis`, and
-writes the BA on a docs branch it names after the project, here
-`docs/retrospectives`. The name comes from your idea, so your agent may
-pick another one, such as `docs/async-retro`. A BA for a new
+writes the BA on a docs branch named with the draft's number and the
+project, here `docs/41-retrospectives` for draft #41. The name comes from
+your idea, so your agent may pick another one, such as
+`docs/41-async-retro`; the number lets Pulse remind the session to push. A BA for a new
 epic or feature in a running project starts on the board as well, as a
-draft whose number goes into the BA as `issue:`, on the branch
-`docs/<n>-<slug>` (see
+draft whose number goes into the BA as `issue:`, on its item branch
+`<type>/<n>-<slug>` (see
 [Business Analysis](../guides/pulse-ba#on-the-board)).
 
 ## Step 2: Determine the project scope
@@ -249,7 +250,7 @@ The skill now creates two artifacts:
 - `_devprocess/analysis/BA-<project>.md`, here `BA-retrospectives.md`: the BA record, five short answers from the dialog (the observed problem, who has it, the solution hypothesis with its strongest assumption, the scope, and the success signal with the top risk). A long form comes only on request.
 - `_devprocess/analysis/EXPLORE-<project>.md`, here `EXPLORE-retrospectives.md`: the Exploration Board
 
-The skill names both files after the project (`BA-<project>.md`, `EXPLORE-<project>.md`) and the branch after the topic (`docs/<slug>`), so the two names need not match.
+The skill names both files after the project (`BA-<project>.md`, `EXPLORE-<project>.md`) and the branch after the draft's number and the topic (`docs/<n>-<slug>`), so the two names need not match.
 
 Both follow the templates of the Pulse plugin,
 [skills/pulse-ba/templates](https://github.com/pssah4/pulse/tree/main/skills/pulse-ba/templates)
@@ -258,7 +259,7 @@ project.
 
 ## Step 7: Hand over
 
-`/pulse-ba` lists the files and key findings, commits the Project-BA on `docs/<slug>` (here `docs/retrospectives`) with `docs(ba): <title>` and `Refs: #<n>`, and pushes after every commit. The team can read the work throughout discovery. At handoff it summarizes the problem, audience, scope, evidence and top uncertainty.
+`/pulse-ba` lists the files and key findings, commits the Project-BA on `docs/<n>-<slug>` (here `docs/41-retrospectives`) with `docs(ba): <title>` and `Refs: #<n>`, and pushes after every commit. The team can read the work throughout discovery. At handoff it summarizes the problem, audience, scope, evidence and top uncertainty.
 
 Correct any unsupported claim through the interview. Once the evidence and required input are complete, the BA becomes `validity: Validated`; the skill records why, commits and pushes it, asks you to close the Project-BA's draft on GitHub, and continues authorized work with [`/pulse-re`](../guides/pulse-re) in the same session. There is no separate routine BA approval. Open questions hold only the work that depends on them.
 

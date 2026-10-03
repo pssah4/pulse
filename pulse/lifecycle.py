@@ -160,7 +160,7 @@ def queue_stop(root, number, who, worktree, branch):
     if state.item_of(branch) != number:
         raise state.StateError("the preserved branch must belong to this item")
     work = _work(root, worktree, branch, remote=False)
-    observed = next((row for row in state.cached(root) if row["number"] == number), {})
+    observed = next((row for row in state.cached(root) or [] if row["number"] == number), {})
     accepted = actions.submit(root, number, "stopped", {"holder": token, "work": work}, observed.get("revision", ""))
     actions.start(root)
     return accepted

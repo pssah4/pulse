@@ -91,6 +91,7 @@ trust yourself. Outside Herdr `pulse setup` adds the task "Pulse map"
 below to `.vscode/tasks.json` itself; only where its report says it kept
 the file (no plain JSON), offer the task "Pulse map" below for `tasks` in
 `.vscode/tasks.json`, keeping the rest. Offer to commit the config and the agent files on a branch
+`chore/pulse-config-<YYYYMMDD-HHMMSS>`, which no other clone takes, made
 from `refs/remotes/origin/<base>` after `git fetch origin`. Off (`--mode off`) and
 out (`--remove`; `--remove --cli --codex-rules` instead takes the
 command and the Codex rules off this machine) are the person's, in

@@ -11,7 +11,7 @@ The Map shows who works on what, what needs your attention and what starts next:
 pulse map
 ```
 
-It updates in a terminal until you press `q`. Without a terminal it prints one frame; `pulse status` does the same. In a terminal you can also click rows and scroll with the mouse wheel; see [Mouse](#mouse). The layout follows the terminal width, including narrow panes. Long details scroll with `PgUp` and `PgDn`. The layout spans 44 to 160 columns. Below 60 columns the header omits its signet and keeps its words; nonterminal output uses `COLUMNS`, or 80 columns by default. A resize is applied on the next frame.
+It updates in a terminal until you press `q`. Without a terminal it prints one frame; `pulse status` does the same. In a terminal you can also click rows and scroll with the mouse wheel; see [Mouse](#mouse). The layout follows the terminal width, including narrow panes. Long details scroll with `PgUp` and `PgDn`. The layout spans 44 to 160 columns. Below 60 columns the header omits its signet and keeps its words. A terminal that confirms the Kitty graphics protocol, such as Kitty, Ghostty or WezTerm, shows the signet as an image in the same 8 columns and 4 rows; the Map asks once and keeps the text signet in terminals that do not answer. Inside tmux or GNU screen the Map does not ask and keeps the text signet; nonterminal output uses `COLUMNS`, or 80 columns by default. A resize is applied on the next frame.
 
 ## Open it from the chat
 

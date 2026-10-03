@@ -141,10 +141,20 @@ def find(root: Path, path: str) -> tuple:
     return _found[key]
 
 
+STATE_KEYS = frozenset({"status", "phase", "claim", "last-change", "assignee", "owner"})   # live on the board
+
+
 def split(text: str) -> tuple:
-    """(frontmatter lines, body) of a spec; no frontmatter gives ([], text)."""
-    m = re.match(r"^---\n(.*?)\n---\n?", text, re.S)
-    return (m.group(1).splitlines(), text[m.end():]) if m else ([], text)
+    """(frontmatter lines, body) of a spec; no frontmatter gives ([], text). A line that is exactly ---, blanks
+    after it aside, opens it as the first line and closes it; ---foo does neither. The one reader for the spec
+    checks, pulse check and pulse migrate (#92)."""
+    lines = text.split("\n")
+    if lines[0].rstrip() != "---":
+        return [], text
+    for k in range(1, len(lines)):
+        if lines[k].rstrip() == "---":
+            return lines[1:k], "\n".join(lines[k + 1:])
+    return [], text
 
 
 def front(text: str) -> dict:

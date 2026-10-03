@@ -582,12 +582,26 @@ def drop_cache(root: Path) -> None:
         pass
 
 
-def cached(root: Path) -> list:
-    """The last cached items regardless of age; [] without a cache."""
+def stored(root: Path):
+    """The stored board as the last read left it, None without one: the one read of the cache for hook, map,
+    status and check (#33)."""
     try:
-        return json.loads(cache_path(root).read_text(encoding="utf-8")).get("items", [])
+        data = json.loads(cache_path(root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("items"), list) else None
+
+
+def cached(root: Path):
+    """The last cached items regardless of age; None without a stored board."""
+    data = stored(root)
+    return data["items"] if data is not None else None
+
+
+def issues(repo_name: str, run=None, which: str = "open", fields: str = FIELDS, search: str = None) -> list:
+    """The board's issues, at most 1000: the one place that asks GitHub for the list (#33)."""
+    args = ["issue", "list", "--repo", repo_name, "--state", which, "--limit", "1000", "--json", fields]
+    return json.loads((run or gh)(args + (["--search", search] if search else [])))
 
 
 def changed(repo_name: str, etag: str, run=gh) -> tuple:
@@ -662,8 +676,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
                     _keep(path, {**cached, "checked_at": now})
                     return loaded(cached["items"], cached["order"])
     _, etag = changed(repo_name, "", run)
-    raw = json.loads(run(["issue", "list", "--repo", repo_name, "--state", "open",
-                          "--limit", "1000", "--json", FIELDS]))
+    raw = issues(repo_name, run)
     raw = [complete_comments(repo_name, record, run) for record in raw]
     known = {}
     trusted = lambda entry: writer(entry, repo_name, run, known)

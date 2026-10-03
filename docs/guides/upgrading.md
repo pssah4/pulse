@@ -7,6 +7,10 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.3.3 to 0.3.4
+
+Update the plugin in Claude Code and Codex. Nothing to change in a project. A Project-BA now works on `docs/<n>-<slug>` with its draft's number; an older one on an unnumbered docs branch goes on with `git switch -c docs/<n>-<slug>` from its head. `pulse new --spec` names an open record that already links the spec instead of opening a second one. A project with its own `spec_branch` pattern gets the push reminder too. In a terminal that confirms the Kitty graphics protocol the Map shows its signet as an image; everywhere else it keeps the text signet.
+
 ## From 0.3.2 to 0.3.3
 
 Update the plugin in Claude Code and Codex and start new sessions; Codex asks for its normal review of changed hooks. Nothing to change in a project. `/pulse-go` (in Codex `$pulse:pulse-go`) starts and steers `pulse go` from the chat. A session that holds an item by hand leaves its sign of life as one `pulse:beat` comment on the item, so the Map and `pulse status` name holder, phase and age, and a stale item shows the next step.

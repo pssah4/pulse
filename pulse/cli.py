@@ -65,7 +65,7 @@ def cmd_status(args):
     vm = pmap.gather(root)
     vm["error"] = vm["error"] or note
     vm["last_run"] = go.last_run(root)
-    unknown = bool(vm["error"] and not state.cache_path(root).is_file())
+    unknown = bool(vm["error"] and state.stored(root) is None)
     if welcome and unknown:
         print(ready.printable("No current board state is available; readiness is unknown. " + vm["error"]))
     else:
@@ -385,6 +385,14 @@ def cmd_new(args):
                 print(f"pulse new: {args.spec} is not on origin as committed here; "
                       f"commit it, then: git push -u origin {shlex.quote(branch)}")
                 return 2
+    if not args.draft:                     # a clone without the pulled issue: line: one open record per spec (#80)
+        same = next((i for i in state.load(root, repo, run=run, fresh=True)
+                     if posixpath.normpath(i.get("spec") or ".") == posixpath.normpath(args.spec)
+                     and i["number"] != args.issue), None)
+        if same:
+            print(f"pulse new: #{same['number']} records {args.spec} already; nothing created. Pull the base to get "
+                  f"its issue: line, or go on with #{same['number']}")
+            return 1
     if getattr(args, "base", False):       # it repairs the base or the Plan commit gates (FR-05 of #178)
         labels.append(state.BASE)
     if args.draft and not args.issue:      # one draft per type and title: two people start the same realign or BA
@@ -498,8 +506,7 @@ def _follow(root):
     repo = state.repo(root, run=run)
     ready.fetch(root)
     base = config.base_ref(root)
-    records = json.loads(run(["issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
-                              "--json", "number,title,body"]))
+    records = state.issues(repo, run, "all", "number,title,body")
     for r in sorted(records, key=lambda r: r["number"]):
         path, m = local.get(r["number"]), state.SPEC.search(r.get("body") or "")
         if not path or not m:                    # no spec of ours, or a draft
@@ -634,7 +641,7 @@ def cmd_approve(args):
 
 def _local_action(kind, numbers):
     root, code = _root(), 0
-    items = {item["number"]: item for item in state.cached(root)}
+    items = {item["number"]: item for item in state.cached(root) or []}
     for n in numbers:
         item = items.get(n)
         if item is None:

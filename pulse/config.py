@@ -303,12 +303,20 @@ def spec_branch(cfg: dict, n, slug: str, kind: str) -> str:
     return str(pattern).replace("{n}", str(n)).replace("{slug}", slug).replace("{type}", kind)
 
 
+def spec_item(cfg: dict, branch: str):
+    """The item whose spec branch this is: spec_branch read back with any number, slug and type, or
+    docs/<n>-<slug>, the name before spec_branch existed; None for any other branch. The one rule for the hook,
+    the push checks and the spec checks (#33)."""
+    # spec_branch() fills in characters no pattern holds, and the regex puts any number, slug and type in their place
+    rx = re.escape(spec_branch(cfg, "\x02", "\x00", "\x01")).replace("\x02", r"(\d+)").replace("\x00", ".+") \
+        .replace("\x01", "(?:epic|feat|imp|fix)")
+    m = re.fullmatch(rx, branch) or re.match(r"docs/(\d+)-", branch)
+    return int(m.group(1)) if m else None
+
+
 def is_spec_branch(cfg: dict, branch: str, n) -> bool:
-    """Whether branch is named as item n's spec branch: spec_branch with any slug and type, or docs/<n>-<slug>, the
-    name before spec_branch existed."""
-    # spec_branch() fills in two characters no pattern holds, and the regex puts any slug and type in their place
-    rx = re.escape(spec_branch(cfg, n, "\x00", "\x01")).replace("\x00", ".+").replace("\x01", "(?:epic|feat|imp|fix)")
-    return bool(re.fullmatch(rx, branch)) or branch.startswith(f"docs/{n}-")
+    """Whether branch is named as item n's spec branch (spec_item)."""
+    return spec_item(cfg, branch) == int(n)
 
 
 def clone_config(root: Path) -> dict:

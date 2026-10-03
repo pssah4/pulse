@@ -1,7 +1,7 @@
 {
   "name": "pulse",
   "description": "Coordinate coding agents across developers and machines. Pulse registers work on a shared GitHub board and runs a workflow from specs and plans to tests, review, security audit and integration.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "author": {
     "name": "Sebastian Hanke"
   },

@@ -34,7 +34,7 @@ TOLERANCE = 0.10
 CAPS = {"project-ba": 200, "epic-ba": 120, "feature-ba": 60, "mini-ba": 40, "exploration": 70,
         "epic": 40, "feature": 80, "handoff": 60, "adr": 60, "plan": 80, "audit": 65,
         "system-map": 150}
-STATE_KEYS = {"status", "phase", "claim", "last-change", "assignee", "owner"}
+STATE_KEYS = spec.STATE_KEYS
 CORE = {"context", "kontext", "decision drivers", "begründung", "begruendung",
         "considered options", "betrachtete optionen", "decision", "entscheidung",
         "consequences", "konsequenzen"}
@@ -67,14 +67,9 @@ def _walk(root: Path):
 
 
 def _frontmatter(text: str) -> dict:
-    """Top-level keys with their line numbers (1-based) from a leading --- block."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}
+    """Top-level keys with their line numbers (1-based) from the frontmatter spec.split reads (#92)."""
     out = {}
-    for n, line in enumerate(lines[1:], start=2):
-        if line.strip() == "---":
-            break
+    for n, line in enumerate(spec.split(text)[0], start=2):
         m = re.match(r"^([\w-]+):\s*(.*)$", line)
         if m:
             out[m.group(1).lower()] = (m.group(2).strip(), n)
@@ -212,8 +207,9 @@ def _tracked(root: Path):
 def check_stubs(root: Path, issue_cache: bool = True):
     open_issues = None
     try:
-        if issue_cache and state.cache_path(root).is_file():
-            open_issues = {i["number"] for i in state.cached(root)}
+        items = state.cached(root) if issue_cache else None
+        if items is not None:
+            open_issues = {i["number"] for i in items}
     except (OSError, subprocess.SubprocessError):
         pass
     for f in _tracked(root):
@@ -242,7 +238,9 @@ def check_readiness(root: Path):
     """Check published specs of registered work items; drafts remain in preparation.
     A cached board and fetched refs suffice, without a network read or early approval."""
     try:
-        board = state.cached(root) if state.cache_path(root).is_file() else state.load(root, state.repo(root))
+        board = state.cached(root)
+        if board is None:
+            board = state.load(root, state.repo(root))
     except (state.StateError, OSError, ValueError) as e:
         why = str(e).partition("\n")[0]                 # gh adds a login hint on a second line
         yield Finding("board", 0, "R1-R6", f"skipped: no board ({why})")

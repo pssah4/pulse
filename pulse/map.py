@@ -6,6 +6,7 @@ render() is pure; gather() reads the world.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -61,6 +62,14 @@ SIGNET_LIGHT = ('007b84 007c84 007e86 008189 00848b 00878e 008990 00868d',
                 '00636d 006872 006b75 006d76 006d76 006f79 007179', '005b64 005e68 00606a')
 INSET = 10
 HEAD = len(SIGNET) + 1          # the header's lines and the blank below it: on every screen (#57)
+# The P of pulse-icon-hell.svg as an image, drawn by scripts/logo_png.py, in place of SIGNET where the terminal
+# confirms the Kitty graphics protocol (#166); every command but the question asks for no answer (q=2)
+LOGO = Path(__file__).with_name("logo.png")
+LOGO_ID = 166166
+GRAPHICS_ASK = f"\033_Gi={LOGO_ID},s=1,v=1,a=q,t=d,f=24;AAAA\033\\"
+GRAPHICS_OK = f"\033_Gi={LOGO_ID};OK\033\\"
+LOGO_OFF = f"\033_Ga=d,d=i,i={LOGO_ID},q=2\033\\"        # its place on the screen
+LOGO_GONE = f"\033_Ga=d,d=I,i={LOGO_ID},q=2\033\\"       # its place and its data
 # what the map asks of a person, the most urgent first, in the color of its state
 NEXT = {"failing": "31", "your review": "33", "integration": "33", "waits for merge": "33",
         "spec rule": "90", "spec waits": "90", "last run": "90",
@@ -361,6 +370,27 @@ def signet(colors: int, env=os.environ) -> list:
     palette = SIGNET_LIGHT if env.get("COLORFGBG", "").rsplit(";", 1)[-1] in ("7", "15") else SIGNET_DARK
     return ["".join(paint(glyph, rgbcode(bytes.fromhex(hexrgb), colors))
                     for glyph, hexrgb in zip(row, shades.split())) for row, shades in zip(SIGNET, palette)]
+
+
+def logo_png():
+    """The logo as PNG, None when its file is missing or holds no PNG (#166)."""
+    try:
+        data = LOGO.read_bytes()
+    except OSError:
+        return None
+    return data if data.startswith(b"\x89PNG\r\n\x1a\n") else None
+
+
+def picture(png: bytes, send: bool) -> str:
+    """The logo over the header's first 8 columns and 4 rows, from the top left corner: sent with its PNG in
+    pieces of 4096 characters, or put there again. The cursor stays where it is (C=1)."""
+    keys = f"a={'T' if send else 'p'},i={LOGO_ID},p=1,c=8,r=4,C=1,q=2"
+    if not send:
+        return f"\033[H\033_G{keys}\033\\"
+    data = base64.standard_b64encode(png).decode()
+    pieces = [data[k:k + 4096] for k in range(0, len(data), 4096)]
+    return "\033[H" + "".join(f"\033_G{keys + ',f=100,' if k == 0 else ''}m={int(k < len(pieces) - 1)};{piece}\033\\"
+                              for k, piece in enumerate(pieces))
 
 
 def roll(states) -> str:
@@ -1944,9 +1974,8 @@ def closed(root: Path, repo: str, items: list) -> dict:
     at, done = _closed.get(root, (0.0, {}))
     if epics and repo and time.time() - at >= state.TTL:
         try:                            # ponytail: the last 1000 closed issues; a long epic's oldest may drop out
-            done = Counter((i.get("parent") or {}).get("number") for i in json.loads(state.gh(
-                ["issue", "list", "--repo", repo, "--state", "closed", "--limit", "1000",
-                 "--json", "number,parent,stateReason"])) if i.get("stateReason") == "COMPLETED")
+            done = Counter((i.get("parent") or {}).get("number") for i in state.issues(
+                repo, state.gh, "closed", "number,parent,stateReason") if i.get("stateReason") == "COMPLETED")
         except state.RateLimitError as error:
             _limited[root] = error
             return {epic: done[epic] for epic in epics if done.get(epic)}
@@ -1957,11 +1986,8 @@ def closed(root: Path, repo: str, items: list) -> dict:
 
 
 def _cache_notice(root: Path) -> str:
-    try:
-        snapshot = json.loads(state.cache_path(root).read_text(encoding="utf-8"))
-        if not isinstance(snapshot.get("items"), list):
-            return "no cached state"
-    except (OSError, ValueError, AttributeError):
+    snapshot = state.stored(root)
+    if snapshot is None:
         return "no cached state"
     try:
         fetched = float(snapshot.get("fetched_at", "nan"))
@@ -2025,7 +2051,7 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
     except state.StateError as e:
         if isinstance(e, state.RateLimitError):
             _limited[root] = e
-        items = state.cached(root)
+        items = state.cached(root) or []
         error = f"offline, showing the last known state ({e})" if items else str(e)
     annotated = next((record for record in items if "order_revision" in record), {})
     order_info = {"issue": annotated.get("order_issue"), "revision": annotated.get("order_revision"),
@@ -2033,7 +2059,7 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
                                 if record.get("manual_position") is not None},
                   "why": annotated.get("order_conflict", "")}
     try:
-        cached = json.loads(state.cache_path(root).read_text(encoding="utf-8"))
+        cached = state.stored(root) or {}
         if (cached.get("repo") == repo and cached.get("format") == state.FORMAT and
                 cached.get("items") == items and isinstance(cached.get("order"), dict)):
             order_info = cached["order"]
@@ -2141,7 +2167,7 @@ def demo(step: int = 0) -> dict:
              for n, title, kind, ok, blocked, _ in DEMO_ITEMS}
     items[11]["blocking"] = [13]
     files = {n: f for n, *_, f in DEMO_ITEMS if f}
-    branch = {n: f"{i['type']}/{n}-{go.slug(i['title'])}" for n, i in items.items()}   # as pulse go names them
+    branch = {n: go.item_branch(i["type"], n, i["title"]) for n, i in items.items()}   # as pulse go names them
     agents, phases, closed, t = {}, {}, {10: 0}, time.time()
     for change in (c for batch in SCRIPT[:step + 1] for c in batch):
         op, *a = change
@@ -2192,7 +2218,7 @@ def _keys():
     except ImportError:
         return None
     fd = sys.stdin.fileno()
-    saved, on = termios.tcgetattr(fd), []
+    saved, on, answer = termios.tcgetattr(fd), [], [""]     # answer: a terminal's answer read so far (#166)
     tty.setcbreak(fd)
 
     def byte() -> str:
@@ -2200,9 +2226,10 @@ def _keys():
 
     def read(wait: float):
         if not select.select([sys.stdin], [], [], wait)[0]:
+            answer[0] = ""                         # an answer that pauses a whole wait ends there
             return None
         ch = os.read(fd, 1).decode(errors="ignore")
-        if ch == "\x1b" and select.select([sys.stdin], [], [], 0.01)[0]:
+        if ch == "\x1b" and not answer[0] and select.select([sys.stdin], [], [], 0.01)[0]:
             ch += os.read(fd, 2).decode(errors="ignore")
             if ch in ("\x1b[5", "\x1b[6") and select.select([sys.stdin], [], [], 0.01)[0]:
                 ch += os.read(fd, 1).decode(errors="ignore")
@@ -2213,6 +2240,14 @@ def _keys():
                 if not more:
                     break
                 ch += more
+        if answer[0] or ch.startswith("\x1b_"):    # a terminal's answer (APC) up to its ESC \ comes whole, also
+            answer[0] += ch                         # in pieces (#166); main() hands none to key()
+            while not answer[0].endswith("\x1b\\") and len(answer[0]) < 4096:
+                more = byte()
+                if not more:
+                    return None                    # its rest comes with the next read
+                answer[0] += more
+            ch, answer[0] = answer[0], ""
         return ch
 
     def mouse():
@@ -2231,11 +2266,13 @@ def _keys():
                 pass                   # the terminal is gone (SIGHUP)
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+            termios.tcflush(fd, termios.TCIFLUSH)   # a late answer of the terminal never reaches the shell (#166)
         except termios.error:
             pass                       # the terminal is gone (SIGHUP)
 
     def drop():
         """Forget what was typed meanwhile: keys pressed during a write act on no board (#55)."""
+        answer[0] = ""
         try:
             termios.tcflush(fd, termios.TCIFLUSH)
         except termios.error:
@@ -2327,6 +2364,10 @@ def main(args) -> int:
     box = {"writes": 0, "looked": time.time(), "asked": -math.inf}
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
     read = keys = _keys()
+    # the image logo (#166): where the terminal answers its question; never on Windows, in GNU screen (STY) or in tmux
+    # (TMUX), which pass no graphics command on and show one as their status line or pane title
+    png = logo_png() if color and keys and sys.platform != "win32" and not {"STY", "TMUX"} & set(os.environ) else None
+    graphic = asked = sent = placed = False         # confirmed; question written; data and place on the screen
     handlers = {s: signal.signal(s, go._exit)          # a closed terminal still runs the cleanup
                 for s in (signal.SIGTERM, getattr(signal, "SIGHUP", None)) if s}
 
@@ -2496,16 +2537,28 @@ def main(args) -> int:
                                                   ui.get("scroll") if level in ("item", "help", "read", "settings")
                                                   else None,
                                                   kept=where, top=top)]
+            mark = [fit(row, INSET) for row in signet(color)]
+            whole = len(lines) + len(foot) <= height or height - len(foot) - 2 >= HEAD    # fitted() cut no header row
+            logo = graphic and whole and all(c.startswith(m) for c, m in zip(cells, mark))
+            if logo:                                   # the image in place of the text logo, only over all of it
+                cells[:len(mark)] = [" " * INSET + c[len(m):] for c, m in zip(cells, mark)]
             clear = (width, height) != drawn_at      # new or resized: cleared, then every row once (#98)
             if clear:
-                drawn = []
+                drawn, sent = [], False                # a cleared screen may have dropped the image's data
             # each row at its own place, so a row the terminal draws wider moves none below it (#98); the rows that
             # changed, and those of an open confirmation on every frame, after the map's: a row of the map written
             # again, wider than the map counts, cannot cover what Enter confirms (#56 M-3)
             bound = len(cells) - len(foot) if level == "confirm" else len(cells)
-            out = "\033[H\033[2J" * clear + "".join(f"\033[{i + 1};1H\033[K{c}" for i, c in enumerate(cells)
-                                                   if i >= len(drawn) or drawn[i] != c or i >= bound)
+            written = [i for i, c in enumerate(cells) if i >= len(drawn) or drawn[i] != c or i >= bound]
+            out = "\033[H\033[2J" * clear + "".join(f"\033[{i + 1};1H\033[K{cells[i]}" for i in written)
             out += f"\033[{len(cells) + 1};1H\033[J" if len(cells) < len(drawn) else ""
+            if logo and (not placed or written and written[0] < len(mark)):    # a row under it written: put it back
+                out, sent = out + picture(png, not sent), True
+            elif placed and not logo:
+                out += LOGO_OFF
+            placed = logo
+            if png and not asked:                      # its answer comes as a key; the first drop() is past
+                out, asked = out + GRAPHICS_ASK, True
             drawn, drawn_at = cells, (width, height)
             if out:
                 sys.stdout.write(out)
@@ -2551,6 +2604,9 @@ def main(args) -> int:
                 todo = None
                 continue
             ch = read(TICK) if read else time.sleep(TICK)
+            if ch and ch.startswith("\x1b_"):         # a terminal's answer is no key (#166)
+                graphic = graphic or bool(png) and ch == GRAPHICS_OK
+                continue
             if ui["level"] == "move" and tuple(terminal_size()) != ui["size"]:
                 ui, status, ch = {"level": "map", "at": ui["at"]}, "move cancelled: terminal resized", None
             if ch in ENTER and ui["level"] == "confirm" and tuple(terminal_size()) != ui["size"]:
@@ -2625,7 +2681,7 @@ def main(args) -> int:
         try:                                   # after SIGHUP the terminal may be gone
             if keys:
                 keys.restore()
-            sys.stdout.write("\033[?25h\033[?1049l")
+            sys.stdout.write(LOGO_GONE * graphic + "\033[?25h\033[?1049l")
             sys.stdout.flush()
         except OSError:
             pass

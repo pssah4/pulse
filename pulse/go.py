@@ -192,6 +192,11 @@ def _git(cwd, *args, check=False):
     return out
 
 
+def item_branch(kind: str, n, title: str) -> str:
+    """The name of an item's branch, <type>/<n>-<slug>: the one place that makes it (#33)."""
+    return f"{kind}/{n}-{slug(title)}"
+
+
 def slug(title: str) -> str:
     """The title in a branch name, ASCII only: ä to ae, ö to oe, ü to ue, ß to ss, other accents go (N3.01).
     The spec's ID in front of the title stays out: the branch carries the issue number."""
@@ -279,7 +284,7 @@ def job_for(root: Path, item: dict, base_branch: str) -> Job:
     """Use a managed worktree, or an exact clean retained checkout; explicit resume validates its own work."""
     n = item["number"]
     kind = item["type"] if item["type"] in state.WORK else "feat"
-    branch = _branch_of(root, n, base_branch) or f"{kind}/{n}-{slug(item['title'])}"
+    branch = _branch_of(root, n, base_branch) or item_branch(kind, n, item["title"])
     trees = _trees(root)
     new, old = _places(_top(root, trees), branch)
     wt = next((p for p, b in trees if b == branch and p in (new, old)), new)
@@ -2785,8 +2790,7 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
 
 def _register_goal(root, repo, goal, gh_run):
     def lookup(marker):
-        rows = json.loads(gh_run(["issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
-                                  "--json", "number,body"]))
+        rows = state.issues(repo, gh_run, "all", "number,body")
         return [row["number"] for row in rows if marker in (row.get("body") or "").splitlines()]
 
     def create(task, marker):

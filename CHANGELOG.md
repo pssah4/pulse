@@ -5,6 +5,19 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-10-03
+
+### Changed
+
+- The Map shows its signet, the P of the light Pulse icon, as an image in terminals that confirm the Kitty graphics protocol (for example Kitty, Ghostty, WezTerm): with the icon's petrol gradient and smooth edges, in the same 8 columns and 4 rows of the header. The Map asks the terminal once; without its confirmation, in a pipe, in `pulse status`, on Windows, in tmux and in GNU screen the text signet stays. The image follows resizes and is removed when the Map ends, also after `Ctrl-C`, a signal or an error. Answers of the terminal never act as keys, and one that arrives after the Map ended does not reach the shell (#166).
+
+### Fixed
+
+- A Project-BA works on `docs/<n>-<slug>`, n being the number of its draft. The Stop hook and `pulse release` now see its unpushed commits and ask for the push, as on any numbered docs branch (#103).
+- `pulse check`, `pulse migrate` and the spec checks read frontmatter the same way: a line of exactly `---` (trailing blanks aside) opens and closes it, `---foo` does neither, and a file may end right after the closing line. `pulse migrate` now also removes `owner` and `assignee`, which `pulse check` reported afterwards, and its preview shows control characters as `?` like every other command (#92).
+- The setup guide and `/pulse` suggest a branch named by date and time, `chore/pulse-config-<YYYYMMDD-HHMMSS>`, so two clones no longer collide on `chore/setup-pulse`. `pulse new --spec` no longer opens a second record for a spec that an open record already links; it names that record (#80).
+- A project with its own `spec_branch` pattern gets the reminder to push unpushed commits on a spec branch, as one with `docs/<n>-<slug>` does: the hook reads the item number with the rule that recognizes spec branches. The query of the auto-approval control issue takes up to 1000 matches instead of 30 (#33).
+
 ## [0.3.3] - 2026-10-03
 
 ### Added

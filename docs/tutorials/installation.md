@@ -291,16 +291,16 @@ Check the command with `pulse --help`.
 
 Before the first `pulse go`, add `[spec_tests]` to `.pulse/config.toml`, the runner of each spec test file, and `setup` if a fresh checkout needs one (`npm ci`, say); setup writes neither ([Configuration](../reference/configuration)). `pulse go` reads them from the base branch as origin has it, so they count once merged.
 
-Commit `.pulse/config.toml` and the agent files setup changed or created, so every clone of your team runs with the same settings; a clone without the file has Pulse switched off. Commit them on a branch and merge it like any other change:
+Commit `.pulse/config.toml` and the agent files setup changed or created, so every clone of your team runs with the same settings; a clone without the file has Pulse switched off. Commit them on a branch of their own, named by date and time so no other clone takes the same name, and merge it like any other change:
 
 ```bash
-git switch -c chore/setup-pulse
+git switch -c "chore/pulse-config-$(date +%Y%m%d-%H%M%S)"
 git add .pulse/config.toml $(git ls-files --modified --others --exclude-standard -- CLAUDE.md AGENTS.md)
 git commit -m "chore: switch on Pulse"
-git push -u origin chore/setup-pulse
+git push -u origin HEAD
 ```
 
-The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Integrate `chore/setup-pulse` into the shared base through the project's normal merge and push process with its hooks enabled; Pulse requires no pull request.
+The `git add` line takes CLAUDE.md and AGENTS.md when setup changed or created them; add any other agent file setup changed or created by name. Integrate that branch into the shared base through the project's normal merge and push process with its hooks enabled; Pulse requires no pull request.
 
 After the merge, switch back to the base branch and pull, so the next branch starts with the settings: `git switch main && git pull` (your base branch in place of `main`).
 

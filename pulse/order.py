@@ -118,8 +118,7 @@ def preview(items: list, seen: dict, number: int, target: int, *, complete=True)
 
 
 def _fresh(repo, run):
-    raw = json.loads(run(["issue", "list", "--repo", repo, "--state", "open", "--limit", "1000",
-                          "--json", state.FIELDS]))
+    raw = state.issues(repo, run)
     if len(raw) >= 1000:
         raise state.StateError("manual order board may be incomplete (1000 issue limit)")
     for record in raw:

@@ -65,7 +65,7 @@ the same one.
 3. Continue the BA's item branch, else create `<type>/<n>-<slug>` from
    the draft's number and fetched `refs/remotes/origin/<base>`. Publish
    after every commit. Spec, Plan and implementation stay on this branch;
-   an epic or Project-BA can use a documentation branch. Register each
+   an epic or Project-BA uses a numbered documentation branch, `docs/<n>-<slug>`. Register each
    independently buildable child as its own item and branch.
 
 Push the item branch after every commit, from the first one.

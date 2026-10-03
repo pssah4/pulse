@@ -84,7 +84,7 @@ def active_item(root):
         return ""
     item, held = {}, ""
     try:
-        item = next((i for i in state.cached(root) if i.get("number") == n), None)
+        item = next((i for i in state.cached(root) or [] if i.get("number") == n), None)
         if item is None:
             v = json.loads(quick(["issue", "view", str(n), "--repo", state.repo(root, quick),
                                   "--json", "title,body,assignees"]))
@@ -265,8 +265,7 @@ def unpushed_work(root, cfg, payload, memo=None):
     try:
         branch = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
                                 capture_output=True, text=True, timeout=2).stdout.strip()
-        docs = re.match(r"docs/(\d+)-", branch)
-        n = state.item_of(branch) or (int(docs.group(1)) if docs else None)
+        n = state.item_of(branch) or config.spec_item(config.load(root), branch)      # one rule (#33)
         kept = n and [k for b, k in ready.unpushed(root, n, cfg["base_branch"] or config.default_branch(root))
                       if b == branch]
     except (OSError, subprocess.TimeoutExpired, state.StateError, ValueError):

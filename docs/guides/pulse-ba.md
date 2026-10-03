@@ -25,7 +25,7 @@ Every persona, insight, need, and touchpoint is proposed as a draft and confirme
 
 Before the first question, the skill looks for overlapping drafts and items with `pulse status --json` and asks whether this BA continues one of them. A named item is adopted with `pulse new <type> "<title>" --draft --phase analysis --issue <n>`; otherwise it reserves a draft, for example `pulse new epic "<title>" --draft --phase analysis`. The number goes into the Item-BA as `issue:`. Its BA, spec, Plan and implementation use the same `<type>/<n>-<slug>` branch, starting from the fetched base.
 
-A Project-BA registers `pulse new epic "Project BA: <product>" --draft --phase analysis` so nobody writes a second one. Its number stays out of the BA frontmatter; discovery can use `docs/<slug>`. After publishing the completed BA, the skill asks you to close its draft on GitHub. RE creates the separate work items it identifies.
+A Project-BA registers `pulse new epic "Project BA: <product>" --draft --phase analysis` so nobody writes a second one. Its number stays out of the BA frontmatter and names the discovery branch, `docs/<n>-<slug>`, so Pulse reminds the session to push it. After publishing the completed BA, the skill asks you to close its draft on GitHub. RE creates the separate work items it identifies.
 
 ## Scope adaptation
 
@@ -211,7 +211,7 @@ archives, not in the active Project-BA.
 
 ## Handoff
 
-The skill commits and pushes after every commit, from the first one, so the team can read the work. An Item-BA uses its item branch; a Project-BA may use `docs/<slug>`. Commits name `Refs: #<n>`, including the Project-BA's draft.
+The skill commits and pushes after every commit, from the first one, so the team can read the work. An Item-BA uses its item branch; a Project-BA uses `docs/<n>-<slug>` with its draft's number. Commits name `Refs: #<n>`, including the Project-BA's draft.
 
 At handoff it summarizes the problem, audience, scope, evidence and open questions. It sets `validity: Validated` only when the claims are supported and required input is complete, commits and pushes that evidence, then continues authorized work with [`/pulse-re`](./pulse-re) in the same session. An Item-BA passes its draft number and branch. For a Project-BA, the person closes the published discovery draft and RE registers each work item. Missing input holds only the dependent work; there is no routine BA approval stop.
 
