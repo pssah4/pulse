@@ -7,6 +7,10 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.3.6 to 0.3.7
+
+Update the plugin in Claude Code and Codex. Nothing to change in a project. Two Pulse commands that use the local action outbox at once, such as two sessions claiming work, both go through.
+
 ## From 0.3.5 to 0.3.6
 
 Update the plugin in Claude Code and Codex. Nothing to change in a project. `pulse go` no longer halts with "Probe cleanup failed" before planning, and `pulse new` and `pulse go` list a fix under an improvement in the improvement's own Items, where `pulse check` finds it.

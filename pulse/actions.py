@@ -97,7 +97,8 @@ def _database(root):
                 os.close(_file(directory, DATABASE + suffix, create=False))
             except FileNotFoundError:
                 pass
-        db = sqlite3.connect((path / DATABASE).as_uri() + "?mode=rw", uri=True, timeout=0.15)
+        # another command's short transaction is waited for, well below a hook's 5 s limit (#204)
+        db = sqlite3.connect((path / DATABASE).as_uri() + "?mode=rw", uri=True, timeout=1)
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA synchronous=FULL")
@@ -116,7 +117,8 @@ def _database(root):
             db.execute("""CREATE TABLE IF NOT EXISTS claim_receipts (
                 session TEXT NOT NULL, item INTEGER NOT NULL, operation TEXT NOT NULL,
                 PRIMARY KEY(session,item))""")
-            db.execute("PRAGMA user_version=1")
+            if version == 0:                  # a write: a reader that writes it waits for every other writer (#204)
+                db.execute("PRAGMA user_version=1")
             with db:
                 yield db
         finally:

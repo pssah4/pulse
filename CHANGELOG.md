@@ -5,6 +5,12 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-10-03
+
+### Fixed
+
+- Two Pulse commands that write the local action outbox at once both go through: a command that only reads no longer writes the outbox and never waits, and a writer waits up to 1 s for another one's transaction instead of exiting with "action outbox unavailable" after 0.15 s (#204).
+
 ## [0.3.6] - 2026-10-03
 
 ### Fixed
