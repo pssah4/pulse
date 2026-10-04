@@ -197,7 +197,7 @@
   <path d="M 28 484 a 12 12 0 0 1 12 -12 H 1160 a 12 12 0 0 1 12 12 V 500 H 28 Z" fill="#1e293b"/>
   <text x="48" y="491" font-size="13" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" fill="#ffffff">pulse map</text>
   <text x="1152" y="491" text-anchor="end" font-size="12" fill="#cbd5e1">terminal and sidebar, updated within seconds</text>
-  <text x="52" y="528" class="col">RAMP · ORDER</text>
+  <text x="52" y="528" class="col">BACKLOG · ORDER</text>
   <rect x="52" y="542" width="280" height="30" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
   <text x="64" y="562" class="item">#18 settings panel</text>
   <text x="320" y="562" class="state" text-anchor="end" fill="#15803d" font-weight="700">starts next</text>

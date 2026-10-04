@@ -7,8 +7,11 @@ outbox outside the clone; nothing in the repository, the config or the environme
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -155,6 +158,53 @@ def confirm(root, tool_use, sid, scope) -> bool:
         db.execute("INSERT INTO lever_grants VALUES (?,?,?,?,?,?)",
                    (uuid.uuid4().hex, scope, sid, wanted["run"], who(root), now))
     return True
+
+
+def answered(root, tool_use, sid, scope) -> bool:
+    """PostToolUse of a tool use the guard asked the person about, for this session and scope, within ASK: the
+    person agreed in Claude Code's dialog (#231). The ask is spent either way."""
+    now = time.time()
+    with _db(root) as db:
+        asked = db.execute("SELECT * FROM lever_asks WHERE tool_use = ?", (tool_use,)).fetchone()
+        db.execute("DELETE FROM lever_asks WHERE tool_use = ? OR at < ?", (tool_use, now - ASK))
+    return bool(sid and asked and asked["session"] == sid and asked["scope"] == scope and now - asked["at"] <= ASK)
+
+
+def _host_asks():
+    """The asks for the computer's switch (#231): beside that switch, since it needs no repository."""
+    from pulse import config
+    return config.host_switch().parent / "asks.json"
+
+
+def ask_host(tool_use, sid, scope):
+    """The guard showed the dialog for the computer's switch, maybe outside any repository (#231)."""
+    path, now = _host_asks(), time.time()
+    try:
+        asks = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if now - v["at"] <= ASK}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        asks = {}
+    asks[tool_use] = {"session": sid, "scope": scope, "at": now}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".asks.", dir=path.parent)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(asks, out)
+    os.replace(name, path)
+
+
+def answered_host(tool_use, sid, scope) -> bool:
+    """answered() for the computer's switch: the ask is spent either way."""
+    path = _host_asks()
+    try:
+        asks = json.loads(path.read_text(encoding="utf-8"))
+        asked = asks.pop(tool_use, None)
+        fd, name = tempfile.mkstemp(prefix=".asks.", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump(asks, out)
+        os.replace(name, path)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return bool(sid and isinstance(asked, dict) and asked.get("session") == sid and asked.get("scope") == scope
+                and time.time() - asked.get("at", 0) <= ASK)
 
 
 def prompted(root, sid):

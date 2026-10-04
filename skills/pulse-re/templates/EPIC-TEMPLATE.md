@@ -40,7 +40,7 @@ hmw-ref: ../../analysis/BA-{slug}.md#3-solution-hypothesis-and-strongest-assumpt
 <!-- One line per feature as `- [#n FEAT-{nn}-01 title](../features/FEAT-{nn}-01-slug.md)`,
      its fixes and improvements two spaces deeper below it. An item without a
      record yet is listed without `#n`; `pulse new` adds the number. Priority and effort
-     live in each item's spec; the order lives in the ramp. -->
+     live in each item's spec; the order lives in the backlog. -->
 
 ## Out of scope
 - {Feature X}: {Rationale}

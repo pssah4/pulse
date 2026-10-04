@@ -364,7 +364,9 @@ def _sync(root, transport, clock):
             raise StateError("invalid shared action receipt")
         # The error display never persists transport text, which may contain credentials.
         error, due = ("Shared item changed; refresh before a new action." if status == "conflict" else ""), 0
-        saved_receipt = json.dumps({key: value for key, value in receipt.items() if key != "error"}, allow_nan=False)
+        # when the result came: the map lets a confirmation go after two minutes (#215)
+        saved_receipt = json.dumps({**{key: value for key, value in receipt.items() if key != "error"},
+                                    "at": clock()}, allow_nan=False)
     except (StateError, OSError, ValueError, TypeError, KeyError):
         status, error = "error", "Action sync failed; retry pending."
         due = clock() + min(2 ** selected["attempts"], 8)

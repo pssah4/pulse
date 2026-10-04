@@ -100,4 +100,4 @@ The steps run forward within the authorized task and loop back when the work tea
 
 - **No status in documents.** Specs describe the work. Its state (claimed, held, waiting, done) sits on the shared board, and agents ask `pulse status` instead of reading a backlog file.
 - **No rules that only work when someone types a command.** The rules reach every agent session and every subagent automatically.
-- **No bookkeeping by prompt.** Claims, dependencies, the ramp, and the checks are scripts, so no model has to remember them.
+- **No bookkeeping by prompt.** Claims, dependencies, the backlog, and the checks are scripts, so no model has to remember them.

@@ -21,6 +21,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -40,6 +41,7 @@ ANSI = re.compile(r"\033\[[0-9;]*m|\033\]8;;[^\033]*\033\\")     # colors, and t
 DOT = {"working": ("●", "32"), "error": ("●", "31"), "waiting": ("●", "33"), "idle": ("●", "90")}
 RANK = ("error", "waiting", "working", "idle")
 ROWS_SHOWN = 40                 # the ramp lists all open work; past this, a count
+DONE_DAYS = 7                   # DONE lists what Pulse integrated in these last days (#217)
 REFRESH = 2                     # seconds between two reads of the board in the live map
 TICK = 0.5                      # seconds per frame of the live map
 UPGRADE = 60                    # seconds between two looks for a newer Pulse than the live map runs
@@ -74,7 +76,7 @@ LOGO_GONE = f"\033_Ga=d,d=I,i={LOGO_ID},q=2\033\\"       # its place and its dat
 NEXT = {"failing": "31", "your review": "33", "integration": "33", "waits for merge": "33",
         "spec rule": "90", "spec waits": "90", "last run": "90",
         "plan repair": "90", "plan needs you": "33", "needs a plan": "90", "starts next": "90", "queued": "90",
-        "spec in progress": "90", "nothing open": "90"}
+        "spec in progress": "90", "nothing open": "90", "held silent": "33", "on hold": "33"}
 SILENT = 30 * 60                # a run's claim without a heartbeat this long shows no sign of life (D-43)
 PHASE = {"spec": "specifying", "documents": "checking documents", "plan": "planning", "build": "building", "spec tests": "RED check running", "tests": "tests running",
          "check": "review and audit running", "review": "review running", "audit": "audit running",
@@ -82,6 +84,10 @@ PHASE = {"spec": "specifying", "documents": "checking documents", "plan": "plann
 # the live map is a tree walked without Shift but for ? (D-44): the map, an item, and what acts on it; below
 # the map every way back drops what is not written yet, q too (#55)
 UP, DOWN, ENTER, RIGHT = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n"), ("\x1b[C",)
+HOME = ("\x1b[H", "\x1b[1~", "\x1b[7~", "\x1bOH")    # Home and End in the forms terminals send them
+END = ("\x1b[F", "\x1b[4~", "\x1b[8~", "\x1bOF")
+PAGE = ("\x1b[5~", "\x1b[6~")                    # PgUp, PgDn
+FOLDS = "map-folds"             # the sections folded in this clone's map, one title a line, in its git dir (#214)
 BACK = ("\x1b", "\x1b[D", "\x7f", "\x08", "q")
 MOUSE_ON, MOUSE_OFF = "\033[?1000h\033[?1006h", "\033[?1006l\033[?1000l"   # button and wheel reports, SGR form (#180)
 SGR = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
@@ -100,13 +106,22 @@ KEYS = {"map": "↑↓ pick m move enter open ? help q quit",       # one key ro
         "settings": "↑↓ pick enter change ? help esc back",
         "value": "type slots  enter preview  esc cancel"}
 JUMP_KEYS = "↑↓ enter/click jump l levers ? help q quit"   # the map's keys on a session row (#181, #197)
+FOLD_KEYS = "↑↓ pick enter fold PgUp/PgDn ? help q quit"     # on a section's heading (#214)
 HERDR_WAIT = 2                  # seconds the map waits for each Herdr call of a jump (#181)
 HELP = """map      ↑ ↓ or j k pick a line, enter or →
            opens it, a previews approval
-         m moves unclaimed ramp work;
+         m moves unclaimed backlog work;
            arrows move it, enter saves,
            esc cancels; dependencies first
          g opens an issue by number
+         PgUp PgDn Home End scroll the map;
+           ↑ ↓ keep the picked line in sight
+         enter or a click on a heading folds
+           its section or opens it again;
+           the folds stay with this clone
+         enter or a click on ▸ n sessions
+           unfolds the sessions there, with
+           their running subagents
          s or a click on the approval line
            opens the settings
          r reads the report of the last run
@@ -193,6 +208,7 @@ Chat skills (in your coding agent)
 /pulse-build: implement a ready item against its plan, test first.
 /pulse-audit: inspect security risks and report concrete findings.
 /pulse-go: start or steer pulse go with your goal.
+/pulse-off, /pulse-on: turn Pulse off or on for you here, or with --host on this computer.
 In Codex use $pulse:pulse, $pulse:pulse-build and the corresponding $pulse:skill-name form. Planning is a phase managed by Pulse, not an additional public CLI command.
 
 Command reference (examples are text, not actions)
@@ -393,6 +409,93 @@ def picture(png: bytes, send: bool) -> str:
                               for k, piece in enumerate(pieces))
 
 
+# the stages of a job in the command center (#215 FR-01), and the stage each phase of pulse go belongs to
+STAGES = ("spec", "plan", "build", "tests", "review/audit", "fix", "integrate")
+STAGE = {"spec": "spec", "documents": "spec", "plan": "plan", "setup": "build", "build": "build", "spec tests": "tests",
+         "tests": "tests", "check": "review/audit", "review": "review/audit", "audit": "review/audit", "fix": "fix",
+         "integrate": "integrate", "integration": "integrate"}
+LADDER = {"done": "✓", "active": "▸", "open": "·"}
+SETTLED = 120                   # seconds a confirmed action of the outbox stays on the map (#215 FR-05)
+
+
+def ladder(phase, since=None) -> list:
+    """[(stage, done, active, or open)] of a job in phase (#215 FR-01): the stages before its own done, its own
+    active, with how long it runs when since says when it began, the rest open; [] for a phase that names none."""
+    stage = STAGE.get(phase)
+    if stage is None:
+        return []
+    at = STAGES.index(stage)
+    return [(name + (f" {_age(since)}" if k == at and since is not None else ""),
+             "done" if k < at else "active" if k == at else "open") for k, name in enumerate(STAGES)]
+
+
+TASK = "Pulse-Task"             # the commit trailer that checks off a task of the Plan (#216): display only
+
+
+def tasks_done(root, refs: list, base: str, item: int = None) -> set:
+    """The task numbers that the commits of refs not on base check off with a line "Pulse-Task: <n>" (#216), in any
+    paragraph of the message, as real commits put it above their attribution: at most 300 commits, digits only and
+    at most 4 of them, as a message is any text an agent writes; with item only commits with a line "Refs:" that
+    names #item, so a branch stacked on another item's counts none of its tasks. The map shows them; no gate reads
+    them."""
+    done = set()
+    log = ready._git(root, "log", "-z", "-n", "300", "--format=%B", *refs, "--not", base, "--")   # no NUL in a message
+    for message in log.split("\0"):
+        lines = message.split("\n")
+        if item is None or any(re.match(rf"(?i)refs:.*#{item}(?![0-9])", line) for line in lines):
+            done |= {int(m.group(1)) for m in (re.match(r"(?i)pulse-task:\s*([0-9]{1,4})\s*$", line) for line in lines)
+                     if m}
+    return done
+
+
+def plan_progress(text: str, done: set):
+    """(k, n, the title of the first open task) of a Plan whose Tasks table done checks off, each task once and no
+    number the Plan does not know; None without tasks or without one checked off (#216 FR-03, FR-04)."""
+    rows = [(int(row["#"]), row.get("task", "")) for row in ready.tasks(text or "")
+            if re.fullmatch(r"[0-9]{1,4}", row.get("#", "").strip())]
+    checked = set(done) & {n for n, _ in rows}
+    if not rows or not checked:
+        return None
+    return len(checked), len(rows), next((title for n, title in rows if n not in checked), "")
+
+
+def plan_tasks(root, items: list, phases: dict, me: str, base: str, found: dict) -> dict:
+    """{item: (k, n, next title)} of my running jobs, at most 8 (#216 FR-02): the Plan of each against the commits
+    of its branch here and as fetched from origin that the base does not hold."""
+    mine = [i["number"] for i in items if i["number"] in found and
+            (me and me in i["assignees"] or not i["assignees"] and i["number"] in phases)][:8]
+    if not mine:
+        return {}
+    names = [name for name in ready._git(root, "for-each-ref", "--format=%(refname)", "refs/heads",
+                                          "refs/remotes/origin").split("\n") if "\ufffd" not in name]   # git reads it
+    base_ref = next((r for r in (f"refs/remotes/origin/{base}", f"refs/heads/{base}") if r in names), None)
+    if base_ref is None:
+        return {}
+    refs = {}
+    for name in names:
+        n = state.item_of(name.removeprefix("refs/heads/").removeprefix("refs/remotes/origin/"))
+        if n in mine and name != base_ref:
+            refs.setdefault(n, []).append(name)
+    out = {}
+    for n, own in refs.items():
+        progress = plan_progress(found[n].get("text", ""), tasks_done(root, own, base_ref, item=n))
+        if progress:
+            out[n] = progress
+    return out
+
+
+def _latest(entries) -> dict:
+    """{(item, kind): the newest action of the outbox of that kind}: a newer one, a redo too, ends an older one."""
+    return {(entry["item"], entry["kind"]): entry for entry in entries}
+
+
+def redo(vm: dict, kind: str, n: int):
+    """(the action, n) that "redo:<id>" asks again: the latest of its kind on n, in conflict; else None (#215)."""
+    entry = next((e for e in _latest(vm.get("actions", [])).values()
+                  if f"redo:{e['id']}" == kind and e["item"] == n and e["status"] == "conflict"), None)
+    return (entry["kind"], n) if entry and entry["kind"] in LOCAL_ACTIONS else None
+
+
 def roll(states) -> str:
     """The worst state wins, so a red dot deep in the tree reaches the top."""
     return next((s for s in RANK if s in states), "idle")
@@ -463,6 +566,19 @@ def _age(at) -> str:
         return "a while"
     s = max(0, s)                       # a clock ahead of this one says no time passed
     return f"{int(s // 60)} min" if s < 3600 else f"{int(s // 3600)} h" if s < 2 * 86400 else f"{int(s // 86400)} d"
+
+
+def _took(at) -> str:
+    """How long something runs since at: seconds under a minute, else as _age (#234)."""
+    s = _secs(at)
+    return "" if s is None else f"{max(0, int(s))} s" if s < 60 else _age(at)
+
+
+def _sessions(agents: list) -> list:
+    """The sessions among the agents on one line of the tree: each one with a harness whose parent stands elsewhere;
+    a subagent shows under its session (#234)."""
+    ids = {a["id"] for a in agents}
+    return [a for a in agents if a.get("harness") and a.get("parent", "") not in ids]
 
 
 def _run(i: dict) -> bool:
@@ -548,16 +664,17 @@ def board(vm: dict) -> dict:
 
 def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, selected: int = None,
            picks: list = None, item: dict = None, stages: dict = None, marks: dict = None,
-           settings: dict = None) -> list:
+           settings: dict = None, folded=()) -> list:
     """color: how many colors the terminal shows (depth()), 0 for none; selected: the item the
     terminal cursor is on (marked ›); picks: gets the items on the map top down, the way the cursor
     walks them; item: the item view in place of the map (D-44), its number and what look() read;
     stages: gets the stage of every item in the map's words, as pulse status <n> prints it (#99 FR-14);
     marks: gets {row: what a click there does} (#180), ("item", n) for an item row, ("offer", k) for an entry of
-    the item view, ("read", action) for its spec, plan and checks rows and, only with marks, the NEXT row of the
+    the item view, ("read", action) for its spec, plan and checks rows and, only with marks, the runner's row of the
     run report, and ("settings",) for the approval line of the header (#182); settings: the settings view in place of
-    the map, settings.read() and its pick. Only the map writes escapes: every string of vm and item loses its control
-    characters first (#56)."""
+    the map, settings.read() and its pick; folded: the titles of the sections folded on the map (#214), whose
+    headings are picks ("section", title) and targets there. Only the map writes escapes: every string of vm and
+    item loses its control characters first (#56)."""
     if vm.get("goal"):
         vm = {**vm, "goal": {**vm["goal"], "objective": " ".join(vm["goal"]["objective"].splitlines())}}
     vm, item, settings, p, w = _plain(vm), _plain(item), _plain(settings), Paint(color), width
@@ -572,6 +689,12 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     doing = " ".join(filter(None, (runner.get("title") or runner.get("phase"), runner.get("target"))))
     remedy = diagnostic.get("next") or ""
     destination = _diagnostic_url(diagnostic.get("url"))
+    showing = {}                    # item -> its actions in the outbox, 0 the approval settings (#215 FR-05)
+    for entry in _latest(vm.get("actions", [])).values():   # until two minutes after the shared state confirms
+        if entry["status"] != "confirmed" or time.time() - ((entry.get("receipt") or {}).get("at") or 0) < SETTLED:
+            label = "approval settings" if entry["kind"] == "policy" else entry["kind"]
+            showing.setdefault(entry["item"], []).append(
+                f"{label}: {entry['status']}" + (f" ({entry['error']})" if entry.get("error") else ""))
 
     def dot(st: str) -> str:
         ch, code = DOT.get(st, DOT["idle"])
@@ -579,10 +702,33 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             code = glow(BREATH[frame % len(BREATH)], p.color)   # it breathes; yellow and red stay lit
         return p(ch, code)
 
-    def section(title: str, note: str = "", right: str = "") -> str:
-        head = p(title, "1;36") + (" " + p(note, "90") if note else "")
+    def section(title: str, note: str = "", right: str = "", pick: bool = False) -> str:
+        head = (p("› ", "1") if pick else "") + p(title, "1;36") + (" " + p(note, "90") if note else "")
         tail = (" " + p(right, "90")) if right else ""
         return head + " " + p("─" * max(0, w - vlen(head) - vlen(tail) - 1), "90") + tail
+
+    def opens(title: str, note: str = ""):
+        """A section's heading; on the map a pick and a target, which Enter or a click folds (#214). -> where its
+        rows and picks begin, for closes()."""
+        if item is not None or settings is not None:
+            out.append(section(title, note))
+            return None
+        target = ("section", title)
+        shown.append(target)
+        marks[len(out)] = target
+        out.append(section(title, note, pick=target == selected))
+        return len(out), len(shown)
+
+    def closes(title: str, at, count: int) -> None:
+        """A folded section, once its rows are built: one line, its title with count, and its rows, picks and
+        targets gone (#214). Any section folds this way."""
+        if at is None or title not in folded:
+            return
+        rows_at, picks_at = at
+        del out[rows_at:], shown[picks_at:]
+        for row in [k for k in marks if k >= rows_at]:
+            del marks[row]
+        out[rows_at - 1] = section(f"{title} ({count})", pick=("section", title) == selected)
 
     actors = [a for s in vm["sessions"] for a in [s, *s["agents"]]]
     groups = board(vm)
@@ -609,7 +755,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         if i.get("local_hold"):
             return "waiting", "on hold locally", None
         if i.get("hold"):
-            return "waiting", "on hold", None
+            return "waiting", "on hold", ("on hold", f"pulse resume {n}")     # the person paused it (#233)
         if n in failed:
             return "error", f"failed: {failed[n]}".replace("PLAN", "plan"), fix
         if n in phases:
@@ -630,7 +776,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             return "idle", _life(i.get("claimed_phase") or "working", beat), None
         words, step = holding(i)
         if words:                              # a session holds it by hand (#195); a silent one needs a person
-            return ("waiting" if step else "idle"), words, None
+            return ("waiting" if step else "idle"), words, ("held silent", step) if step else None
         return "idle", "work in progress; no published result", None
 
     def wants(row):
@@ -692,7 +838,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     lit = {i["number"]: light(i) for _, i in held if not i.get("draft")}     # a draft says what its row says
     jobs = [n for n, (st, *_) in lit.items() if st == "working"     # no hooks, or a long command: all idle
             and all(a["state"] == "idle" for a in feats.get(n, []))]
-    counts = Counter([a["state"] for a in actors] + [st for n, (st, *_) in lit.items() if st != "working" or n in jobs]
+    counts = Counter([a["state"] for a in actors] + [st for n, (st, _, step) in lit.items()     # waiting: NEEDS YOU names it
+                                                     if (st != "working" or n in jobs) and (st != "waiting" or step)]
                      + [wants(x)[0] for x in rows])
     tone = {"error": "31", "waiting": "33"}
 
@@ -723,6 +870,14 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     def inside(seen) -> list:
         """The item view: what the item is for, where it stands, who holds it, what it waits for."""
         i = by_number.get(seen["number"])
+        row = next((r for r in vm.get("done") or () if r["number"] == seen["number"]), None)
+        if not i and row:                          # integrated lately: what DONE says of it, as a view (#217)
+            title = wrap(f"#{row['number']} {row['title']}".rstrip(), w)
+            facts = [("stage", f"integrated by {row['who'] or '?'}, {_when(row['at'])}"),
+                     ("merge", row["merge"][:12]), ("plan", seen.get("plan") or "none")]
+            return ([section(title[0])] if len(title) == 1 else [p(line, "1;36") for line in title]) + [""] + \
+                [f" {label:<12}{piece}" if k == 0 else " " * 13 + piece
+                 for label, value in facts for k, piece in enumerate(wrap(value, w - 13))]
         if not i:
             return [p(f"#{seen['number']} is merged or closed", "90")]
         n, result, beat = i["number"], i.get("result") or {}, i.get("claimed_beat")
@@ -750,6 +905,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                  ("base", result.get("base", "")[:12] or "none"),
                  ("checks", ", ".join(f"{name}: {value}" for name, value in sorted(result.get("gates", {}).items())) or "none"),
                  ("spec", i.get("spec") or "none"), ("plan", seen["plan"] or "none yet")]
+        facts += [("action" if k == 0 else "", text) for k, text in enumerate(showing.get(n, []))]     # #215
         if "plan_blob" in seen:
             facts.append(("plan blob", seen["plan_blob"] or "local preview; publish before building"))
         facts += [("plan issue", finding) for finding in seen.get("plan_findings", ())]
@@ -789,7 +945,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                  "refused": ("read-check-output", n) if r and r.get("output") else None,     # #178 in the reader
                  "output": ("read-check-output", n) if r and r.get("output") else None}
         for label, value in facts:
-            pieces = wrap(value, w - 13) if label in ("goal", "stage", "plan", "plan blob", "plan issue",
+            pieces = wrap(value, w - 13) if label in ("goal", "stage", "plan", "plan blob", "plan issue", "action",
                          "plan state", "commit", "publication", "plan source", "plan failed", "refused",
                          "effect", "output", "") else [value]
             if reads.get(label):                # a click on the row reads it (#180)
@@ -803,12 +959,12 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         parts.append(dot("waiting") + f" {counts['waiting']} need{'s' if counts['waiting'] == 1 else ''} you")
     if counts["error"]:
         parts.append(dot("error") + f" {counts['error']} failing")
-    warn = "; ".join(filter(None, (vm.get("error"), vm.get("halt"), *(
+    warn = "; ".join(filter(None, (vm.get("off"), vm.get("error"), vm.get("halt"), *(
         f"#{r['number']} {go.refusal_standing(r)}: {go.refusal_cause(r)}" for r in refused if r.get("current")),
         vm.get("untrusted"), (vm.get("order") or {}).get("why"))))
     inset = INSET if w >= 60 else 0       # beside a session the header keeps its words and leaves out the signet
     if remedy:
-        # The action stays in the fixed header even on a short screen. NEXT keeps the complete explanation.
+        # The action stays in the fixed header even on a short screen. NEEDS YOU keeps the whole explanation.
         action = short("You: " + remedy.partition(" in ")[0], w - inset - 2)
         warn = p.link(action, destination)
     head = [lr(p("pulse", "1") + "  " + p(vm["repo"] or "no repo", "90") + "  " + vm["person"], p(vm["now"], "1"),
@@ -816,11 +972,12 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             "   ".join(parts), p("! " + warn, "33") if warn else ""]
     mark = signet(p.color)
     mode = p(vm["auto_why"], "31") if vm.get("auto_why") else auto.line(vm.get("auto") or {})
+    mode += "".join(p("; " + text, "90") for text in showing.get(0, []))      # its local change, as the outbox has it
     out = [(fit(mark[index], inset) if inset else "") + text for index, text in enumerate(head + [mode])]
     if live:
         marks[3] = ("settings",)               # a click on the approval line opens the settings (#182)
     out.append("")
-    goal = vm.get("goal")
+    goal, aims = vm.get("goal"), []    # the goal, at the row of the runner that follows it (#215 FR-02)
     if goal:
         report = vm.get("goal_report") or {}
         applied = report.get("goal") or {}
@@ -835,29 +992,72 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             ", ".join(f"#{number}" for number in scope.get("items", [])) or "being resolved")
         progress = goal.get("progress") or {}
         done, remaining = len(progress.get("done", [])), len(progress.get("remaining", []))
-        for text in (f"Goal: {status}", goal["objective"],
-                     f"Scope: {scope_text}; {done} of {done + remaining} items complete", goal.get("reason", "")):
-            if text:
-                out.extend(wrap(text, w))
-        if goal["status"] == "paused":
-            out.extend(wrap("Resume: pulse go --resume", w))
-        out.append("")
-    local_actions = [entry for entry in vm.get("actions", []) if not item or entry["item"] == item["number"]]
-    if local_actions:
-        out.append(section("LOCAL ACTIONS"))
-        for entry in local_actions[-6:]:
-            label = "approval settings" if entry["kind"] == "policy" else f"#{entry['item']} {entry['kind']}"
-            out.append(f" {label}: {entry['status']}" +
-                       (f" ({entry['error']})" if entry.get("error") else ""))
-        out.append("")
+        aims = [short(f"goal: {status} · {goal['objective']}", w - 2), f"scope: {scope_text} · {done} of "
+                f"{done + remaining} done", "holds: " + goal["reason"] if goal.get("reason") else "",
+                "resume: pulse go --resume" if goal["status"] == "paused" else ""]
     if item:
         return [fit(line, w) for line in out + inside(item)]
     if settings is not None:
         return [fit(line, w) for line in out + _settings_view(settings, p, w, section, marks, len(out))]
 
+    # --- needs you ----------------------------------------------------------
+    # only what the person must do (#215 FR-03): what NEXT showed yellow or red, a decision of the run, and an
+    # attended session that waits; each an item or session pick with its reason and key
+    needs = []                            # (target, label, key, the reason's lines, color)
+    if remedy:                            # the base holds the run; the header keeps its first words
+        cause = ": ".join(filter(None, (diagnostic.get("check"), diagnostic.get("cause"))))
+        needs.append((None, "base", "", [t for t in ("You: " + remedy, cause, "Saved base verdict still blocks new "
+                                                       "work." if diagnostic.get("cached") else "", destination,
+                                                       vm.get("error"), vm.get("halt"), vm.get("untrusted"),
+                                                       (vm.get("order") or {}).get("why")) if t], "33"))
+    if vm.get("halt_kind") == "compatibility":     # the decision and the whole output of the probe (FR-05 of #178)
+        probe = vm.get("compatibility") or {}
+        needs.append((None, "plan commit gates", "", [t for t in ("You: " + probe["next"] if probe.get("next") else
+                                                                   "", "check output: " + probe["log"]
+                                                                   if probe.get("log") else "") if t], "33"))
+    for r in refused:                     # a hook's refusal that a person decides
+        if r.get("current") and not r.get("legacy") and r.get("state") == "decision":
+            n = r.get("number")
+            label = f"#{n} {by_number[n]['title']}" if n in by_number else f"#{n}"
+            needs.append((("item", n) if n in by_number else None, label,
+                          "enter opens" if live else f"pulse status {n}", ["You: " + (r.get("why") or f"decide #{n}") +
+                           (f"; the failure is {go.UNSENT}" if r.get("unsent") else "")],
+                          "33"))
+    asked = [(i, lit[i["number"]]) for _, i in held if i["number"] in lit] + \
+        [(x, (wants(x)[0], says(x)[0], wants(x)[1])) for x in rows]
+    for i, (st, words, step) in asked:
+        if step and NEXT.get(step[0]) in ("31", "33") and ("item", i["number"]) not in [e[0] for e in needs]:
+            n, approves = i["number"], step[1] == f"pulse approve {i['number']}"   # a result: base changed is none
+            key_ = ("a approves" if approves else "enter opens") if live else \
+                (step[1] if approves else f"pulse status {n}")       # pulse status prints the commands (#215)
+            needs.append((("item", n), f"#{n} {i['title']}", key_,
+                          [words] if approves or step[0] == "held silent" else
+                          [words, step[1]] if step[0] in ("failing", "integration", "plan needs you", "on hold") else [step[1]],
+                          NEXT[step[0]]))
+    for a in actors:                      # an attended session asks for a permission or an answer
+        if a["state"] == "waiting":
+            needs.append((("session", a["id"]), f"{a.get('harness') or 'agent'} {a['id'][:8]}",
+                          "enter jumps" if live else "",
+                          [_doing(a)[0] + (f": {a['tool']}" if a.get("tool") and a["tool"] != "AskUserQuestion"
+                                           else "")], "33"))
+    if needs:
+        at = opens("NEEDS YOU")
+        for target, label, key_, reasons, code in needs:
+            pick = target and (target[1] if target[0] == "item" else target)
+            if target and pick not in shown:
+                shown.append(pick)
+            if target:
+                marks[len(out)] = target
+            left = (p("› ", "1") if target and pick == selected else " ") + label
+            out.append(lr(p(left, "1") if target and pick == selected else left, p(key_, "90"), w))
+            out += ["   " + (p.link(line, destination) if text == destination else p(line, code))
+                    for text in reasons for line in wrap(text, w - 3)]
+        out.append("")
+        closes("NEEDS YOU", at, len(needs))
+
     # --- board ------------------------------------------------------------
     total = max(1, sum(map(len, groups.values())))
-    out.append(section("BOARD"))
+    at = opens("BOARD")
     for (label, group), code in zip(groups.items(), ("36", "32", "35", "33", "90")):
         n = len(group)
         filled = max(1, round(n * 24 / total)) if n else 0
@@ -883,9 +1083,10 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         out.append((p(label, "1") if number == selected else label) + "  " +
                    p("█" * filled, "32") + p("░" * (10 - filled), "90") + " " + fit(count, count_width))
     out.append("")
+    closes("BOARD", at, sum(map(len, groups.values())))
 
     # --- who is doing what ------------------------------------------------
-    out.append(section("WHO IS DOING WHAT"))
+    at = opens("WHO IS DOING WHAT")
 
     def focus(agents):
         """The agent to show: one that needs you or failed first, then the latest activity."""
@@ -895,41 +1096,115 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """What the agents on one line do: the one focus picks."""
         return _doing(focus(agents))
 
-    def details(agents, pad, at):
-        """A row per agent with a harness from row at of out on: each a pick and a target, Enter or a click
-        jumps to its Herdr pane (#181)."""
+    def pick(target, at) -> bool:
+        """target is a pick and the target of row at; whether the cursor is on it."""
+        if target not in shown:
+            shown.append(target)
+        marks[at] = target
+        return target == selected
+
+    def details(sessions, pad, at):
+        """A row per session from row at of out on, with its place, what it does and since when, and below it its
+        running subagents (#234): each a pick and a target, Enter or a click jumps to its Herdr pane (#181), a
+        subagent's to its session's."""
         rows = []
-        for a in (a for a in agents if a.get("harness")):
-            target = ("session", a["id"])
-            if target not in shown:
-                shown.append(target)
-            marks[at + len(rows)] = target
-            rows.append(lr((p("› ", "1") if target == selected else pad) + "└ " + dot(a["state"]) + " " +
-                           a["harness"] + " " + a["id"][:8], p(_doing(a)[0] or "thinking", _doing(a)[1]), w))
+        for k, a in enumerate(sessions):
+            corner = "  └ " if k == len(sessions) - 1 else "  ├ "            # the last one closes the branch (#239)
+            lead = (p("› ", "1") if pick(("session", a["id"]), at + len(rows)) else pad) + corner + \
+                dot(a["state"]) + f" {a['harness']} {a['id'][:8]}"
+            doing, code, took = *_doing(a), _took(a.get("since"))
+            room = beside(lead, w) - vlen(took) - 1         # the duration stays, the activity shortens (#234)
+            note = p(" ".join(filter(None, (short(doing or "thinking", max(6, room)), took))), code)
+            place = vm["branches"].get(a.get("cwd", ""), "") or a.get("branch") or os.path.basename(a.get("cwd", ""))
+            whole = lead + (f" · {place}" if place else "")
+            if vlen(whole) + 2 + vlen(note) <= w or not place:
+                rows.append(lr(whole, note, w))
+            else:                              # narrow: the place on a row of its own
+                rows += [lr(lead, note, w), fit(pad + "      " + p(place, "90"), w)]
+            for s in a.get("agents") or ():
+                kind, what = s.get("type") or s["id"][:8], s.get("description") or ""
+                lead = (p("› ", "1") if pick(("session", s["id"]), at + len(rows)) else pad) + "      ↳ "
+                took = p(_took(s.get("began")), "90")
+                if what and vlen(lead + kind + what) + 4 + vlen(took) > w:     # narrow: what it does below
+                    rows += [lr(lead + kind, took, w)] + [fit(pad + "        " + line, w)
+                                                          for line in wrap(what, w - len(pad) - 8)]
+                else:
+                    rows.append(lr(lead + kind + (f": {what}" if what else ""), took, w))
         return rows
 
-    def tree(entries):
-        """Features, each with what its agent does below it; agents outside any feature by branch."""
+    def unfolds(key, sessions, pad, at):
+        """The row that counts the sessions of an item (#n) or a branch, folded at first; Enter, → or a click unfold
+        them and their subagents, kept per clone as a section's fold (#234 FR-03). Only the live map has it: pulse
+        status counts them on the item's row."""
+        if not live:
+            return []
+        title = f"{key} sessions"
+        picked = pick(("section", title), at)
+        rows = [(p("› ", "1") if picked else pad) + "  " + p(("▾ " if title in folded else "▸ ") +
+                                                             _plural(len(sessions), "session"), "1" if picked else "90")]
+        return rows + (details(sessions, pad, at + 1) if title in folded else [])
+
+    def ladder_of(i):
+        """The ladder of my job (#215 FR-01): its phase in this run, the runner's step before its claim, a
+        session's phase, or a published result at integrate; [] for no job of mine."""
+        n = i["number"]
+        if not (mine(i) or n in local) or n in failed:
+            return []
+        if n in phases:
+            return ladder(phases[n], vm.get("phase_since", {}).get(n))
+        if runner.get("item") == n:
+            words = runner.get("title") or ""
+            return ladder("spec" if "spec" in words else "plan" if "plan" in words else "build")
+        if i.get("result"):
+            return ladder("integrate")
+        plan = (vm.get("plans") or {}).get(n) or {}       # a held item without a phase stands where its work is (#234)
+        return ladder(i.get("claimed_phase")) or ladder("spec" if i.get("draft") else
+                                                        "build" if plan.get("ready") else "plan")
+
+    def tree(entries, theirs=False):
+        """Features, each with what its agent does below it; agents outside any feature by branch. Of someone
+        else's items only the item and its branch (#215 FR-06)."""
         rows = []
         for k, (e, agents) in enumerate(entries):
             stem, pad = ("└ ", "  ") if k == len(entries) - 1 else ("├ ", "│ ")
             states = [a["state"] for a in agents]
+            count = "" if live or not _sessions(agents) else _plural(len(_sessions(agents)), "session")
             if isinstance(e, str):            # an agent on a branch that is no open feature
                 doing, code = said(agents)
-                rows.append(lr(stem + dot(roll(states)) + " " + e, p(doing, code), w))
-                rows += details(agents, pad, len(out) + len(rows))
+                rows.append(lr(stem + dot(roll(states)) + " " + e, p(", ".join(filter(None, (doing, count))), code), w))
+                rows += unfolds(e, _sessions(agents), pad, len(out) + len(rows)) if _sessions(agents) else []
                 continue
             st, words = gate(e)
+            if not theirs:                     # the tree names the holder already (#234 FR-02)
+                words = re.sub(r"^held by [^,]+, ", "", words)
             label = p.link(f"#{e['number']}", e.get("url")) + f" {e['title']}"
             if e["number"] not in shown:
                 shown.append(e["number"])
             if e["number"] == selected:
                 stem, label = p("› ", "1"), p(label, "1")
             marks[len(out) + len(rows)] = ("item", e["number"])     # out takes these rows next
-            rows.append(lr(stem + dot(roll(states + [st])) + " " + label, p(words, tone.get(st, "90")), w))
-            if agents:
-                if any(a.get("harness") for a in agents):
-                    rows += details(agents, pad, len(out) + len(rows))
+            rows.append(lr(stem + dot(roll(states + [st])) + " " + label, p(count, "90") if theirs else
+                           p(", ".join(filter(None, (count, words))), tone.get(st, "90")), w))     # the count first
+            steps = [] if theirs else ladder_of(e)
+            if steps:                          # its ladder; Plan k/n (#216) goes below it
+                lines = [""]                   # whole stages a row, as the terminal counts them
+                for piece in (f"{LADDER[s]} {name}" for name, s in steps):
+                    gap = "  " if lines[-1] else ""
+                    if lines[-1] and vlen(lines[-1] + gap + piece) > w - len(pad) - 2:
+                        lines.append(piece)
+                    else:
+                        lines[-1] += gap + piece
+                rows += [pad + "  " + p(line, "90") for line in lines]
+                done = vm.get("tasks", {}).get(e["number"])
+                if done:                       # how far its Plan is: Plan k/n and the next open task (#216)
+                    k, total, title = done
+                    rows.append(pad + "  " + p(short(f"Plan {k}/{total}" + (f": {title}" if title else ""),
+                                                     w - len(pad) - 2), "90"))
+            rows += [pad + "  " + p(line, "33") for text in showing.get(e["number"], [])    # my actions (FR-05)
+                     for line in wrap(text, w - len(pad) - 2)]
+            if agents:                         # my sessions, a teammate's item too (WP-54), folded (#234)
+                if _sessions(agents):
+                    rows += unfolds(f"#{e['number']}", _sessions(agents), pad, len(out) + len(rows))
                 else:
                     doing, code = said(agents)
                     rows.append(lr(pad + "└ " + p(doing, code), "", w))
@@ -951,89 +1226,54 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 and i["number"] not in theirs]
     entries += [(by_number[n], []) for n in sorted(local) if n not in feats and not by_number[n]["assignees"]]
 
-    r = vm["ramp"]
-    busy = sum(a["state"] != "idle" for a in actors) + len(jobs)
-    agents = _plural(busy, "agent") if busy else "no agent"
-    out.append(lr(dot(roll([a["state"] for a in actors] + [gate(i)[0] for login, i in held
-                                                            if login == vm["me"]]))
-                  + " " + p(vm["person"], "1"),
-                  p(f"{len(r['busy'])} of {r['cap']} slots busy, {agents} active", "90"), w))
+    count = sum(len(_sessions(agents)) for _, agents in entries)       # items, sessions, a run's slots (#234 FR-01)
+    summary = [_plural(sum(not isinstance(e, str) for e, _ in entries), "item")] + \
+        ([_plural(count, "session")] if count else [])
+    left = dot(roll([a["state"] for a in actors] + [gate(i)[0] for login, i in held if login == vm["me"]])) + \
+        " " + p(vm["person"], "1")
+    k, n = len(phases), vm["ramp"]["cap"]
+    for slots in ([f"pulse go: {k} of {n} slots", f"go: {k} of {n} slots", f"go {k}/{n}"] if runner else [""]):
+        right = ", ".join(filter(None, (*summary, slots)))      # as much as fits at 44 columns too
+        if vlen(right) <= beside(left, w):
+            break
+    out.append(lr(left, p(right, "90"), w))
     out += tree(entries)
-    if runner:
+    if runner or aims or refused or live and vm.get("run"):    # the runner: its goal, what it does, what comes next
         seconds = _secs(runner.get("started"))
-        elapsed = f"{max(0, int(seconds))} s" if seconds is not None and 0 <= seconds < 60 else \
-            _age(runner.get("started"))
-        out.append(lr(dot("working") + " " + p("Pulse runner", "1"), p(elapsed, "90"), w))
+        elapsed = "not running" if not runner else f"{max(0, int(seconds))} s" \
+            if seconds is not None and 0 <= seconds < 60 else _age(runner.get("started"))
+        out.append(lr(dot("working" if runner else "idle") + " " + p("Pulse runner", "1"), p(elapsed, "90"), w))
         named = runner.get("workers") if isinstance(runner.get("workers"), dict) else {}
-        for text in filter(None, (doing, runner.get("detail"),
-                                  named and f"workers {named.get('spec')} ({named.get('why')})")):     # #182
-            out += ["  " + p(line, "90") for line in wrap(text, w - 2)]
+        hints = [*aims, doing, "then: " + runner["next"] if runner.get("next") else "", runner.get("detail"),
+                 named and f"workers {named.get('spec')} ({named.get('why')})"]      # #182, #215 FR-02, FR-04
+        for r in refused:                     # a hook's refusal the run handles: a fix round, a wait, the past
+            n, cause, effect = r.get("number"), go.refusal_cause(r), go.refusal_effect(r)
+            if r.get("legacy") or not r.get("current"):
+                when = f"run ended {_when(r.get('at'))}" if r.get("legacy") else _when(r.get("at"))
+                hints.append(f"earlier, {when}: " + (cause if r.get("legacy") else f"#{n} {cause}" +
+                             (f" on base {str(r['sha'])[:12]}" if r.get("sha") else "")) + f"; {effect}")
+            elif r.get("state") == "waits":
+                stand = "; ".join(f"#{m} {by_number[m]['title']}: {gate(by_number[m])[1] or 'open'}"
+                                  if m in by_number else f"#{m} closed" for m in r.get("needs") or ())
+                hints.append(f"#{n} {go.refusal_standing(r)} ({stand}): {cause}; {effect}")
+            elif r.get("state") != "decision":
+                hints.append(f"fix round for #{n}: {cause}")
+        for k, text in enumerate(filter(None, hints)):
+            lines = [short(text, w - 2)] if k == 0 and aims else wrap(text, w - 2)     # the goal in one line
+            out += ["  " + p(line, "90") for line in lines]
+        if live and vm.get("run"):            # the live map only: pulse status prints as before (#180)
+            marks[len(out)] = ("read", ("read-report", None))
+            out.append(lr("  " + p("run report", "90"), "r reads the last run of pulse go", w))
     for login in sorted(others, key=str.lower):
         items = list(others[login].values())
         out.append(lr(dot(roll([gate(i)[0] for i in items])) + " " + p(login, "1"),
                       p(_plural(len(items), "item"), "90"), w))
-        out += tree([(i, feats.get(i["number"], [])) for i in items])       # my agent on their item too
+        out += tree([(i, feats.get(i["number"], [])) for i in items], theirs=True)     # item and branch only
     out.append("")
-
-    # --- next ---------------------------------------------------------------
-    todo = {}                             # state -> the step that moves its first item
-    steps = [x[2] for x in lit.values()] + [wants(i)[1] for _, i in held if i.get("draft")] + \
-        [wants(x)[1] for x in rows]
-    for step in filter(None, steps):
-        todo.setdefault(*step)
-    if not rows and not held and not runner and not remedy:
-        todo["nothing open"] = "/pulse-ba explores, /pulse-re writes specs"
-    out.append(section("NEXT"))
-    if runner:
-        out += [" " + line for line in wrap("Runner: " + doing, w - 1)]
-        if runner.get("next"):
-            out += [" " + line for line in wrap("Then: " + runner["next"], w - 1)]
-    if remedy:
-        cause = ": ".join(filter(None, (diagnostic.get("check"), diagnostic.get("cause"))))
-        for text in filter(None, ("You: " + remedy, cause,
-                                  "Saved base verdict still blocks new work." if diagnostic.get("cached") else "")):
-            out += [" " + line for line in wrap(text, w - 1)]
-        if destination:
-            out += [" " + p.link(line, destination) for line in wrap(destination, w - 1)]
-        for text in filter(None, (vm.get("error"), vm.get("halt"), vm.get("untrusted"),
-                                  (vm.get("order") or {}).get("why"))):
-            out += [" " + line for line in wrap(text, w - 1)]
-    if vm.get("halt_kind") == "compatibility":     # the decision and the whole output of the probe (FR-05 of #178)
-        probe = vm.get("compatibility") or {}
-        for text in filter(None, ("You: " + probe["next"] if probe.get("next") else "",
-                                  "check output: " + probe["log"] if probe.get("log") else "")):
-            out += [" " + line for line in wrap(text, w - 1)]
-    for r in refused:                         # a hook's refusal: its item, its state, and what comes next (FR-09)
-        n, cause, effect = r.get("number"), go.refusal_cause(r), go.refusal_effect(r)
-        if r.get("legacy") or not r.get("current"):
-            when = f"run ended {_when(r.get('at'))}" if r.get("legacy") else _when(r.get("at"))
-            text = f"earlier, {when}: " + (cause if r.get("legacy") else f"#{n} {cause}" +
-                                            (f" on base {str(r['sha'])[:12]}" if r.get("sha") else "")) + f"; {effect}"
-            out += [" " + p(line, "90") for line in wrap(text, w - 1)]
-            continue
-        if r.get("state") == "decision":
-            text = "You: " + (r.get("why") or f"decide #{n}") + \
-                (f"; the failure is {go.UNSENT}" if r.get("unsent") else "")      # FR-03 of #209
-        elif r.get("state") == "waits":
-            stand = "; ".join(f"#{m} {by_number[m]['title']}: {gate(by_number[m])[1] or 'open'}" if m in by_number
-                              else f"#{m} closed" for m in r.get("needs") or ())
-            text = f"#{n} {go.refusal_standing(r)} ({stand}): {cause}; {effect}"
-        else:
-            text = f"Runner: fix round for #{n}: {cause}"
-        out += [" " + line for line in wrap(text, w - 1)]
-    for state_ in NEXT:
-        if state_ in todo:
-            step = ("You: " if (runner or remedy) and NEXT[state_] == "33" and
-                    not todo[state_].startswith("You:") else "") + todo[state_]
-            out += [" " + line for line in wrap(step, w - 1)] if state_ in ("plan repair", "plan needs you", "integration") else \
-                [lr(" " + p(state_, NEXT[state_]), step, w)]
-    if live and vm.get("run"):                  # the live map only: pulse status prints as before (#180)
-        marks[len(out)] = ("read", ("read-report", None))
-        out.append(lr(" " + p("run report", "90"), "r reads the last run of pulse go", w))
-    out.append("")
+    closes("WHO IS DOING WHAT", at, len(entries) + len(theirs))
 
     # --- ramp ---------------------------------------------------------------
-    out.append(section("RAMP", "all open work, in the order it goes out"))
+    at = opens("BACKLOG", "all open work, in the order it goes out")
     for row in rows[:ROWS_SHOWN]:
         title = p.link(f"#{row['number']}", row.get("url")) + f" {row['title']}"
         if row["number"] not in shown:
@@ -1045,10 +1285,37 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         stage, code = says(row, beside(left, w))
         marks[len(out)] = ("item", row["number"])
         out.append(lr(left, p(stage, code), w))
+        step = wants(row)[1]
+        if step and step[0] in ("spec rule", "plan repair"):     # what moves it, no person's lever (3af25a75)
+            out += ["    " + p(line, "90") for line in wrap(step[1], w - 4)]
+        out += ["    " + p(line, "33") for text in showing.get(row["number"], [])    # its actions (#215 FR-05)
+                for line in wrap(text, w - 4)]
     if len(rows) > ROWS_SHOWN:
         out.append(p(f"  +{len(rows) - ROWS_SHOWN} more", "90"))
     if not rows:
         out.append(p("  nothing ready", "90"))
+        if not (held or runner or remedy):    # an empty board says how work begins, as NEXT did
+            out.append(p("  nothing open: /pulse-ba explores, /pulse-re writes specs", "90"))
+    done = vm.get("done")
+    if done is not None:
+        out.append("")
+    closes("BACKLOG", at, len(rows))
+
+    # --- done (#217): what Pulse integrated lately, who and when; only when the board was read --------------
+    if done is not None:
+        at = opens("DONE", f"integrated in the last {DONE_DAYS} days")
+        for row in done[:ROWS_SHOWN]:
+            n, title = row["number"], f"#{row['number']} {row['title']}".rstrip()
+            if n not in shown:
+                shown.append(n)
+            left = p("› " + title, "1") if n == selected else "  " + title
+            marks[len(out)] = ("item", n)
+            out.append(lr(left, p(f"{row['who'] or '?'}, {_when(row['at'])}", "90"), w))
+        if len(done) > ROWS_SHOWN:
+            out.append(p(f"  +{len(done) - ROWS_SHOWN} more", "90"))
+        if not done:
+            out.append(p(f"  nothing integrated in the last {DONE_DAYS} days", "90"))
+        closes("DONE", at, len(done))
     return [fit(l, w) for l in out]
 
 
@@ -1191,6 +1458,9 @@ def offers(vm: dict, seen: dict) -> list:
         out.append(("read-log", "read run log", "output of gates and hooks in the last run"))
     out += [("retry-sync:" + entry["id"], "retry sync", f"{entry['kind']}: {entry['id']}")
             for entry in vm.get("actions", []) if entry["item"] == item["number"] and entry["status"] == "error"]
+    out += [("redo:" + entry["id"], "redo " + entry["kind"], "reload the item, then confirm it again")    # #215
+            for entry in _latest(vm.get("actions", [])).values()
+            if entry["item"] == item["number"] and entry["status"] == "conflict" and entry["kind"] in LOCAL_ACTIONS]
     if item.get("type") in state.WORK:
         choices = ["resume" if item.get("hold") or item.get("failed") else "defer"] \
             if item.get("state", "OPEN") == "OPEN" else []
@@ -1234,7 +1504,12 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
         allowed = ch in "0123456789" if level in ("number", "value") else len(ch) == 1 and ch.isprintable()
         limit = {"number": 10, "value": 3}.get(level) or len(ui["expected"])
         return ({**ui, "typed": typed + ch} if allowed and len(typed) < limit else ui), None
-    if level == "map" and isinstance(n, tuple):  # a session row (#181): Enter jumps, m, a and → do nothing
+    if level == "map" and isinstance(n, tuple) and n[0] == "section":    # a heading: Enter or → folds it (#214)
+        if ch in ENTER + RIGHT:
+            return ui, ("fold", n[1])
+        if ch in ("m", "a"):
+            return ui, None
+    elif level == "map" and isinstance(n, tuple):  # a session row (#181): Enter jumps, m, a and → do nothing
         if ch in ENTER:
             return ui, ("jump", n[1])
         if ch == "l":                            # its lever grants, in the settings (#197 FR-03)
@@ -1246,8 +1521,14 @@ def key(ui: dict, picks: list, ch: str, acts=()) -> tuple:
             return ui, ("move", n)
         if ch == "g":
             return {"level": "number", "at": n, "typed": ""}, None
-        if ch in UP + DOWN and picks:
+        if ch in PAGE + HOME + END:            # the map scrolls, the pick stays; main() keeps it in bounds (#214)
+            scroll = 0 if ch in HOME else 1 << 30 if ch in END else \
+                max(0, ui.get("scroll", 0) + ui.get("page", 1) * (-1 if ch == PAGE[0] else 1))
+            return {**ui, "scroll": scroll}, None
+        if ch in UP + DOWN and picks:          # main() keeps the pick in sight (#214 FR-04)
             k = picks.index(n) if n in picks else -1
+            if k < 0 and ch in DOWN:            # the first pick is the first item, its heading comes by ↑ (#214)
+                k = next((j for j, p in enumerate(picks) if not isinstance(p, tuple) or p[0] != "section"), 0) - 1
             return {**ui, "at": picks[max(0, k - 1) if ch in UP else min(len(picks) - 1, k + 1)]}, None
         if ch in ENTER + RIGHT and n in picks:
             return {"level": "item", "at": n}, None
@@ -1323,6 +1604,8 @@ def pointer(ui: dict, picks: list, event: tuple, target, acts=()) -> tuple:
         return {"level": "item", "at": target[1]}, None
     if kind == "session" and level == "map":     # picks the row and jumps, as Enter there (#181)
         return {**ui, "at": target}, ("jump", target[1])
+    if kind == "section" and level == "map":     # picks the heading and folds its section, as Enter there (#214)
+        return {**ui, "at": target}, ("fold", target[1])
     if kind == "offer" and level in ("item", "settings") and target[1] < len(acts):
         return key({**ui, "pick": target[1]}, picks, ENTER[0], acts)
     if kind == "settings" and level in ("map", "item"):
@@ -1342,7 +1625,7 @@ def move(root: Path, vm: dict, ui: dict, action: tuple, size: tuple) -> tuple:
     if kind == "move":
         candidate = next((record for record in vm["ramp"].get("rows", []) if record["number"] == number), {})
         if candidate.get("type") not in state.WORK or candidate.get("assignees") or candidate.get("claimed_holder"):
-            raise state.StateError(f"#{number} is not an unclaimed work item on the ramp")
+            raise state.StateError(f"#{number} is not an unclaimed work item in the backlog")
         if vm.get("error") or (vm.get("order") or {}).get("why"):
             raise state.StateError(vm.get("error") or vm["order"]["why"])
         items, seen = order._fresh(vm["repo"], state.gh)
@@ -1958,8 +2241,8 @@ def _fetch(root: Path) -> None:
 
 def _git(cwd: str, *args) -> str:
     try:
-        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                              timeout=2).stdout.strip()
+        return subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=2).stdout.strip()     # bytes anyone pushed (#217)
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -1983,31 +2266,65 @@ _merged: dict = {}                      # root -> (read at, the items of the mer
 _limited: dict = {}
 
 
+def _phase_since(root: Path, phases: dict) -> dict:
+    """{item: when its job's phase began}: the time the runner wrote its phase file."""
+    since = {}
+    for n in phases:
+        try:
+            since[n] = (config.pulse_dir(root) / "go" / f"{n}.phase").stat().st_mtime
+        except (OSError, state.StateError):
+            pass
+    return since
+
+
 def merged(root: Path, repo: str, items: list) -> set:
     """Only confirmed canonical integration removes work from the live board."""
     return {item["number"] for item in items if item.get("done")}
 
 
-_closed: dict = {}                      # root -> (read at, {epic: its closed children})
+_closed: dict = {}                      # root -> (read at, {epic: its closed children}, {closed issue: its title})
 
 
-def closed(root: Path, repo: str, items: list) -> dict:
+def closed(root: Path, repo: str, items: list, titles: bool = False) -> dict:
     """{epic: how many of its children are closed as completed} for the open epics (WP-60); one
     closed as not planned leaves the count (N5.01). Read at most every state.TTL s, and only while
-    an epic is open."""
+    an epic is open or, with titles, DONE needs a title (#217)."""
     epics = {i["number"] for i in items if i["type"] == "epic"}
-    at, done = _closed.get(root, (0.0, {}))
-    if epics and repo and time.time() - at >= state.TTL:
+    at, done, named = _closed.get(root, (0.0, {}, {}))
+    if (epics or titles) and repo and time.time() - at >= state.TTL:
         try:                            # ponytail: the last 1000 closed issues; a long epic's oldest may drop out
-            done = Counter((i.get("parent") or {}).get("number") for i in state.issues(
-                repo, state.gh, "closed", "number,parent,stateReason") if i.get("stateReason") == "COMPLETED")
+            rows = state.issues(repo, state.gh, "closed", "number,title,parent,stateReason")
+            done = Counter((i.get("parent") or {}).get("number") for i in rows if i.get("stateReason") == "COMPLETED")
+            named = {i["number"]: i.get("title") or "" for i in rows}
         except state.RateLimitError as error:
             _limited[root] = error
             return {epic: done[epic] for epic in epics if done.get(epic)}
         except (state.StateError, ValueError):
             pass                        # offline: the last answer stands
-        _closed[root] = (time.time(), done)
+        _closed[root] = (time.time(), done, named)
     return {e: done[e] for e in epics if done.get(e)}
+
+
+def closed_titles(root: Path) -> dict:
+    """{issue: its title} of the closed issues closed() read last."""
+    return _closed.get(root, (0.0, {}, {}))[2]
+
+
+def integrated(root: Path, base: str, titles: dict) -> list:
+    """DONE (#217): what Pulse integrated into the fetched base in the last DONE_DAYS days, newest first, from its
+    merge commits "Merge item #n" (merge.integrate): who is the author git records for the merge, the name of the
+    person whose clone integrated it; at is its commit time. Local git only; the map never waits for the network."""
+    out, seen = [], set()
+    log = _git(str(root), "log", "--merges", f"--since={DONE_DAYS}.days.ago",
+               "--format=%H%x1f%ct%x1f%cI%x1f%an%x1f%s", config.base_ref(root, base), "--")
+    for line in log.split("\n"):              # never splitlines: git leaves \x0b, \x1c, U+2028 in a subject
+        merge, stamp, at, who, subject = (line.split("\x1f") + ["", "", "", ""])[:5]
+        m = re.fullmatch(r"Merge item #([1-9][0-9]{0,9})", subject)        # an issue number, never a huge int
+        if m and int(m.group(1)) not in seen:
+            seen.add(int(m.group(1)))
+            out.append({"number": int(m.group(1)), "title": titles.get(int(m.group(1)), ""), "who": clean(who),
+                        "at": at, "merge": merge, "stamp": int(stamp) if stamp.isdigit() else 0})
+    return sorted(out, key=lambda row: row["stamp"], reverse=True)      # the moment, whatever its time zone
 
 
 def _cache_notice(root: Path) -> str:
@@ -2092,6 +2409,7 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
         pass
     done = merged(root, repo, items) if board else set()      # off the map at once, done for its epic (#57)
     finished = Counter(i["parent"] for i in items if i["number"] in done and i.get("parent"))
+    titles = {i["number"]: i.get("title") or "" for i in items}      # before the done ones leave, for DONE (#217)
     items = [i for i in items if i["number"] not in done]
     items = ready.current(root, items)      # a result for an old head goes back to the build (#191)
     phases = go.phases(root)
@@ -2118,6 +2436,8 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
             "person": state.who(root, me) or "you", "me": me,      # Klarname (@login), as every surface (#111)
             "items": items, "sessions": [], "error": error, "order": order_info,
             "phases": phases, "failed": failures(root, items),
+            "phase_since": _phase_since(root, phases),       # when each job's phase began (#215 FR-01)
+            "tasks": plan_tasks(root, items, phases, me, base, found),     # Plan k/n of my jobs (#216)
             "halt": go.halt(root),              # what holds the whole run (#113, #178)
             "halt_kind": go.halt_kind(report), "compatibility": report.get("compatibility") or {},
             "refusals": go.refusals(root, items),       # a hook's refusals, current or earlier (#178)
@@ -2128,6 +2448,14 @@ def gather(root: Path, board: bool = True, *, fresh: bool = False) -> dict:
             "branches": {},
             "untrusted": setup.untrusted(cfg["agent"]),       # the lever guard does not run in Codex yet (#111)
             "ramp": ready.ramp(items, ready.plan_files(root, found), cfg["cap"], me, gates=gates)}
+    vm["done"] = None          # DONE (#217) only where the board was read; pulse status leaves it out
+    if board:                  # a missing title comes from the closed issues closed() reads
+        vm["done"] = integrated(root, base, {**closed_titles(root), **titles})
+        if any(not row["title"] for row in vm["done"]):
+            closed(root, repo, [], titles=True)
+            vm["done"] = [{**row, "title": row["title"] or closed_titles(root).get(row["number"], "")}
+                          for row in vm["done"]]
+    vm["off"] = config.off(root)          # which switch keeps Pulse off, and the way back (#231)
     vm["auto_why"] = ""
     local(root, vm)
     vm["rate_limit"] = root in _limited
@@ -2256,7 +2584,8 @@ def _keys():
         ch = os.read(fd, 1).decode(errors="ignore")
         if ch == "\x1b" and not answer[0] and select.select([sys.stdin], [], [], 0.01)[0]:
             ch += os.read(fd, 2).decode(errors="ignore")
-            if ch in ("\x1b[5", "\x1b[6") and select.select([sys.stdin], [], [], 0.01)[0]:
+            if ch in ("\x1b[1", "\x1b[4", "\x1b[5", "\x1b[6", "\x1b[7", "\x1b[8") and \
+                    select.select([sys.stdin], [], [], 0.01)[0]:      # PgUp, PgDn, and Home and End (#214)
                 ch += os.read(fd, 1).decode(errors="ignore")
             if ch == "\x1b[M":                     # an X10 report: its three bytes are no keys (#180)
                 ch += byte() + byte() + byte()
@@ -2311,7 +2640,8 @@ def _windows_keys():
     """The keys of a Windows terminal through msvcrt, which has no termios (#121 FR-09): an arrow comes as two
     characters, and the map gets it as any other terminal sends it."""
     import msvcrt
-    arrows = {"H": UP[0], "P": DOWN[0], "K": "\x1b[D", "M": RIGHT[0], "I": "\x1b[5~", "Q": "\x1b[6~"}
+    arrows = {"H": UP[0], "P": DOWN[0], "K": "\x1b[D", "M": RIGHT[0], "I": PAGE[0], "Q": PAGE[1], "G": HOME[0],
+              "O": END[0]}
 
     def read(wait: float):
         end = time.monotonic() + wait
@@ -2327,6 +2657,38 @@ def _windows_keys():
             msvcrt.getwch()
     read.restore, read.drop = lambda: None, drop
     return read
+
+
+def folds(root: Path, titles=None) -> set:
+    """The titles of the sections folded in this clone's live map, with titles written first (#214): in the clone's
+    git dir, never shared. A write that fails keeps them for this map only."""
+    try:
+        path = config.pulse_dir(root) / FOLDS
+        if titles is None:          # an agent may write the git dir: through no link, never waiting on a pipe (H-1)
+            read = _read(path)
+            text = read[0].decode("utf-8", errors="replace") if read else ""
+            return {line for line in text.splitlines()[:50] if line.strip()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=f".{FOLDS}-", dir=path.parent)       # a name nobody can plant
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:      # sections first: a read keeps 50 lines (#234)
+                out.write("".join(f"{title}\n" for title in sorted(titles, key=lambda t: (t.endswith(" sessions"), t))))
+            os.replace(name, path)                                               # replaces a link, never follows it
+        finally:
+            Path(name).unlink(missing_ok=True)
+    except (OSError, ValueError, state.StateError):
+        pass
+    return set() if titles is None else set(titles)
+
+
+def pruned(vm: dict, titles) -> set:
+    """The folds worth keeping: every section's, and the unfolded sessions of an open item or a branch on the map
+    now (#234); those of closed items go. Without a view model all stay."""
+    if not vm:
+        return set(titles)
+    here = {f"#{i['number']} sessions" for i in vm.get("items", ())} | {f"{k} sessions" for k in places(vm)
+                                                                      if isinstance(k, str)}
+    return {t for t in titles if not t.endswith(" sessions") or t in here}
 
 
 def fitted(lines: list, height: int, keep: int, offset: int = None, kept: list = None, top: int = HEAD) -> list:
@@ -2348,8 +2710,9 @@ def fitted(lines: list, height: int, keep: int, offset: int = None, kept: list =
     shown = body[start:start + room]
     kept[:] = [*range(len(head)), *range(len(head) + start, len(head) + start + len(shown)), None,
                *range(len(lines) - len(foot), len(lines))]
-    hint = "PgUp/PgDn scroll" if offset is not None else "a taller terminal shows them"
-    return head + shown + [f"  … {len(body) - room} more lines; {hint}"] + foot
+    where = f"  lines {start + 1} to {start + len(shown)} of {len(body)}; PgUp/PgDn scroll" if offset is not None \
+        else f"  … {len(body) - room} more lines; a taller terminal shows them"       # where it stands (#214)
+    return head + shown + [where] + foot
 
 
 def shows(text: list, width: int, height: int) -> bool:
@@ -2385,6 +2748,8 @@ def main(args) -> int:
     approved = {}                                    # item -> its approvals, once read beside the keys (L-3)
     detached = None
     help_pages = {}                            # built once per width, never on an animation frame
+    folded = folds(root)                       # the sections this clone keeps folded (#214)
+    followed = None                            # the pick the map's window last followed (#214 FR-04)
     # what the read brings, the writes so far, the last look for a newer copy and for a newer release
     box = {"writes": 0, "looked": time.time(), "asked": -math.inf}
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
@@ -2540,7 +2905,8 @@ def main(args) -> int:
                                marks=marks)            # the rows of the live map, run report too (#180)
             else:
                 shown = []
-                lines = draw(vm, frame=frame, color=color, width=width, selected=n, picks=shown, marks=marks)
+                lines = draw(vm, frame=frame, color=color, width=width, selected=n, picks=shown, marks=marks,
+                             folded=folded)
             notice = status or unread or \
                 (vm.get("error", "") if vm.get("rate_limit") else (vm.get("order") or {}).get("why", ""))
             if level == "number":
@@ -2550,19 +2916,27 @@ def main(args) -> int:
             elif level == "confirm" and "expected" in ui:
                 notice = status + "\n> " + ui.get("typed", "")
             # the status, a line over the keys on every level (#180), the keys
-            legend = JUMP_KEYS if level == "map" and isinstance(n, tuple) else KEYS[level]     # a session row (#181)
+            legend = KEYS[level] if level != "map" or not isinstance(n, tuple) else \
+                FOLD_KEYS if n[0] == "section" else JUMP_KEYS        # a heading (#214), a session row (#181)
             foot = footer(notice, "", width) + [Paint(color)("─" * width, "90")] + footer("", legend, width) \
                 if read else []
             top = HEAD + 1 if level in ("help", "read") else HEAD      # the back row stays with the header
-            if level in ("item", "help", "read", "settings"):
+            if level in ("map", "item", "help", "read", "settings"):
                 kept = min(top, max(0, height - len(foot) - 2))
                 ui["page"] = max(1, height - kept - len(foot) - 1)
+                if level == "map" and (n != followed or "scroll" not in ui):   # a new pick: in sight (#214)
+                    want, followed = ("item", n) if isinstance(n, int) else n, n
+                    row = min((r for r, target in marks.items() if target == want), default=None)
+                    scroll = ui.get("scroll", 0)
+                    if row is not None and row >= kept:          # just far enough, never past it
+                        scroll = min(max(scroll, row - kept - ui["page"] + 1), row - kept)
+                    ui["scroll"] = scroll
                 if "scroll" in ui or level not in ("item", "settings"):
                     ui["scroll"] = min(ui.get("scroll", 0), max(0, len(lines) - kept - ui["page"]))
             where = []                                 # screen row -> row of lines, for a click
             cells = [fit(l, width) for l in fitted(lines + foot, height, len(foot),
-                                                  ui.get("scroll") if level in ("item", "help", "read", "settings")
-                                                  else None,
+                                                  ui.get("scroll") if level in ("map", "item", "help", "read",
+                                                                                "settings") else None,
                                                   kept=where, top=top)]
             mark = [fit(row, INSET) for row in signet(color)]
             whole = len(lines) + len(foot) <= height or height - len(foot) - 2 >= HEAD    # fitted() cut no header row
@@ -2657,6 +3031,8 @@ def main(args) -> int:
                     status = ""
                 if action and action[0] == "say":
                     status, action = action[1], None
+                if action and action[0] == "fold":     # at once, and kept for this clone (#214)
+                    folded, action = folds(root, pruned(vm, folded ^ {action[1]})), None
                 if action and action[0] in ("move", "move-preview", "move-save"):
                     saving = action[0] == "move-save"
                     if saving and reading:
@@ -2680,6 +3056,15 @@ def main(args) -> int:
                     except (state.StateError, ValueError) as error:
                         status = str(error)
                     action = None
+                if action and action[0].startswith("redo:"):    # a conflict: the item read anew, then asked again (#215)
+                    try:
+                        view = vm = gather(root, fresh=True)
+                        local(root, vm)
+                        action = redo(vm, *action)
+                    except (state.StateError, ValueError) as error:
+                        status, action = f"! {error}", None
+                    if action is None and not status:
+                        status = "the action changed meanwhile; open the item again"
                 if action and level in ("map", "item", "settings", "value") and (action[0].startswith(
                         ("publish-plan:", "retry-sync:", "setting:", "levers:")) or action[0] in (*LOCAL_ACTIONS, "auto", *lifecycle.ACTIONS)):
                     try:

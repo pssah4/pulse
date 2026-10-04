@@ -26,6 +26,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -299,12 +300,51 @@ def _inside(root, cwd) -> bool:
 
 
 def _pulse_on(place):
-    """(root, config) of the project around place (None: this process's directory) where Pulse is on, else None."""
+    """(root, config) of the project around place (None: this process's directory) where Pulse is on, else None:
+    a switch of the person turns it off as the team's mode does (#231)."""
     root = config.find_root(Path(place) if place else None)
     if root is None:
         return None
     cfg = config.clone_config(root)                            # a worktree follows its main copy
-    return (root, cfg) if cfg["mode"] == "on" else None
+    return (root, cfg) if cfg["mode"] == "on" and not config.switched(root) else None
+
+
+SWITCHING = re.compile(r"(?:[^\s;&|<>`$'\"]*/)?pulse[ \t]+(on|off)(?:[ \t]+(--host))?")    # the whole command, alone
+
+
+def _switching(payload) -> str:
+    """"off", "off --host", "on" or "on --host" for a plain `pulse on|off [--host]` (Bash, the whole command), else
+    "" (#231)."""
+    given = payload.get("tool_input") if isinstance(payload, dict) else None
+    command = given.get("command") if isinstance(given, dict) else None
+    m = SWITCHING.fullmatch(command.strip()) if isinstance(command, str) and payload.get("tool_name") == "Bash" \
+        else None
+    return " ".join(filter(None, m.groups())) if m else ""
+
+
+def _switch_asked(payload, env, action) -> str:
+    """#231 FR-05: Claude Code's own dialog for an attended session, which neither the model nor a classifier
+    answers; PostToolUse of its tool use switches. Codex, a worker or an unattended session: denied, the person
+    switches in their own terminal. Asked whatever the switches say, so the person can also turn Pulse on."""
+    root = config.find_root(Path(payload["cwd"]) if isinstance(payload.get("cwd"), str) else None)
+    sid, tool_use, host = levers.session(env), payload.get("tool_use_id"), "--host" in action
+    if "turn_id" in payload or not sid or not isinstance(tool_use, str) or not tool_use or root is None and not host:
+        why = f"pulse {action}: only the person switches Pulse; they run pulse {action} in their own terminal" \
+            if root is not None or "turn_id" in payload or not sid else \
+            f"pulse {action}: not inside a git repository; pulse {action.split()[0]} --host switches every project"
+        return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                  "permissionDecisionReason": why}})
+    if host:                           # the computer's switch needs no repository
+        levers.ask_host(tool_use, sid, "switch:" + action)
+    else:
+        levers.ask(root, tool_use, sid, "switch:" + action)
+    turn, where = action.split()[0], "on this computer, in every project" if "--host" in action else "in this clone"
+    effect = "its rules, guard and presence stop for your sessions" if turn == "off" else \
+        "its rules, guard and presence come back"
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                              "permissionDecisionReason":
+                                                  f"Pulse: turn Pulse {turn} for you {where}? Then {effect}; "
+                                                  f"your team's configuration stays as it is."}})
 
 
 def map_panes(root):
@@ -312,8 +352,8 @@ def map_panes(root):
     of #121). Read without network; a sandbox that keeps .git read-only has its copy in the cache folder."""
     found = set()
     for d in {config.pulse_dir(root), state.cache_dir(root)}:
-        try:
-            found |= set(json.loads((d / "map-pane").read_text(encoding="utf-8")))
+        try:                           # a regular file only, read without blocking: a fifo never holds the hook (#240)
+            found |= set(json.loads(guard._read(d / "map-pane") or "[]"))
         except (OSError, ValueError, TypeError):
             pass
     return found
@@ -330,20 +370,50 @@ def lever_guard(stdin_text, env):
         except ValueError:
             said = {}
         here = said.get("cwd") if isinstance(said, dict) and isinstance(said.get("cwd"), str) else None
-        found = next(filter(None, (_pulse_on(p) for p in (None, here, env.get("CLAUDE_PROJECT_DIR")) if p != "")), None)
-        if found is None:
-            return ""
-        root, cfg = found
+        action = _switching(said)
+        if action:                     # the person's switch: their dialog, also while Pulse is off (#231)
+            return _switch_asked(said, env, action)
+        if env.get("PULSE_HOLDER") and env.get("PULSE_CLONE"):
+            # a worker of pulse go: the run's clone, guarded whatever mode its folder or worktree says (#218)
+            root = Path(env["PULSE_CLONE"])
+            cfg = config.load(root)
+        else:
+            tool = said.get("tool_name") if isinstance(said, dict) else None
+            found = None if tool in guard.EDITS else next(filter(None, (
+                _pulse_on(p) for p in (None, here, env.get("CLAUDE_PROJECT_DIR")) if p != "")), None)
+            if found is None:
+                # anywhere else, Pulse on or not, only the person's switches count (#231): the computer's holds
+                # for every project; an edit tool of anyone but a worker reaches the guard for them alone (#229)
+                given = said.get("tool_input") if isinstance(said.get("tool_input"), dict) else {}
+                cwd = (lambda: state.ran_in(said) or None) if "turn_id" in said and tool not in guard.EDITS else \
+                    here or "."
+                why = guard.verdict(tool or "", given, None, None, cwd, switches=True)
+                return json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                          "permissionDecisionReason": why}}) if why else ""
+            root, cfg = found
         payload = json.loads(stdin_text)
         asked = _asking(payload)
         if asked:
             return _decide(root, payload, env, asked)
-        # Claude Code names the command's directory; Codex its session's, the workdir stands in its rollout.
-        cwd = (lambda: state.ran_in(payload) or None) if "turn_id" in payload else payload.get("cwd") or "."
-        tool, given, panes = payload.get("tool_name") or "", payload.get("tool_input") or {}, map_panes(root)
-        why = guard.verdict(tool, given, cfg["base_branch"], config.default_branch(root), cwd, panes)
-        if why and "turn_id" not in payload and levers.session(env) and _inside(root, payload.get("cwd")) and not guard.verdict(
-                tool, given, cfg["base_branch"], config.default_branch(root), cwd, panes, granted=True):
+        # Claude Code names the command's directory; Codex its session's, the workdir stands in its rollout. Codex
+        # patches files from its session's directory. A clone makes the guard judge the call as a worker's (#229).
+        tool, given = payload.get("tool_name") or "", payload.get("tool_input") or {}
+        cwd = (lambda: state.ran_in(payload) or None) if "turn_id" in payload and tool not in guard.EDITS else \
+            payload.get("cwd") or "."
+        clone = str(root) if env.get("PULSE_HOLDER") else None
+        until = time.monotonic() + guard.BUDGET       # one budget for all the guard's work in this hook (#240)
+        try:
+            with guard._alarm(until):                 # also the panes, the default branch and both verdicts
+                panes = () if tool in guard.EDITS else map_panes(root)
+                default = config.default_branch(root)
+                why = guard.verdict(tool, given, cfg["base_branch"], default, cwd, panes, clone=clone, deadline=until)
+                granted = why and why != guard.SLOW and "turn_id" not in payload and levers.session(env) and \
+                    _inside(root, payload.get("cwd")) and not guard.verdict(
+                        tool, given, cfg["base_branch"], default, cwd, panes, granted=True, clone=clone,
+                        deadline=until)
+        except guard.Overrun:
+            why, granted = guard.SLOW, False
+        if granted:
             grant = levers.allowed(root, env)        # the lever is one a grant opens (#197 FR-04)
             if grant:
                 levers.use(root, grant, clip(str(given.get("command") or tool), 300), "guard", levers.session(env))
@@ -402,6 +472,20 @@ def lever_event(stdin_text, env):
         event = payload.get("hook_event_name")
         if event not in ("PostToolUse", "UserPromptSubmit"):
             return
+        action = _switching(payload) if event == "PostToolUse" else ""
+        if action:                     # the person agreed in Claude Code's dialog: switch now (#231)
+            root = config.find_root(Path(payload["cwd"]) if isinstance(payload.get("cwd"), str) else None)
+            host, tool_use, sid = "--host" in action, payload.get("tool_use_id") or "", levers.session(env)
+            if not (levers.answered_host(tool_use, sid, "switch:" + action) if host else
+                    root is not None and levers.answered(root, tool_use, sid, "switch:" + action)):
+                return
+            try:
+                config.switch(root, action.startswith("on"), host)
+                said = (config.off(root) if root is not None else config.switched(None)) or \
+                    ("Pulse is on for you here" if root is not None else "Your switch on this computer is on")
+            except (state.StateError, OSError) as error:        # never silent: the person agreed to this
+                said = f"pulse {action} did not switch: {error}"
+            return json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": said}})
         scope = _asking(payload) if event == "PostToolUse" else ""
         if event == "PostToolUse" and not scope:
             return
@@ -425,8 +509,7 @@ def main(argv, stdin_text, env):
         except (ValueError, TypeError):
             pass
     if argv[:1] == ["presence"]:
-        lever_event(stdin_text, env)
-        return ""
+        return lever_event(stdin_text, env) or ""
     if argv[:1] == ["guard"]:
         return lever_guard(stdin_text, env)
     try:
@@ -436,6 +519,8 @@ def main(argv, stdin_text, env):
         if not event or root is None:
             return ""
         cfg = config.clone_config(root)
+        if cfg["mode"] == "on" and config.switched(root):       # the person's switch: off as the team's mode (#231)
+            cfg = {**cfg, "mode": "off"}
         if event == "Stop":
             return stop_verdict(root, cfg, json.loads(stdin_text), env) if cfg["mode"] == "on" else ""
         if event == "SessionStart":

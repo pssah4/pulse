@@ -9,7 +9,7 @@ description: Implement one item test-first against its Plan, capture bugs, write
 
 ## /pulse-build or pulse go
 
-`/pulse-build <n>` is the way one item gets built, in your session, with you watching and answering when something comes up. [`pulse go`](./pulse-go) is a script that runs this same discipline for every ready item at once: it claims each item, gives it its own worktree, starts one headless agent per item, checks itself that the spec tests failed before the code, and runs the same gates after each build ([the chain](../concepts/verification-gates#the-chain-after-the-build)). Build one item together: `/pulse-build <n>`. Build everything the ramp has released: `pulse go` in your own terminal.
+`/pulse-build <n>` is the way one item gets built, in your session, with you watching and answering when something comes up. [`pulse go`](./pulse-go) is a script that runs this same discipline for every ready item at once: it claims each item, gives it its own worktree, starts one headless agent per item, checks itself that the spec tests failed before the code, and runs the same gates after each build ([the chain](../concepts/verification-gates#the-chain-after-the-build)). Build one item together: `/pulse-build <n>`. Build everything the backlog has released: `pulse go` in your own terminal.
 
 ## Start
 

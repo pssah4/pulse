@@ -51,8 +51,9 @@ def cmd_status(args):
         if welcome:
             print(help_hint)
         return 0
-    if welcome and mode == "off":
-        print("Pulse is off here. pulse setup --mode on activates it when you choose to continue.")
+    why = config.off(root) if root is not None else ""
+    if why and not args.json:             # which switch, and the way back (#231); the JSON carries it as "off"
+        print(why)
     if args.n is not None:
         return _item(args)
     root, repo, run = _ctx()
@@ -214,6 +215,10 @@ def cmd_go(args):
             return 0
     else:
         print("pulse go: process the queue; optional goal example: pulse go Improve checkout")
+    why = config.off(root)               # any switch off: goals and controls keep, no run starts (#231)
+    if why:
+        print(f"pulse go: does not start: {why}")
+        return 1
     if not _tty():
         from pulse import runner
         receipt = runner.start(root)
@@ -554,6 +559,31 @@ def _person_only(lever, n=None):
     print(f"pulse {lever}: only a person does this, in their own terminal or the Pulse map; tell the person "
           "which gate waits" + (f"; or {levers.HINT}" if levers.session(os.environ) and levers.grantable(lever) else ""))
     return True
+
+
+def cmd_switch(args):
+    """#231: the person's own switch of Pulse, for this clone or with --host this computer. Only the person switches:
+    in their terminal at once; in an attended Claude Code session the guard asked them in its dialog, and the hook
+    switches once the command is done; any other agent is refused."""
+    from pulse import levers
+    what = f"pulse {args.cmd}" + (" --host" if args.host else "")
+    if not auto.person(os.environ, _tty()):
+        if levers.session(os.environ):
+            print(f"{what}: Pulse switches once Claude Code reports this command done, after the person agreed in "
+                  "its dialog")
+            return 0
+        print(f"{what}: only the person switches Pulse, in their own terminal: {what}")
+        return 1
+    root = config.find_root()
+    if root is None and not args.host:
+        print(f"{what}: not inside a git repository; {what} --host switches every project on this computer")
+        return 1
+    config.switch(root, args.cmd == "on", args.host)
+    why = config.off(root) if root is not None else config.switched(None)
+    level = "on this computer" if args.host else "in this clone"
+    print(why if args.cmd == "off" else f"{what}: your switch {level} is on, but Pulse is still off: {why}" if why
+          else f"{what}: Pulse is on for you {level}")
+    return 0
 
 
 def _lever_note(root, n, what, grant, sid):
@@ -927,9 +957,16 @@ def parser() -> argparse.ArgumentParser:
                         "in the Claude Code plugin cache; a terminal the newest of both")
     s.add_argument("--codex-rules", action="store_true",
                    help="Codex runs pulse without asking and never a person's lever: approve, auto <gate>, "
-                        "defer, resume, revoke, handoff, done, claim --take, release --take, pulse -- <command>, "
+                        "defer, resume, revoke, handoff, done, claim --take, release --take, on, off, pulse -- <command>, "
                         "gh pr merge and ready, gh issue edit, close, and reopen")
     s.add_argument("--dry-run", action="store_true")
+
+    for name, doing in (("off", "turn Pulse off for you in this clone, or with --host on this computer, without a "
+                                "change to the repository: no rules, no guard, no presence, no pulse go"),
+                        ("on", "turn your switch of Pulse in this clone, or with --host on this computer, on again")):
+        c = add(name, cmd_switch, doing, when="You want to work without Pulse here, or with it again; only you switch.",
+                example=f"pulse {name} --host")
+        c.add_argument("--host", action="store_true", help="every project on this computer")
 
     for name, fn, text, take, when in (
             ("release", cmd_release, "give an item back",

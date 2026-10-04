@@ -413,6 +413,18 @@ def item(repo_name: str, n: int, run=gh) -> dict:
                      lifecycle_trusted=trusted)
 
 
+def comments(repo_name: str, n: int, run=gh) -> list:
+    """The comments on issue n its own worker reads (#230), from GitHub now, never kept on a record or in the cache:
+    by people who may push (the owner, or a member or collaborator can_push says may; GitHub calls readers so too,
+    #89), not minimized, without Pulse's marks; the last 20, each text up to 8000 characters."""
+    raw = json.loads(run(["issue", "view", str(n), "--repo", repo_name, "--json", "number,comments"]))
+    trusted = pushers(repo_name, run)
+    found = [c for c in complete_comments(repo_name, {**raw, "number": n}, run)["comments"]
+             if not c.get("isMinimized") and "<!-- pulse:" not in (c.get("body") or "")]
+    return [{"author": (c.get("author") or {}).get("login") or "", "at": c.get("createdAt") or "",
+             "body": (c.get("body") or "")[:8000]} for c in found if trusted(c)][-20:]
+
+
 def writer(comment: dict, repo_name: str, run, known: dict):
     """Whether the author of a comment may push (#74): True for the owner at once, and for a member or a
     collaborator (GitHub calls readers so too) once can_push says so; False for anyone else; GitHub's

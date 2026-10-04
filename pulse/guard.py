@@ -9,7 +9,10 @@ starts in a pane. Nothing goes into the pane of a live map, which runs as the pe
 goes into another terminal (FR-10 of #121): a pane that map-pane names, and while a map of this user
 runs, any pane whose processes hold one, asked of Herdr or tmux and ps; a pane it cannot resolve then
 counts as a map. Nowhere starts a claude with every hook or the Pulse plugin off or an opencode run, and no shell
-write, rm, or truncate takes mode in .pulse/config.toml away from on, read from the command's text (#112). It
+write, rm, or truncate takes mode in .pulse/config.toml away from on, read from the command's text (#112). No
+agent pushes through an alias or config of its line or to pulse-state, and a worker of pulse go starts no agent
+that drops this guard, its permission checks or its sandbox, and writes neither the running Pulse copy nor the
+clone's .pulse/, also with its edit tools (#229). It
 stops a lever pulled in the open; a script file, a program of the agent's own, or a token read out of gh passes
 (Analysis 5.8).
 """
@@ -18,15 +21,71 @@ from __future__ import annotations
 import json
 import os
 import re
+import contextlib
 import shlex
+import signal
 import stat
 import subprocess
+import threading
 import time
+
+from .config import NO_NET, OPEN, codex_settings
 
 REASON = ("Gate levers belong to a person or to their own auto switch. Tell the person which gate waits: "
           "a in the Pulse map, or pulse approve in their terminal.")
 PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|revoke|handoff|retry|done|defer|resume|discard|delete|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
                    r"claim[ \t]+--take|release[ \t]+--take)(?![\w.-])")      # quoted too, in comments and bodies
+# What a worker of pulse go keeps (#229, ADR-15), read from what it starts and writes, never from text it names: the
+# guard of an agent it starts (the variables its hook reads), that agent's permission checks and sandbox, the running
+# Pulse copy and the clone's .pulse/.
+FENCE = ("A worker of pulse go keeps Pulse's guard: it starts no agent without it, past its permission checks or "
+         "outside its sandbox, and writes neither the running Pulse copy nor the project's .pulse/. Changing that is "
+         "the person's call.")
+GUARDED = {"PULSE_HOLDER", "PULSE_CLONE", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SIMPLE", "CODEX_HOME", "HOME"}
+UNCHECKED = {"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"}
+EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}       # Codex reports every edit as apply_patch
+PATCHED = re.compile(r"^[ \t]*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.M)
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # the running Pulse copy (config.ROOT)
+# What a worker may do with a path in a fence: read it, and copy it out (the target of a copy is its last word or -t)
+READERS = {"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ls", "wc", "stat", "file", "diff", "cmp",
+         "du", "jq", "echo", "printf", "pwd", "cd", "pushd", "popd", "test", "[", "realpath", "readlink", "dirname",
+         "basename", "pulse"}
+GIT_READS = {"show", "log", "diff", "status", "ls-files", "cat-file", "rev-parse", "grep", "blame"}
+FIND_WRITES = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+COPIES = {"cp", "install", "rsync", "scp"}
+SCRIPTS = re.compile(r"python[\d.]*|pypy3?|node|deno|bun|ruby|perl|php|g?awk")   # code that may name a path inside
+AGENTS_STARTED = {"claude", "claude-code", "codex"}               # judged where they are the command's program only
+LAUNCHERS = {"npx", "bunx", "pnpx", "pnpm", "yarn", "dlx", "npm", "x"}   # npx @openai/codex, npm exec -- codex
+ASSIGN = re.compile(r"(\w+)\+?=")                                    # NAME=value, NAME+=value
+# words before a command's program that are the shell's own: a loop, a condition, a group, a negation (#235)
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "{", "(", "!", "coproc", "noglob", "nocorrect"}
+NAMED = {"function", "repeat"}                    # function NAME, zsh's repeat COUNT: two words before the program
+TAKES = {"env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-P"}, "nice": {"-n"}, "exec": {"-a"},
+         **dict.fromkeys(("npx", "bunx", "pnpx", "dlx", "x"), {"-p", "--package"}),
+         "sudo": {"-u", "--user", "-g", "--group", "-C", "-D", "-h", "-p", "-r", "-t", "-U"},
+         "timeout": {"-s", "--signal", "-k", "--kill-after"}, "xargs": {"-I", "-i", "-L", "-l", "-n", "-P", "-s", "-E",
+                                                                      "-d", "-a"},
+         "stdbuf": {"-i", "-o", "-e"}}
+# script's options with a value, as getopt reads them (#236): BSD -t, -T; util-linux -c, -E, -O, -B, -I, -m, -o, -T
+SCRIPT_TAKES = "tTcEOBImo"
+SCRIPT_LONGS = {"--command", "--echo", "--log-in", "--log-out", "--log-io", "--log-timing", "--logging-format",
+                "--output-limit"}
+SETTERS = {"export", "declare", "typeset", "readonly", "local", "unset"}
+# git that pushes where a line's config says (#229 FR-02, FR-03): no agent pushes with config of its line, through
+# an alias it defines, or to pulse-state; no worker writes the config a push follows
+CONFIGURED = ("The Pulse guard refuses it: no push through a git alias or config set in the line, and no push to "
+              "pulse-state, which only Pulse writes. Push the item branch by name: git push origin <type>/<n>-<slug>.")
+STATE = "pulse-state"
+PUSHES = re.compile(r"(?:alias|push|include|includeif)\.|remote\..+\.push|branch\..+\.merge", re.I)
+STEERS = re.compile(r"(?:alias|include|includeif)\.", re.I)             # config that may turn a word into a push
+MAPS = re.compile(r"remote\.[^=']+\.push\b(?!url)|branch\.[^=']+\.(?:merge|remote)\b", re.I)   # moves a named push
+UPSTREAM = re.compile(r"push\.default'?\s*=\s*'?(?:upstream|tracking)\b", re.I)    # maps a named branch by branch.*
+LIFTS = re.compile(r"(?:remote|push|branch|alias|include|includeif)\.", re.I)   # keys that can steer a push at all
+QUIET = {"push.autosetupremote", "push.followtags", "push.gpgsign", "push.pushoption", "push.negotiate",
+         "push.usebitmaps"}                                           # push keys that send nothing elsewhere
+CONFIG_FILES = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG", "HOME", "XDG_CONFIG_HOME")   # unread by the guard
+CONFIG_WRITES = {"set", "unset", "--unset", "--unset-all", "--add", "--replace-all", "--rename-section",
+                 "--remove-section", "rename-section", "remove-section"}
 RISKY = re.compile(r"\b(?:pulse|gh|herdr|tmux|osascript)\b|\bgit\s+push\b")   # what an unreadable command may not name
 MARKS = re.compile(r"<!-- pulse:|Plan-ok|plan ok at|merge ok at|pulse (?:integration approval|removal approval|final approval policy|action) \{")
 MARKERS = {"PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"}
@@ -34,6 +93,20 @@ MARKERS = {"PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID"
 STORE = re.compile(r"outbox\.sqlite|\blever_(?:grants|asks|requests|uses)\b|\bpulse_hook\b|\brun-hook\.cmd\b"
                    r"|\bpulse\.levers\b|\bfrom\s+pulse\s+import\b[^\n;|&]*\blevers\b")
 ASKING = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?levers[ \t]+allow\b")     # alone it gets the dialog, never here
+# the person's switches of Pulse (#231): $XDG_CONFIG_HOME/pulse-agents/off (#236) and <cache>/pulse/<clone>/off
+SWITCHER = re.compile(r"\bconfig\.switch\s*\(")       # Pulse's own switch, called from an interpreter's code
+MAYBE = re.compile(r"pulse|off|[0-9a-f]{16}", re.I)    # what a line that may reach a switch names somewhere
+SLOW = ("This line is too nested for the Pulse guard to check in time. Split it into shorter commands and run them "
+        "one by one.")
+BUDGET = 3.5     # seconds for one line at most, a map's pane lookups (LOOKUPS) within it; below the hook's 5 s (#240)
+
+
+class Overrun(BaseException):
+    """The line took the guard longer than its BUDGET (#240); a BaseException, so no handler of a check swallows it."""
+
+
+SWITCH_REASON = ("Only the person switches Pulse on or off: /pulse-on or /pulse-off asks them in Claude Code's own "
+                 "dialog, or they run pulse on or pulse off in their own terminal. No agent writes a switch.")
 BRANCH_REASON = ("The Pulse guard refuses it: agents commit and merge only on the item branch <type>/<n>-<slug>, "
                  "never on the base or default branch. Switch to the item branch, or work in its worktree, and commit "
                  "there. A directory the guard cannot reach (~, a variable, a path made later in the line) counts as "
@@ -58,7 +131,10 @@ CAT = re.compile(r"\$\([ \t]*cat[ \t]+<<-?[ \t]*(['\"]?)([\w.-]+)\1[ \t]*\n(.*?)
 TMUX_SEP = "\x1e"                                       # a ; for tmux, which the shell leaves in the words
 SEP = set(";&|()\n")
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
-WRAPPERS = {"env", "command", "sudo", "xargs", "exec", "nohup", "time", "timeout", "builtin", "nice"}
+APART = {"script", "unbuffer", "setsid", "stdbuf"}       # wrappers that run their program in a pty or apart (#236)
+WRAPPERS = {"env", "command", "sudo", "xargs", "exec", "nohup", "time", "timeout", "builtin", "nice"} | APART
+PROGRAM_ONLY = AGENTS_STARTED | APART | SETTERS          # judged where they are the command's program only
+OPENS = {"{", "!", "do", "then", "else", "elif", "if", "while", "until"}    # a setter after these is a program (#236)
 ISSUE = {"close", "reopen", "edit", "pin", "unpin", "delete", "transfer", "lock"}
 READS = {"view", "list", "status", "diff", "checks", "watch", "download"}
 BODIES = {("issue", "comment"), ("issue", "create"), ("pr", "create"), ("pr", "comment"), ("pr", "edit"),
@@ -96,11 +172,16 @@ class _Ctx:
         self.granted = False                            # a lever grant covers the session (#197)
         self.went = False                               # a cd in the line: a grant's push may be elsewhere
         self.head = ""                                  # the program of a line that is one plain command
+        self.worker = None                              # a worker's fences (_fences), None for the person's sessions
+        self.vars = {}                                  # what the line set or removed (None) so far: name -> value
+        self.switches = False                           # only the person's switches count (#231)
+        self.clone = None                               # the clone of a worker, which $PULSE_CLONE names (#235)
 
     def into(self, cwd=None, pane=True):
         """The context of text sent into another terminal (cwd None) or to another guarded agent (False)."""
         inner = _Ctx(self.bases, cwd, pane, self.maps, self.seen, self.said)
         inner.granted = self.granted and not pane       # a grant is the session's: no other terminal gets it
+        inner.worker, inner.switches, inner.clone = self.worker, self.switches, self.clone
         return inner
 
     def lookup(self, ask, *where):
@@ -131,33 +212,98 @@ class _Ctx:
 PWSH_JOIN = re.compile(r"`\r?\n")                 # PowerShell joins a line that ends in a backtick
 
 
-def verdict(tool, tool_input, base, default, cwd=".", maps=(), granted=False) -> str:
+def verdict(tool, tool_input, base, default, cwd=".", maps=(), granted=False, clone=None, switches=False,
+            deadline=None) -> str:
+    """_verdict within the guard's budget (#240): deadline, a time.monotonic() that every call of one hook shares,
+    else BUDGET from now. A line not judged by then is refused with SLOW, never left to the hook's kill at 5 s."""
+    deadline = deadline or time.monotonic() + BUDGET
+    try:
+        with _alarm(deadline):
+            why = _verdict(tool, tool_input, base, default, cwd, maps, granted, clone, switches, deadline)
+    except Overrun:
+        return SLOW
+    return SLOW if time.monotonic() > deadline else why
+
+
+@contextlib.contextmanager
+def _alarm(deadline):
+    """A hard stop at the deadline where the platform has one (#240): SIGALRM raises Overrun anywhere in the
+    verdict, also between its checks; another timer of the process goes on afterwards. Elsewhere (Windows, a thread
+    other than the main one) the checks and the final look at the clock hold."""
+    if not hasattr(signal, "setitimer") or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def stop(signum, frame):
+        raise Overrun()
+
+    began = time.monotonic()
+    old = signal.signal(signal.SIGALRM, stop)
+    prior = signal.setitimer(signal.ITIMER_REAL, max(deadline - began, 0.001))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+        if prior[0]:                                  # the caller's own timer, less the time spent here
+            signal.setitimer(signal.ITIMER_REAL, max(prior[0] - (time.monotonic() - began), 0.001), prior[1])
+
+
+def _verdict(tool, tool_input, base, default, cwd, maps, granted, clone, switches, deadline) -> str:
     """REASON when the call pulls a person's lever, else "". cwd is the command's directory, or a function
     that finds it, None when it is not known; maps are the panes live maps run in (.git/pulse/map-pane). A
     command it cannot take apart, or a check that fails, is denied when it names a lever's tool (FR-08).
-    granted: a lever grant covers the session; only the levers of #197 FR-04 open, never FR-14's."""
+    granted: a lever grant covers the session; only the levers of #197 FR-04 open, never FR-14's. clone: the
+    project of a worker of pulse go, whose fences hold too (#229); an edit tool only a worker's is judged.
+    switches: only the person's switches of Pulse count, anywhere, Pulse on or not (#231)."""
     try:
+        if tool in EDITS:
+            ctx = _Ctx(set(), cwd)
+            ctx.clone = clone                               # $PULSE_CLONE names it (#235)
+            paths = PATCHED.findall(tool_input["command"]) if tool == "apply_patch" else \
+                [tool_input.get("file_path") or tool_input.get("notebook_path")]
+            if any(isinstance(p, str) and _switch(p.strip(), ctx) for p in paths):    # the person's switches (#231)
+                return SWITCH_REASON
+            if not clone or switches:
+                return ""
+            ctx.worker = _fences(clone)
+            return FENCE if any(not isinstance(p, str) or _fenced(p.strip(), ctx) for p in paths) else ""
         command = tool_input.get("command")             # Bash, PowerShell, Monitor
         if tool.startswith("mcp__"):                    # GitHub tools of an MCP server: only reads
             words = re.split(r"[_-]", tool.split("__")[-1].lower())
-            if "github" in tool.lower() and words[0] not in ("get", "list", "search") and words[-1] != "read":
+            if "github" in tool.lower() and words[0] not in ("get", "list", "search") and words[-1] != "read" and \
+                    not switches:
                 return REASON
             command = next((tool_input[k] for k in ("command", "cmd") if isinstance(tool_input.get(k), str)), "")
         if not isinstance(command, str):
             raise TypeError("no command")
+        if switches and not MAYBE.search(command):        # most lines name no switch at all: no parse (#231)
+            return ""
         if tool == "PowerShell":                        # its line continuation: a backtick at the end of a line
             command = PWSH_JOIN.sub("", command)
         ctx = _Ctx({base, default} - {None, ""}, cwd, maps=frozenset(maps))
+        ctx.seen["deadline"] = deadline                 # the whole line, however it nests (#240)
         ctx.granted = granted
         ctx.head = _plain(command) if granted else ""
+        ctx.worker = _fences(clone) if clone and not switches else None
+        ctx.switches = switches
+        ctx.clone = clone
         ctx.seen["until"] = time.monotonic() + LOOKUPS      # every lookup of a live map's pane, within the hook's 5 s
         ctx.seen["whole"] = command                     # the line a write of gh stands in (#124)
         return (ctx.said[0] if ctx.said else REASON) if _denied(command, ctx, 0, True) else ""
     except Exception:
+        if tool in EDITS:
+            return FENCE if clone and not switches else ""
         raw = next((tool_input[k] for k in ("command", "cmd") if k in tool_input), tool_input) \
             if isinstance(tool_input, dict) else tool_input
         text = raw if isinstance(raw, str) else json.dumps(raw, default=str)
-        return REASON if RISKY.search(text) else ""
+        return "" if switches else REASON if RISKY.search(text) else ""
+
+
+def _in_time(ctx):
+    """Raises Overrun once the verdict's BUDGET is spent (#240)."""
+    if time.monotonic() > ctx.seen.get("deadline", float("inf")):
+        raise Overrun()
 
 
 def _denied(text, ctx, depth, strict):
@@ -165,44 +311,72 @@ def _denied(text, ctx, depth, strict):
     (text for a pane, a prompt) it splits at blanks."""
     if depth > 5:
         raise ValueError("nested too deep")
+    _in_time(ctx)
     text = _prepare(text)
-    raw, bodies, feed = ctx.raw, ctx.bodies, ctx.feed
+    raw, bodies, feed, env = ctx.raw, ctx.bodies, ctx.feed, ctx.vars      # a subshell's variables stay in it
     main, docs = _heredocs(text)
     ctx.raw, ctx.bodies = text, [body for _, body in docs]
     try:
-        if STORE.search(text) or ASKING.search(text):
+        if not ctx.switches and (STORE.search(text) or ASKING.search(text)):
             ctx.said.append(STORE_REASON)
             return True
-        if PULSE.search(text) and not (ctx.granted and ctx.head == "pulse" and _direct(text, strict)) or \
+        if not ctx.switches and PULSE.search(text) and not (ctx.granted and ctx.head == "pulse" and
+                                                            _direct(text, strict)) or \
                 any(_feeds(head, body, ctx, depth) for head, body in docs):
             return True
         main, subs = _scan(main)
         if any(_denied(sub, ctx, depth + 1, False) for sub in subs):
             return True
-        io = []
-        for cmd in _commands(main, strict, io):
+        io, scope, outer = [], [], []
+        for cmd in _commands(main, strict, io, scope):
+            _in_time(ctx)
+            for c in scope:                             # a ( ) subshell keeps what it sets
+                if c == "(":
+                    outer.append(ctx.vars)
+                elif outer:
+                    ctx.vars = outer.pop()
+            scope.clear()
             ctx.feed = _stdin(io, ctx.bodies)
-            if _redirected(cmd, io, ctx):
+            if not ctx.switches and _redirected(cmd, io, ctx):
                 return True
-            n = next((i for i, w in enumerate(cmd) if not re.match(r"\w+=", w)), len(cmd))
+            n = _start(cmd)
+            if _writes_switch(cmd, max(_programs(cmd, n)), io, ctx):     # the person's switches (#231)
+                ctx.said.append(SWITCH_REASON)
+                return True
             prog = _name(cmd[n]) if n < len(cmd) else ""
-            if any(re.fullmatch(r"(\w+)=", w) and w[:-1] in MARKERS for w in cmd) or ctx.pane and prog in AGENTS:
+            if not ctx.switches and (any(re.fullmatch(r"(\w+)=", w) and w[:-1] in MARKERS for w in cmd) or
+                                     ctx.pane and prog in AGENTS):
                 return True                             # a blanked marker; an agent without the guard in a pane
+            progs = _programs(cmd, n)
+            if not ctx.switches and any(_name(cmd[k]) == "exec" and any("c" in a[1:] for a in _leading(
+                    cmd[k + 1:], TAKES["exec"])) for k in _programs(cmd, n, launchers=False) if k < len(cmd)):
+                return True        # exec -c clears the environment, as env -i does; not pnpm exec -c (#235, #236 FR-04)
+            local, kept = _sets(cmd, n)
+            line = {**ctx.vars, **kept}                 # what the rest of the line runs with, and this command
+            ctx.vars = {**line, **local}
+            if ctx.worker and (any(">" in op and _fenced(w, ctx) for op, w in io) or _reaches(cmd, max(progs), ctx)):
+                return _fence(ctx)
             if prog in ("cd", "pushd", "popd"):
                 ctx.chdir(cmd[n + 1:], prog)
                 ctx.went = True
             if any(w.startswith(("GIT_DIR=", "GIT_WORK_TREE=")) for w in cmd):
                 ctx.moved = True
-            progs, names, ends, last = _programs(cmd, n), [_name(w) for w in cmd], [0] * len(cmd), {}
+            names, ends, last = [_name(w) for w in cmd], [0] * len(cmd), {}
             for i in reversed(range(len(cmd))):         # a program's words end where its name comes again:
                 ends[i], last[names[i]] = last.get(names[i], len(cmd)), i      # linear, however long the line
             for i, name in enumerate(names):            # env, command, sudo, xargs, a path: the program anywhere
                 check, args = CHECKS.get(name), cmd[i + 1:ends[i]]
-                if check and (check(args, ctx, depth, i in progs) if name in SHELLS else check(args, ctx, depth)):
+                if ctx.switches:                # only what runs another line, and pulse itself (#231)
+                    check = _carried if name in PANES else check if name in CARRIERS else None
+                if check and (name not in PROGRAM_ONLY or i in progs or       # a setter after { or then too (#236)
+                              name in SETTERS and i and cmd[i - 1] in OPENS) and (
+                        check(args, ctx, depth, i in progs) if name in SHELLS or name == "pulse" else
+                        check(args, ctx, depth)):
                     return True
+            ctx.vars = line
         return False
     finally:
-        ctx.raw, ctx.bodies, ctx.feed = raw, bodies, feed
+        ctx.raw, ctx.bodies, ctx.feed, ctx.vars = raw, bodies, feed, env
 
 
 def _plain(text):
@@ -238,16 +412,37 @@ def _name(word):
     return name[:-4] if name.endswith(".exe") else name
 
 
-def _programs(cmd, n):
-    """Where cmd names its program: at n, and after a wrapper such as env, sudo, xargs, or timeout."""
-    out, i = {n}, n
-    while i < len(cmd) and _name(cmd[i]) in WRAPPERS:
+def _start(cmd):
+    """Where a command's program stands: past assignments, the shell's keywords and groups, function NAME and repeat
+    COUNT (#235)."""
+    i = 0
+    while i < len(cmd) and (ASSIGN.match(cmd[i]) or cmd[i] in KEYWORDS | NAMED):
+        i += 2 if cmd[i] in NAMED else 1
+    return min(i, len(cmd))
+
+
+def _programs(cmd, n, launchers=True):
+    """Where cmd names its program: at n, and after a wrapper such as env, sudo, xargs, or timeout, or a launcher
+    such as npx or pnpm dlx (launchers: False leaves those out, where only the shell's own words count); and after
+    a { or do inside it, where a group or a loop body begins (coproc N { ...; }, repeat 2 do ...; done)."""
+    out, i = {n} | {k + 1 for k, w in enumerate(cmd) if w in ("{", "do") and k + 1 < len(cmd)}, n
+    while i < len(cmd) and _name(cmd[i]) in WRAPPERS | (LAUNCHERS if launchers else set()):
         wrapper, i = _name(cmd[i]), i + 1
-        while i < len(cmd) and (cmd[i].startswith("-") or re.match(r"\w+=", cmd[i])):
-            i += 1
-        i += wrapper == "timeout" and i < len(cmd)      # its duration
+        while i < len(cmd) and (cmd[i].startswith("-") or ASSIGN.match(cmd[i])):
+            i += 1 + _takes(wrapper, cmd[i])            # an option with its value: env -u NAME, npx -p package
+        i += wrapper in ("timeout", "script") and i < len(cmd)      # its duration, script's file
         out.add(i)
     return out
+
+
+def _takes(wrapper, word):
+    """Whether an option word of a wrapper takes the next word as its value: one of TAKES; for script as getopt reads
+    it (#236), a cluster whose first value letter ends it (-qt 0, -qc cmd) or a long option of SCRIPT_LONGS."""
+    if wrapper != "script":
+        return word in TAKES.get(wrapper, ())
+    if word.startswith("--"):
+        return word in SCRIPT_LONGS
+    return next((j for j, c in enumerate(word) if c in SCRIPT_TAKES), -1) == len(word) - 1
 
 
 def _prepare(text):
@@ -299,17 +494,18 @@ def _feeds(head, body, ctx, depth):
     """Whether a heredoc body pulls a lever where it goes: a shell or eval runs it, osascript types its
     strings into a terminal, tmux load-buffer pastes it into one. Any other body is data, for PULSE only."""
     words = head.split()
-    prog = _name(next((w for w in words if not re.match(r"\w+=", w)), ""))
+    prog = _name(words[_start(words)] if _start(words) < len(words) else "")
     pane = ctx.into()
     if prog in SHELLS or prog == "eval":
         return _denied(body, ctx, depth + 1, False)
     if prog == "osascript":
-        return _keys_typed(body, ctx) or any(_denied(a or b, pane, depth + 1, False) for a, b in QUOTED.findall(body))
+        return not ctx.switches and _keys_typed(body, ctx) or any(_denied(a or b, pane, depth + 1, False) for a, b in QUOTED.findall(body))
     return prog == "tmux" and "load-buffer" in words and _denied(body, pane, depth + 1, False)
 
 
 def _scan(text):
-    """text without its comments, and its command substitutions: $(...) and `...` outside single quotes."""
+    """text without its comments, and its command substitutions: $(...) and `...` outside single quotes. Outside
+    double quotes the text escapes each, so it stays one word and its parentheses cut no command (#229)."""
     out, subs, i, n, quote = [], [], 0, len(text), ""
     while i < n:
         c = text[i]
@@ -332,7 +528,7 @@ def _scan(text):
                     level += {"(": 1, ")": -1}.get(text[j], 0)
                     j += 1
                 subs.append(text[i + 2:j - 1])
-            out.append(text[i:j])
+            out.append(text[i:j] if quote else "".join("\\" + ch for ch in text[i:j]))
             i = j
             continue
         if c in "'\"" and quote in ("", c):
@@ -342,10 +538,11 @@ def _scan(text):
     return "".join(out), subs
 
 
-def _commands(text, strict, io):
+def _commands(text, strict, io, scope=None):
     """The simple commands of text, cut at ; & | ( ) and line ends, each as its words, without redirections:
     an operator of < > &, the fd number before it, and its target. io holds the current command's redirections as
-    (operator, target), a heredoc as ("<<", its number in the text), and ("|", "") when a pipe feeds it."""
+    (operator, target), a heredoc as ("<<", its number in the text), and ("|", "") when a pipe feeds it. scope
+    gets each ( and ) before the command that follows it."""
     try:
         lex = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
         lex.whitespace, lex.whitespace_split, lex.commenters = " \t\r", True, ""
@@ -362,6 +559,8 @@ def _commands(text, strict, io):
                 yield cmd
             cmd, target = [], ""
             io[:] = [("|", "")] if "|" in w and "||" not in w or w == "(" and ("|", "") in io else []
+            if scope is not None:
+                scope.extend(c for c in w if c in "()")
         elif target:
             io.append((target, heredocs if target == "<<" else w))
             heredocs += target == "<<"
@@ -559,6 +758,26 @@ def _git(args, ctx, depth):
         moved = moved or a.startswith(("--git-dir", "--work-tree"))
         i += 2 if a in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") else 1
     sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+    given, params = _values(args[:i], "--config-env", "c"), str(ctx.vars.get("GIT_CONFIG_PARAMETERS") or "")
+    envs = set(_values(args[:i], "--config-env"))   # its value is a variable's name: unknown here, so it steers
+    pairs = [(v.split("=", 1)[0], "$" if v in envs else (v.split("=", 1) + [None])[1]) for v in given] + \
+        [(str(v), ctx.vars.get("GIT_CONFIG_VALUE_" + k[15:])) for k, v in ctx.vars.items() if k.startswith("GIT_CONFIG_KEY_")]
+    keys = [k for k, _ in pairs]
+    # a key from a variable; a value from one steers only where push.default reads it (upstream, below)
+    unknown = any("$" in str(k) or "`" in str(k) for k, _ in pairs) or "$" in params or "`" in params
+    unread = any(ctx.vars.get(k) not in (None, os.devnull) for k in CONFIG_FILES)    # a config file the line names
+    foreign = unread or any(STEERS.match(k) for k in keys) or bool(STEERS.search(params))
+    # what moves a named push (#235): remote.*.push, branch.*.merge or .remote, push.default upstream or tracking
+    # (a value through --config-env is an environment variable's name: unknown, so it steers)
+    upstream = any(k.lower() == "push.default" and str(v).lower() not in ("simple", "current", "matching", "nothing")
+                   for k, v in pairs) or bool(UPSTREAM.search(params))
+    steer = foreign or upstream or unknown or any(MAPS.match(k) for k in keys) or bool(MAPS.search(params))
+    lifts = unread or unknown or any(LIFTS.match(k) and k.lower() not in QUIET for k in keys) or \
+        bool(LIFTS.search(params)) or \
+        bool(ctx.vars.get("GIT_CONFIG_COUNT")) and not any(k.startswith("GIT_CONFIG_KEY_") for k in ctx.vars)
+    if foreign and sub not in ctx.lookup(_git_builtins) or sub == "config" and ctx.worker and _config_sets(rest):
+        ctx.said.append(CONFIGURED)                     # an alias the line's config may define (#229 FR-02)
+        return True
     if sub == "switch" or sub == "checkout" and ("--" not in rest or {"-b", "-B", "--orphan"} & set(rest)):
         ctx.branch = _target(sub, rest, ctx.bases)     # the chain goes on in another branch; -- only takes files
     if hooks_off and sub in ("commit", "push"):
@@ -592,10 +811,15 @@ def _git(args, ctx, depth):
         not named and words[:1] in ([], ["origin"])
     if lease and not granted:
         return True                                     # a grant opens a lease on an item branch only (#197)
+    if lifts and not words[1:] or steer and any(":" not in s and s not in ("HEAD", "@") for s in words[1:]):
+        ctx.said.append(CONFIGURED)                     # config of the line picks where it goes (#229 FR-02)
+        return True
     dsts = []
     for spec in words[1:]:                              # words[0] is the remote
-        dst = spec.split(":")[-1]
-        dst = dst[11:] if dst.startswith("refs/heads/") else dst
+        dst = re.sub(r"^(?:refs/)?heads/", "", spec.split(":")[-1])     # git takes heads/x for refs/heads/x
+        if dst == STATE:
+            ctx.said.append(CONFIGURED)                 # only Pulse writes its state branch (#229 FR-03)
+            return True
         computed = "$" in dst or "`" in dst             # a name the push computes
         if spec.startswith("+") or "*" in dst or \
                 dst in ctx.bases and (delete or spec.startswith(":") or lease or not granted):
@@ -620,7 +844,7 @@ def _git(args, ctx, depth):
         return True                                     # a branch git cannot name: denied (FR-08)
     if branch in ctx.bases:
         return delete or lease or not granted
-    return lease and _item_of(branch) is None
+    return branch == STATE or lease and _item_of(branch) is None
 
 
 def _on_base(sub, rest, where, moved, ctx):
@@ -1026,11 +1250,16 @@ def _pwsh(args, ctx, depth):
     return i is not None and _denied(PWSH_JOIN.sub("", " ".join(args[i + 1:])), ctx, depth + 1, True)
 
 
-def _pulse(args, ctx, depth):
+def _pulse(args, ctx, depth, program=True):
     """The command line of pulse itself, in any quoting or case, with the starts of options argparse takes: a
-    person's levers."""
+    person's levers. program: pulse is the program of its command, not a word of another's (echo pulse off)."""
     args = [a.lower() for a in (args[1:] if args[:1] == ["--"] else args)] + ["", ""]
     sub, nxt = args[0], args[1]
+    if sub in ("on", "off") and program:                # the person's switch: only its plain form gets the dialog
+        ctx.said.append(SWITCH_REASON)
+        return True
+    if ctx.switches:
+        return False
     if ctx.pane and sub in ("map", "go"):              # direct skill starts use their own foreground PTY
         return True
     if (sub, nxt) == ("levers", "allow"):               # alone it gets Claude Code's dialog, never here (#197)
@@ -1098,9 +1327,12 @@ def _claude(args, ctx, depth):
     """claude without this guard: --bare, or --settings that switch every hook or the Pulse plugin off, as JSON or
     in the file it names (FR-01 of #112). A file the guard cannot read, a value it cannot name ($, `), and a file the
     command names twice (it may write it first) are denied; a plain path that does not exist passes, claude refuses
-    it. ponytail: --setting-sources without the source that enables the plugin passes, a known limit."""
+    it. A worker's claude keeps the guard and its permission checks (_started); a person's may leave --setting-sources
+    without the source that enables the plugin."""
     if "--bare" in args:
         return True
+    if ctx.worker and _started("claude", args, ctx):
+        return _fence(ctx)
     for value in _values(args, "--settings"):
         text = value if value.lstrip().startswith("{") else None
         if text is None:
@@ -1113,7 +1345,146 @@ def _claude(args, ctx, depth):
                 return True
         if text is not None and _off(text):
             return True
+        if text is not None and ctx.worker and "bypassPermissions" in text:
+            return _fence(ctx)                          # a default mode past the checks (#229 FR-01)
     return False
+
+
+def _started(prog, args, ctx):
+    """Whether a worker starts claude or codex without Pulse's guard, past its permission checks or outside its
+    sandbox (#229 FR-01): the line changed a variable the started agent's guard reads, or the agent's own arguments
+    say so. ponytail: the line's variables count for every agent after them in it, also a prefix of another command."""
+    if GUARDED & set(ctx.vars):
+        return True
+    if prog == "codex":
+        configs = _values(args, "--config", "c")
+        roots = _values(args, "--add-dir") + [r for v in configs if "writable_roots" in v
+                                               for r in re.findall(r"[^\s\[\]\"',]+", v.split("=", 1)[-1])]
+        said = [a for a in args if a.startswith("-")] + configs + _values(args, "--sandbox", "s")
+        # the network the person's own Codex settings give is no fence down (#230); read, bounded, only to judge it
+        mine = "sandbox_workspace_write.network_access=true" if any("network_access" in a for a in said) and \
+            codex_settings(read=_read).get("network") else NO_NET
+        return any(OPEN.search(a) and a not in (NO_NET, mine) for a in said) or \
+            any("hooks" in v for v in configs + _values(args, "--disable")) or any(_fenced(r, ctx, True) for r in roots)
+    return bool(UNCHECKED & {a.split("=", 1)[0] for a in args}) or \
+        "bypassPermissions" in _values(args, "--permission-mode") or \
+        any("user" not in s.split(",") for s in _values(args, "--setting-sources"))
+
+
+def _sets(cmd, n):
+    """(for this command, for the rest of the line): what a command sets or removes (None), parsed. NAME=value or
+    NAME+=value before a program, and among the words of env or another wrapper, hold for that program; alone, and
+    through export, declare or unset, for the rest of the line; env -u NAME too."""
+    local, kept = {}, {}
+    (local if n < len(cmd) else kept).update((ASSIGN.match(w).group(1), w.split("=", 1)[1]) for w in cmd[:n]
+                                             if ASSIGN.match(w))
+    i = n
+    while i < len(cmd) and _name(cmd[i]) in WRAPPERS | SETTERS:
+        prog, i = _name(cmd[i]), i + 1
+        into = kept if prog in SETTERS else local
+        while i < len(cmd) and (prog in SETTERS or cmd[i].startswith("-") or ASSIGN.match(cmd[i])):
+            a, i = cmd[i], i + 1
+            if prog == "env" and a in ("-u", "--unset") and i < len(cmd):
+                a, i = "-u" + cmd[i], i + 1
+            if prog == "unset" or prog == "env" and a.startswith(("-u", "--unset=")):
+                into[a.split("=", 1)[1] if a.startswith("--") else a[2:] if prog == "env" else a] = None
+            elif ASSIGN.match(a):
+                into[ASSIGN.match(a).group(1)] = a.split("=", 1)[1]
+    return local, kept
+
+
+def _fences(clone):
+    """What a worker may not write: (the running Pulse copy, the clone's .pulse/, the clone itself), each as given
+    and as its real path, casefolded, so another spelling of a name names it too."""
+    def both(p):
+        return {os.path.abspath(p).casefold(), os.path.realpath(p).casefold()}
+    return both(HERE), both(os.path.join(str(clone), ".pulse")), both(str(clone))
+
+
+def _fenced(word, ctx, around=False):
+    """Whether word, a path of a worker's call, lies in a fence (#229 FR-04), but in the Pulse copy's .worktrees/,
+    where Pulse builds itself; around: or is the clone or a directory above a fence, the file system's root aside. A
+    path from a directory the guard cannot name, or with a variable it cannot read, counts where it names .pulse."""
+    word = os.path.expanduser(word)                   # $NAME is the agent's, never this hook's own (#235)
+    if ctx.clone and "PULSE_CLONE" not in ctx.vars:     # but $PULSE_CLONE, which pulse go hands the worker
+        word = re.sub(r"\$(?:\{PULSE_CLONE\}|PULSE_CLONE\b)", lambda m: str(ctx.clone), word)
+    path = _path(word, ctx)
+    if path is None or "$" in word or "`" in word:
+        return ".pulse" in word.casefold()
+    real, (pulse, dots, clone) = os.path.realpath(path).casefold(), ctx.worker
+
+    def under(a, roots):
+        return any(a == r or a.startswith(r.rstrip(os.sep) + os.sep) for r in roots)
+    return under(real, dots) or under(real, pulse) and not under(real, {os.path.join(r, ".worktrees") for r in pulse}) \
+        or around and os.path.dirname(real) != real and any(under(r, {real}) for r in pulse | dots | clone)
+
+
+def _reaches(cmd, k, ctx, hit=None):
+    """Whether a worker's command, its program at k, names a fence and does more than read it or copy it out (#229
+    FR-04): a word, an option's value, or a path inside an interpreter's code or heredoc. Paths that code builds
+    (joined strings, variables) are not chased; the guard fences a cooperative agent, the sandbox is the boundary.
+    A script before the program writes its own files too: its typescript, util-linux's logs (-O, -T, -B, -I) (#236)."""
+    j = next((j for j in range(k) if _name(cmd[j]) == "script"), k)
+    own = [v for a in cmd[j + 1:k] for v in ([a.split("=", 1)[-1], a[2:], a[3:]] if a.startswith("-") else [a]) if v]
+    if any(hit(w) if hit else _fenced(w, ctx, around=True) for w in own):
+        return True
+    name, args = (_name(cmd[k]), cmd[k + 1:]) if k < len(cmd) else ("", [])
+    words = [a.split("=", 1)[-1] for a in args if not a.startswith("-") or "=" in a]
+    if SCRIPTS.fullmatch(name) and _name(next((w for w in words), "")) == "pulse" or name in SETTERS:
+        return False                                    # python3 <copy>/bin/pulse; export only sets a variable
+    if name in READERS or name == "sed" and not _flag(args, ("--in-place",), "i", "efl", prefix=True) or \
+            name == "find" and not FIND_WRITES & set(args) or name == "git" and _git_sub(args) in GIT_READS:
+        return False
+    if name in COPIES:
+        words = _values(args, "--target-directory", "t") or words[-1:]
+    if SCRIPTS.fullmatch(name):
+        words += [p for a in args + (ctx.feed or []) for p in re.findall(r"[^\s'\"(),;=\[\]{}<>]+", a)
+                  if "/" in p and re.search(r"[\w.]", p)]
+    return any(hit(w) if hit else _fenced(w, ctx, around=True) for w in words)
+
+
+def _leading(args, takes=()):
+    """The options before a builtin's program: exec -a name -c cmd gives [-a, -c]."""
+    out, i = [], 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        out.append(args[i])
+        i += 1 + (args[i] in takes)
+    return out
+
+
+def _git_sub(args):
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") else 1
+    return args[i] if i < len(args) else ""
+
+
+def _git_builtins():
+    """git's commands, built in or a git-<name> on the PATH (submodule, lfs), which no alias can take; empty when git
+    does not name them."""
+    try:
+        return set(subprocess.run(["git", "--list-cmds=main,others"], capture_output=True, text=True,
+                                  timeout=1).stdout.split())
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+
+def _config_sets(rest):
+    """Whether git config writes a key a push or an alias follows: a write form, or a key with its value."""
+    words, skip = [], False
+    for a in rest:
+        if skip:
+            skip = False
+        elif a in ("-f", "--file", "--blob", "--type", "--default", "--comment", "--value"):
+            skip = True
+        elif not a.startswith("-") and a not in ("get", "list"):
+            words.append(a)
+    return any(PUSHES.match(w) for w in words) and (bool(CONFIG_WRITES & set(rest)) or len(words) > 1)
+
+
+def _fence(ctx):
+    ctx.said.append(FENCE)
+    return True
 
 
 def _config(word, ctx):
@@ -1147,6 +1518,53 @@ def _redirected(cmd, io, ctx):
         ctx.feed is None or _written(" ".join(cmd + ctx.feed), ">>" not in op)) for op, w in io)
 
 
+def _folders(ctx):
+    """({the computer's switch folders}, {the cache folders of the clones' switches}) as this process's environment
+    and the default places put them, normalized, resolved, in lower case; once per verdict (#231). The computer's is
+    pulse-agents, apart from PulseAudio's <config>/pulse (#236)."""
+    if "switch folders" not in ctx.seen:
+        home = os.path.expanduser("~")
+        ctx.seen["switch folders"] = tuple(
+            {f(os.path.join(base, name)).lower() for base in (os.environ.get(var) or os.path.join(home, rest),
+                                                               os.path.join(home, rest))
+             for f in (os.path.normpath, os.path.realpath)}
+            for var, rest, name in (("XDG_CONFIG_HOME", ".config", "pulse-agents"),
+                                    ("XDG_CACHE_HOME", ".cache", "pulse")))
+    return ctx.seen["switch folders"]
+
+
+def _writes_switch(cmd, k, io, ctx):
+    """Whether a command writes a switch of the person (#231): a redirect into one, or its program at k, unless it only
+    reads (#229's rule), names one among what it writes, or runs code that names one or calls config.switch. A switch
+    named in text, a commit message or an echo is no write."""
+    if any(">" in op and isinstance(w, str) and _switch(w, ctx) for op, w in io):
+        return True
+    name = _name(cmd[k]) if k < len(cmd) else ""
+    if SCRIPTS.fullmatch(name) and any(SWITCHER.search(a) for a in cmd[k + 1:] + (ctx.feed or [])):
+        return True
+    return _reaches(cmd, k, ctx, lambda w: _switch(w, ctx))
+
+
+def _switch(word, ctx):
+    """Whether word names a switch of the person or the computer's switch folder (#231): from the directory a cd of
+    the chain went to, through a symlink, in any case (APFS and NTFS ignore it), and a glob or brace word in a
+    switch's folder. A word off elsewhere, say in a folder named pulse, is none. Only a word whose last part is off,
+    pulse-agents, a clone's folder or a glob is looked up, so a long line stays cheap."""
+    last = re.split(r"[\\/]", word.rstrip("/\\"))[-1].lower().rstrip(". ")
+    if last not in ("off", "pulse-agents") and not re.fullmatch(r"[0-9a-f]{16}", last) and not GLOB.search(word):
+        return False
+    path = _path(word, ctx)
+    if not path:
+        return False
+    hosts, caches = _folders(ctx)
+    for p in {os.path.normpath(path).lower(), os.path.realpath(path).lower()}:
+        folder, name = os.path.split(p)
+        clone = os.path.dirname(folder) in caches and re.fullmatch(r"[0-9a-f]{16}", os.path.basename(folder))
+        if p in hosts or (folder in hosts or clone) and (name.rstrip(". ") == "off" or GLOB.search(word)):
+            return True
+    return False
+
+
 def _touches(args, ctx):
     return any(_config(a, ctx) for a in args)
 
@@ -1157,11 +1575,80 @@ def _perl(args, ctx, depth):
     return _flag(args, (), "i", "eE") and _touches(args, ctx)
 
 
+def _unexports(args, ctx, depth):
+    """export -n of a marker (#236): what the line runs no longer has it, as after unset."""
+    return any(re.fullmatch(r"-\w*n\w*|\+\w*x\w*", a) for a in args) and \
+        bool(MARKERS & {a.split("=")[0] for a in args})
+
+
+def _hides(args, ctx, depth):
+    """declare, typeset or readonly of a marker (#236): in a function each makes a local the line's programs do not get
+    (bash even with -x, zsh with readonly), as unset and local do; only printing it (-p) or the global (-g) is free,
+    and +x drops it anywhere."""
+    opts = [a for a in args if re.fullmatch(r"[-+]\w+", a)]
+    return bool(MARKERS & {a.split("=")[0] for a in args}) and (
+        any(a[0] == "+" and "x" in a for a in opts) or not any(a[0] == "-" and set(a) & set("pg") for a in opts))
+
+
+def _wrapped(args, ctx, depth):
+    """script, unbuffer, setsid or stdbuf as a program (#236): pulse on|off anywhere among its words switches, and each
+    -c string is a command line of its own (-c x, -qcx, --command=x), whatever form their options take; a rare false
+    denial (script -q log echo pulse off) is the price."""
+    lines = _values(args, "--command") + [m.group(1) or (args[i + 1] if i + 1 < len(args) else "") for i, a in
+                                          enumerate(args) for m in [re.fullmatch(r"-[A-Za-z]*?c(.*)", a, re.S)] if m]
+    return any(_pulse(words, ctx, depth) for words in _runs(args)) or \
+        any(_denied(line, ctx, depth + 1, False) for line in lines)
+
+
+def _runs(args) -> list:
+    """The words after each pulse among args, up to the next one: linear however many a line names (#238)."""
+    at = [i for i, a in enumerate(args) if _name(a) == "pulse"]
+    return [args[i + 1:j] for i, j in zip(at, at[1:] + [len(args)])]
+
+
+LAUNCHED = {"npm", "npx", "pnpm", "pnpx", "yarn", "bunx"}    # their -c and --call strings run a line
+CARRIERS = SHELLS | APART | LAUNCHED | {"eval", "pwsh", "powershell", "pulse"}  # a switch hides in (#231, #236, #238)
+PANES = {"tmux", "herdr", "osascript"}                          # and what types it into another terminal
+
+
+def _carried(args, ctx, depth):
+    """Where only the switches count (#231): what tmux, herdr or osascript would run in another terminal, read
+    as command lines, without their pane and map lookups: pulse among their words, and each argument and string
+    with a blank in it."""
+    pane = ctx.into()
+    return any(_pulse(words, pane, depth) for words in _runs(args)) or \
+        any(_denied(s, pane, depth + 1, False) for a in args if re.search(r"\s", a)
+            for s in [a] + [x or y for x, y in QUOTED.findall(a)])
+
+
+def _launcher(args, ctx, depth, shell=False):
+    """npm exec -c, npm exe -yc, npx --c, npx -c=x, pnpm exec -c and the like run their string in a shell: a command
+    line of its own (#235), in every spelling of the option (#238). shell (pnpm): -c or --shell-mode among pnpm's own
+    options before the command after exec or dlx runs that command in a shell, read as one line; a -c of the command
+    itself (vitest -c config) is no such option. Without exec, -c is no command (npm test -c x)."""
+    if not (args[:1] in (["exec"], ["exe"], ["x"], ["dlx"]) or not args[:1] or args[0].startswith("-")):
+        return False
+    calls = _values(args, "--call") + _values(args, "--c") + [
+        m.group(1) or (args[i + 1] if i + 1 < len(args) else "")
+        for i, a in enumerate(args) for m in [re.fullmatch(r"-[A-Za-z]*?c=?(.*)", a, re.S)] if m]
+    k = next((i for i, a in enumerate(args) if a in ("exec", "dlx")), None)
+    if shell and k is not None:
+        j = next((i for i in range(k + 1, len(args)) if not args[i].startswith("-")), len(args))
+        if "--shell-mode" in args[:j] or any(re.fullmatch(r"-[A-Za-z]*c", a) for a in args[:j]):
+            calls.append(" ".join(args[j:]))
+    return any(_denied(c, ctx, depth + 1, True) for c in calls if c)
+
+
 CHECKS = {"gh": _gh, "git": _git, "herdr": _herdr, "tmux": _tmux, "osascript": _osascript, "pulse": _pulse,
           **{shell: _shell for shell in SHELLS}, "pwsh": _pwsh, "powershell": _pwsh, "env": _env,
           "unset": lambda args, ctx, depth: bool(MARKERS & set(args)),
+          "export": _unexports, **dict.fromkeys(("declare", "typeset", "readonly"), _hides),
+          "local": lambda args, ctx, depth: bool(MARKERS & {a.split("=")[0] for a in args}),    # bash: local -p too
+          **dict.fromkeys(APART, _wrapped),
           "eval": lambda args, ctx, depth: _denied(" ".join(args), ctx, depth + 1, True),
-          "claude": _claude, "opencode": lambda args, ctx, depth: "run" in args,
+          **dict.fromkeys(LAUNCHED, _launcher), "pnpm": lambda args, ctx, depth: _launcher(args, ctx, depth, True),
+          "claude": _claude, "claude-code": _claude, "opencode": lambda args, ctx, depth: "run" in args,
+          "codex": lambda args, ctx, depth: bool(ctx.worker) and _started("codex", args, ctx) and _fence(ctx),
           "sed": lambda args, ctx, depth: _flag(args, ("--in-place",), "i", "efl", prefix=True) and _touches(args, ctx),
           "perl": _perl, **dict.fromkeys(("ex", "ed", "rm", "truncate"), lambda args, ctx, depth: _touches(args, ctx)),
           "tee": lambda args, ctx, depth: _touches(args, ctx) and (      # stdin from a pipe or a file: unknown

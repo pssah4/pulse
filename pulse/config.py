@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -28,21 +29,27 @@ DEFAULTS = {"mode": None, "cap": 4, "base_branch": None, "repo": None,
             "ids_since": None,             # other keys of an older config are read past (#107), plan_approval too
             "spec_branch": "docs/{n}-{slug}",                # where specs are written, {type} too (#116)
             "spec_tests": None,                              # pattern -> {run, localhost}; pulse go needs it (#117)
-            "workers": "session"}          # session: a start from Claude Code or Codex takes its harness; fixed: agent (#182)
+            "workers": "session",   # session: a start from Claude Code or Codex takes its harness; fixed: agent (#182)
+            "worker_permissions": "person",   # person: the person's mode and rules (#218); narrow: Pulse's list
+            "item_flow": "goal"}    # goal: one /goal session per item where the harness runs it headless (#219)
 # What runs a program, with [agents]: pulse go takes these as the base branch on origin has them, where a
 # person merged them, never from a working tree a branch or an agent may have changed (IMP-03-08 FR-06).
 # base_branch runs nothing but names the base the rest comes from: pulse go refuses a working tree that names
 # another (M-1 of #113).
-EXECUTABLE = ("setup", "setup_timeout", "verify", "protected", "base_branch", "spec_tests")
+EXECUTABLE = ("setup", "setup_timeout", "verify", "protected", "base_branch", "spec_tests", "worker_permissions",
+              "item_flow")
 DIA_MODES = {"off": "off", "git-only": "on", "github-sync": "on"}
 # How `pulse go` starts one headless agent per item, cwd = the item's worktree.
-# Headless runs keep the user's permission rules and ask nobody: acceptEdits lets edits through,
+# Headless runs keep the user's permission rules and ask nobody: {mode} is the person's permission mode (harness),
 # {allow} what the build runs (verify, git, pulse check; a flag must follow the list, or it takes the prompt),
-# and {gitdir} opens the shared git dir, which Codex's sandbox keeps read-only, so a worktree can
-# commit. load() fills both, in any template.
+# {settings} her local rules and Pulse's guard, and {gitdir} opens the shared git dir, which Codex's sandbox keeps
+# read-only, so a worktree can commit. load() fills them, in any template.
 # Both print JSON, so pulse go can read what each phase used (.git/pulse/usage.jsonl).
-AGENTS = {"claude": "claude -p --allowedTools {allow} --output-format json --permission-mode acceptEdits {prompt}",
+AGENTS = {"claude": "claude -p --allowedTools {allow} --output-format json --permission-mode {mode} "
+                    "--settings {settings} {prompt}",
           "codex": "codex exec --json --sandbox workspace-write --add-dir {gitdir} {prompt}"}
+ROOT = Path(__file__).resolve().parents[1]
+WORKER_TOOLS = "Agent Read Grep Glob"    # subagents and reading, as an attended session has them (FR-02 of #218)
 # Where a VS Code extension keeps the agent it bundles, for people who have only the extension.
 BUNDLED = {"claude": "anthropic.claude-code-*/resources/native-binary/claude",
            "codex": "openai.chatgpt-*/bin/*/codex"}
@@ -105,10 +112,18 @@ def _parse(text: str, path: Path = None, strict: bool = False) -> dict:
         except tomllib.TOMLDecodeError:
             pass                           # the lines below name the line; the settings stay
     out: dict = {}
-    cur, mine, tables = out, True, set()
+    cur, mine, tables, quote = out, True, set(), None
     for no, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
+        if quote:                      # inside a multi-line string: no line of it is a key or a table (#230)
+            quote = None if line.count(quote) % 2 else quote
+            continue
         if not line or line.startswith("#"):
+            continue
+        quote = next((q for q in ('"""', "'''") if line.count(q) % 2), None)
+        if quote:                      # its key's value is that string: dropped, as are the lines until it ends
+            if strict:
+                raise ValueError(f"{path}:{no}: not understood: {printable(line)}")
             continue
         m = re.match(r"^\[([\w.]+)\]\s*(?:#.*)?$", line)
         if m:
@@ -118,6 +133,11 @@ def _parse(text: str, path: Path = None, strict: bool = False) -> dict:
             cur, mine = out, m.group(1) in ("agents", "spec_tests")      # other sections have their own readers
             for part in m.group(1).split("."):
                 cur = cur.setdefault(part, {})
+            continue
+        if line.startswith("[") and not strict:     # a table it cannot name: its keys go to none (#230)
+            if path and mine:
+                _warn(f"{path}:{no}: not understood, skipped: {line}")
+            cur, mine = {}, False
             continue
         m = re.match(rf"^{_KEY}\s*=\s*(.+)$", line)
         try:
@@ -175,8 +195,67 @@ def evidence_dir(root: Path) -> Path:
     """What counts for pulse go in this clone, the gates' evidence, the kept verdicts, and the base check's note:
     in the user's cache, one folder per shared git dir. Custom cache locations must remain outside the
     agent's writable paths; this helper does not validate sandbox policy (FIX-02-06-11)."""
+    return _evidence(common_dir(root))
+
+
+def _evidence(common: Path) -> Path:
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    return cache / "pulse" / hashlib.sha256(str(common_dir(root)).encode()).hexdigest()[:16]
+    return cache / "pulse" / hashlib.sha256(str(common).encode()).hexdigest()[:16]
+
+
+def host_switch() -> Path:
+    """The person's switch for every project on this computer (#231): in their config, beside no repository, in a
+    folder of Pulse's own (#236): <config>/pulse is PulseAudio's."""
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "pulse-agents" / "off"
+
+
+def clone_switch(root: Path, common: Path = None) -> Path:
+    """The person's switch for this clone and its worktrees (#231): with its evidence in their cache, outside the
+    repository, its git dir, and every agent's sandbox. common: the shared git dir, when the caller knows it."""
+    return _evidence(common or common_dir(root)) / "off"
+
+
+def switched(root, common: Path = None) -> str:
+    """Why the person's own switch keeps Pulse off here, with the way back, else "" (#231): any entry at a switch
+    is off, the computer's first. Two lstat calls, cheap enough for every hook event."""
+    if os.path.lexists(host_switch()):
+        return "Pulse is off for you on this computer (pulse off --host); /pulse-on --host or pulse on --host " \
+               "turns it on"
+    if root is not None and os.path.lexists(clone_switch(root, common)):
+        return "Pulse is off for you in this clone (pulse off); /pulse-on or pulse on turns it on"
+    return ""
+
+
+def off(root) -> str:
+    """Why Pulse is off here, else "": a switch of the person, or the team's mode (#231). Off wins."""
+    return switched(root) or ('Pulse is off for the team (mode = "off" in .pulse/config.toml); pulse setup --mode '
+                              'on and a commit turn it on' if root is not None and clone_config(root).get("mode") == "off"
+                              else "")
+
+
+def switch(root, on: bool, host: bool = False) -> None:
+    """Set the person's switch of one level (#231): off is a file of its own, written whole; on removes it."""
+    path = host_switch() if host else clone_switch(root)
+    if on:
+        if path.is_dir() and not path.is_symlink():      # any entry is off: an empty folder goes as the file would
+            try:
+                path.rmdir()
+            except OSError:
+                from pulse import state
+                raise state.StateError(f"{path} is a folder with files in it, not Pulse's switch file: remove it "
+                                       "yourself to turn Pulse on") from None
+            return
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    if os.path.lexists(path):                            # off already, whatever stands there
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".off.", dir=path.parent)
+    os.close(fd)
+    os.replace(name, path)
 
 
 def _cut(command) -> str:
@@ -288,9 +367,25 @@ def load(root: Path, ref: str = None) -> dict:
                                        "(Python without tomllib)") from None
         cfg.update({k: data.get(k, DEFAULTS[k]) for k in EXECUTABLE})
         cfg["agents"] = {**AGENTS, **(data.get("agents") or {})}
+    if cfg["item_flow"] not in ("goal", "phases"):
+        _warn(f"{pulse}: item_flow = {cfg['item_flow']!r} is goal or phases; phases applies")
+        cfg["item_flow"] = "phases"
+    if cfg["worker_permissions"] not in ("person", "narrow"):        # a typo never widens what a worker may do
+        _warn(f"{pulse}: worker_permissions = {cfg['worker_permissions']!r} is person or narrow; narrow applies")
+        cfg["worker_permissions"] = "narrow"
     allow, gitdir = _allow(cfg["verify"], runs(cfg)), shlex.quote(str(common_dir(root)))
-    cfg["agents"] = {k: str(t).replace("{allow}", allow).replace("{gitdir}", gitdir)
-                     for k, t in cfg["agents"].items()}
+    narrow = {"{allow}": allow, "{mode}": "acceptEdits", "{settings}": "{}", "{gitdir}": gitdir}
+    key, asks = str(Path(root).resolve()), cfg["worker_permissions"] == "person" and ref is not None
+    person = asks and (HARNESSED[key] if key in HARNESSED else harness(root, ref))
+    wide = {**narrow, "{allow}": f"{allow} {WORKER_TOOLS}", "{mode}": person[0],
+            "{settings}": shlex.quote(person[1])} if person else narrow
+    cfg["narrow"] = {k: _fill(t, narrow) for k, t in cfg["agents"].items()}
+    sandbox = (_at_base(root, ref) if ref is not None else {}).get("sandbox")    # the base's, never a branch's (#229)
+    fenced = {"disableAllHooks": False, "hooks": {"PreToolUse": _guard_hooks()},
+              **({"sandbox": sandbox} if isinstance(sandbox, dict) else {})}
+    guarded = {**narrow, "{settings}": shlex.quote(json.dumps(fenced))}
+    cfg["fenced"] = {k: fence(_fill(t, guarded)) for k, t in cfg["agents"].items()}    # for a branch's settings
+    cfg["agents"] = cfg["fenced"] if asks and person is None else {k: _fill(t, wide) for k, t in cfg["agents"].items()}
     sb = str(cfg["spec_branch"] or "")         # without {n}, or named like a build branch, every item's would be one
     if "{n}" not in sb or any(is_spec_branch({"spec_branch": sb}, f"{t}/1-a-slug", 1) for t in ("feat", "imp", "fix")):
         _warn(f"{pulse}: spec_branch = {sb!r} needs {{n}} and a name no build branch has ({{type}}/{{n}}-{{slug}}); "
@@ -300,6 +395,81 @@ def load(root: Path, ref: str = None) -> dict:
         _warn(f"{pulse}: workers = {cfg['workers']!r} is session or fixed; session applies")
         cfg["workers"] = DEFAULTS["workers"]
     return cfg
+
+
+def _fill(template, values: dict) -> str:
+    text = str(template)
+    for key, value in values.items():
+        text = text.replace(key, value)
+    return text
+
+
+def _settings(text: str) -> dict:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _at_base(root: Path, ref: str) -> dict:
+    """The project's .claude/settings.json at the base `ref`, never a branch's; {} without one."""
+    shown = subprocess.run(["git", "-C", str(root), "show", f"{ref}:.claude/settings.json"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+    return _settings(shown.stdout if shown.returncode == 0 else "")
+
+
+def _guard_hooks() -> list:
+    """Pulse's guard as PreToolUse entries of a settings file: the matcher of hooks.json, this copy's absolute path."""
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    return [{"matcher": e["matcher"], "hooks": [{"type": "command", "timeout": h.get("timeout", 5),
+                                                 "command": shlex.quote(str(ROOT / "hooks" / "run-hook.cmd")) +
+                                                 " pulse guard"}]}
+            for e in hooks for h in e["hooks"] if h.get("command", "").endswith(" pulse guard")]
+
+
+def fence(template: str) -> str:
+    """A Claude template that reads the person's user settings only, none of the worktree's, whose .claude/ a branch
+    may have changed (gate round 1 of #218); load() puts the sandbox block of the base's project settings into its
+    --settings (#229). Any other program's stays as it is."""
+    try:
+        argv = shlex.split(template)
+    except ValueError:
+        return template
+    k, prog = program(argv)
+    return shlex.join([*argv[:k + 1], "--setting-sources", "user", *argv[k + 1:]]) if prog == "claude" else template
+
+
+# Where an organization's managed settings live, which outrank every flag; ponytail: the files only, not the macOS
+# configuration profile, read it when an organization manages Claude Code that way
+MANAGED = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+           Path("/etc/claude-code/managed-settings.json"), Path("C:/Program Files/ClaudeCode/managed-settings.json"))
+HARNESSED: dict = {}            # a clone's root -> harness() as its pulse go run read it at the start (gate round 2)
+
+
+def harness(root: Path, ref: str):
+    """(mode, settings) of a Claude worker as the person runs her own sessions in this project (ADR-15, #218):
+    permissions.defaultMode of this clone's .claude/settings.local.json, the project's .claude/settings.json at the
+    base `ref`, never a branch's, and her user settings, in Claude Code's order. auto stays auto, bypassPermissions
+    too where her user settings set it (the person's decision of 2026-10-04; Claude Code ignores it in a project's
+    or a local file), anything else is acceptEdits, since a worker edits its worktree. settings: the allow, ask and
+    deny rules of her local file, which a worktree lacks, Pulse's guard as a hook, which holds whatever plugins the
+    worker loads, and disableAllHooks false, which outranks her and the project's files. None where managed settings
+    keep the guard out: every worker then starts fenced and narrow."""
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    local, user = (root / ".claude" / "settings.local.json", home / "settings.json")
+    sources = [_settings(p.read_text(encoding="utf-8", errors="replace") if p.is_file() else "") for p in (local, user)]
+    sources.insert(1, _at_base(root, ref))
+    managed = [_settings(p.read_text(encoding="utf-8", errors="replace") if p.is_file() else "") for p in MANAGED]
+    if any(m.get("disableAllHooks") or m.get("allowManagedHooksOnly") for m in managed):
+        return None
+    rules = [s["permissions"] if isinstance(s.get("permissions"), dict) else {} for s in sources]
+    mode = next((r["defaultMode"] for k, r in enumerate(rules) if r.get("defaultMode") and
+                 (r["defaultMode"] != "bypassPermissions" or k == 2)), "")       # 2: the user settings
+    kept = {k: [x for x in rules[0][k] if isinstance(x, str)] for k in ("allow", "ask", "deny")
+            if isinstance(rules[0].get(k), list)}
+    return (mode if mode in ("auto", "bypassPermissions") else "acceptEdits",
+            json.dumps({"disableAllHooks": False, "permissions": kept, "hooks": {"PreToolUse": _guard_hooks()}}))
 
 
 def _glob(pattern: str) -> str:
@@ -371,7 +541,7 @@ NO_NET = "sandbox_workspace_write.network_access=false"
 # What opens the Codex sandbox or its network past NO_NET: full access, a sandbox or network setting of the template's
 # own, or a profile of ~/.codex/config.toml, which can set both (M1 of #119).
 OPEN = re.compile(r"danger-full-access|--dangerously-bypass-approvals-and-sandbox|--yolo|network_access|sandbox_mode|"
-                  r"^(-p|--profile)$|^--profile=")
+                  r"--approve-for-me|^(-p|--profile)$|^--profile=")    # an approved request runs outside it (#218)
 WORKSPACE = ("--sandbox workspace-write", "-s workspace-write", "--sandbox=workspace-write", "--full-auto")
 
 
@@ -397,18 +567,53 @@ def unsandboxed(argv: list) -> str:
            "workspace-write (or --full-auto) in it"
 
 
+CODEXED: dict = {}              # "run" -> codex_settings() as the pulse go run read them at its start (#230)
+
+
+def codex_settings(read=None) -> dict:
+    """What the person set explicitly for her own Codex sessions (FR-01 of #230), at the top level of
+    $CODEX_HOME/config.toml (else ~/.codex): network (sandbox_workspace_write.network_access, a bool),
+    approval_policy, and approvals_reviewer (a word of lower case letters). Nothing else, nothing unset, and no
+    profile: Codex keeps those in <name>.config.toml, chosen by --profile, which pulse go never passes. A running
+    pulse go keeps what it read at its start; read: how to read the file, the guard's bounded one on a hook path."""
+    if "run" in CODEXED:
+        return CODEXED["run"]
+    path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    try:
+        text = read(str(path)) if read else path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    except OSError:
+        text = ""
+    data = _parse(text or "")
+    sandbox = data.get("sandbox_workspace_write") if isinstance(data.get("sandbox_workspace_write"), dict) else {}
+    out = {"network": sandbox["network_access"]} if isinstance(sandbox.get("network_access"), bool) else {}
+    roots = sandbox.get("writable_roots")
+    if isinstance(roots, list) and all(isinstance(r, str) and r.isprintable() for r in roots):
+        out["roots"] = roots
+    out.update({key: data[key] for key in ("approval_policy", "approvals_reviewer")
+                if isinstance(data.get(key), str) and re.fullmatch(r"[a-z][a-z_-]*", data[key])})
+    return out
+
+
 def confine(argv: list) -> list:
     """A template's words as pulse go starts them, whatever the person's own settings allow (IMP-03-06 FR-04): the
-    program codex in its workspace sandbox without network, never with a word that could open either (ValueError);
-    the program claude without gh, which reaches GitHub with the person's token. Another program, whatever [agents]
-    calls it, stays as it is: flags of these two would break it."""
+    program codex in its workspace sandbox, with network and the review of approvals only as the person set them for
+    her own Codex sessions (codex_settings, #230), never with a word of the template that could open either
+    (ValueError); the program claude without gh, which reaches GitHub with the person's token. Another program,
+    whatever [agents] calls it, stays as it is: flags of these two would break it."""
     k, prog = program(argv)
     if prog == "codex":
         opened = next((w for w in argv if OPEN.search(w)), None)
         if opened:
             raise ValueError(f"{opened} can open the Codex sandbox or its network: pulse go runs Codex only in its "
-                             "workspace sandbox, without network")
-        return [*argv[:k + 1], "-c", NO_NET, *argv[k + 1:]]
+                             "workspace sandbox, with network only as your own Codex settings set it")
+        # pinned to the person's values, else Codex's own default: a worktree of a trusted repository may hold
+        # .codex/config.toml, which a branch can write to widen the review or the sandbox (gate round 2 of #230)
+        mine = codex_settings()
+        given = ["-c", "sandbox_workspace_write.network_access=true" if mine.get("network") else NO_NET,
+                 "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(mine.get("roots", [])),
+                 "-c", f'approvals_reviewer="{mine.get("approvals_reviewer", "user")}"']
+        given += ["-c", f'approval_policy="{mine["approval_policy"]}"'] if "approval_policy" in mine else []
+        return [*argv[:k + 1], *given, *argv[k + 1:]]
     if prog == "claude":         # --disallowedTools takes every word up to the next option: -p follows in a template
         # ponytail: a template whose next word is {prompt} loses its prompt to the list; none of Pulse's is one
         return [*argv[:k + 1], "--disallowedTools", "Bash(gh:*)", *argv[k + 1:]]

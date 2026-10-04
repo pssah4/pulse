@@ -35,7 +35,7 @@ Specs, Plans, frozen tests and implementation travel on one published item branc
 
 People and agents share that work as follows:
 
-1. The runner claims eligible work from the ramp; one claim owns its current writing phase and files.
+1. The runner claims eligible work from the backlog; one claim owns its current writing phase and files.
 2. The agent prepares its Plan and builds test-first on the same branch as its spec.
 3. The runner publishes the branch and result evidence, releases inactive claims and integrates checked results with exact head and base binding. An explicitly chosen manual policy waits for personal approval.
 4. Confirmed approval permits a fresh integration check. A serialized merge and normal push integrate the result; completion follows proof of remote ancestry. Changed head or base requires revalidation and new approval.

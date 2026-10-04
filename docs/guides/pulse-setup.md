@@ -62,7 +62,7 @@ pulse setup --mode on --cap 4 --agent claude --verify "npm test" --base-branch m
 | `pulse setup --labels` | creates the labels on GitHub |
 | `pulse setup --check-plan` | check a valid Plan-only commit with future files against the fetched base's setup and real project hooks; report compatibility and a log without publishing or claiming work |
 | `pulse setup --anchors` | rewrites only the Pulse block in the agent files that have one, and moves a block an older Pulse wrote into CLAUDE.md to AGENTS.md, leaving CLAUDE.md the line that imports it; config and labels stay |
-| `pulse setup --mode off` | silences the hooks |
+| `pulse setup --mode off` | silences the hooks for the whole team, once committed |
 | `pulse setup --remove` | takes the anchor blocks out again (also from CLAUDE.md, GEMINI.md, .cursorrules, and .windsurfrules, where an older Pulse wrote them), the `@AGENTS.md <!-- pulse -->` line from CLAUDE.md (a line of your own stays), and a git hook an older Pulse installed, and deletes an agent file that held only the block |
 
 The task "Pulse map" has no flag. Where setup kept your `.vscode/tasks.json`, add it to `tasks` there; a new file gets `"version": "2.0.0"` and this task as the one entry of `tasks`. Claude Code protects `.vscode/`: it asks before its agent writes there, even in a mode that accepts edits (in auto mode its classifier decides): allow it, or add the task yourself.
@@ -76,5 +76,13 @@ The task "Pulse map" has no flag. Where setup kept your `.vscode/tasks.json`, ad
 In Codex, the Pulse hooks run only once you trusted them: `/hooks` in the CLI (`t` trusts them all), or **Trust** on each hook on the Hooks page of the IDE extension's settings, then a new chat. Until then the session gets no rules and no stop check. The setup report says whether they are trusted.
 
 `--mode off` and `--remove` keep `.pulse/config.toml`, the labels, the local cache in `.git/pulse/`, and the task "Pulse map" in `.vscode/tasks.json`. [Take it out of a project](../tutorials/installation#take-it-out-of-a-project) says what to delete by hand, and when.
+
+## Your own switch
+
+`/pulse-off` (in Codex `$pulse:pulse-off`) turns Pulse off for you in this clone, `/pulse-off --host` for every project on your computer; `/pulse-on` turns the same switch on again. Nothing in the repository changes, and your team's mode stays as it is. In a terminal, `pulse off`, `pulse off --host`, `pulse on` and `pulse on --host` do the same. The switch for a clone lives with its local evidence in your cache, the one for your computer in `~/.config/pulse-agents/` (or `$XDG_CONFIG_HOME/pulse-agents/`), a folder of Pulse's own; `~/.config/pulse/` stays PulseAudio's.
+
+While any switch is off, yours or your team's `mode = "off"`, your sessions there get no rules, no guard and no presence, and `pulse go` starts no run; a goal, `--pause`, `--steer` and `--stop` still work, and so do the other commands. `pulse status` and the Map name the switch and how to turn it on again.
+
+Only you switch. In Claude Code the command asks you in Claude Code's own dialog, which neither the agent nor a classifier answers, and Pulse switches once you agreed and the command is done. Codex has no such dialog, and the Codex rules of `pulse setup --codex-rules` forbid `pulse on` and `pulse off` to its agent, as every other lever: there `$pulse:pulse-off` names the command for your own terminal, `pulse off` (the command `pulse setup --cli` installs) or the `bin/pulse` of your Pulse copy. The guard refuses every other way an agent might switch, in every project: `pulse on` or `pulse off` in a chain, behind `sudo`, `script` or `unbuffer`, or typed into another terminal, and any command that writes a switch file. Reading a switch, or naming its path in a commit message, stays free. The guard fences cooperative agents; the sandbox of your agent and your operating system is the security boundary.
 
 Moving a project from the predecessor plugin over is [`/pulse-realign`](./pulse-realign), not setup: it also turns the old backlog file into records on the board.

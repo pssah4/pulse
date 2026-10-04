@@ -225,7 +225,7 @@ writer's stop and recorded work before releasing the claim. Until it is
 confirmed, do not begin a second writer. Continue its published branch
 or its original retained worktree; unpushed changes remain in that clone.
 
-### The ramp says `last run: ...`
+### The backlog says `last run: ...`
 
 A `pulse go` run gave the item back and left a note on it: why it stopped (a failure or a stop) and which branch holds its work. The map shows the first line; `pulse status <n>` prints the whole note. Nobody holds the item, so claim it as usual. `pulse go` starts its worktree from the pushed item branch; in a session, `/pulse-build <n>` continues on that branch. Changes of a phase the run stopped halfway stay in that run's worktree, under `.worktrees/` in the repository of the machine that ran it.
 
@@ -263,7 +263,7 @@ A project hook refused a commit or push of `pulse go` for item #n. The run start
 
 ### `pulse go` skips an item: `needs a Claude agent (localhost spec tests)`
 
-A spec test of the item's first wave matches a pattern of `[spec_tests]` with `localhost = true`, and Codex runs without network, so it cannot reach that server. Add `claude` to `agent` in `.pulse/config.toml` (`claude:2,codex:2`, say), or build the item in a Claude Code session with `/pulse-build <n>`.
+A spec test of the item's first wave matches a pattern of `[spec_tests]` with `localhost = true`, and a Codex worker may run without network (it has network only where your own Codex settings give it), so it cannot be counted on to reach that server. Add `claude` to `agent` in `.pulse/config.toml` (`claude:2,codex:2`, say), or build the item in a Claude Code session with `/pulse-build <n>`.
 
 ### `pulse go` skips an item: `failed (pulse:failed)`
 
@@ -283,7 +283,7 @@ A headless agent cannot answer a permission prompt, so it runs only what its tem
 
 ### `pulse go` leaves an item as failed
 
-Its claim goes back to the ramp and its worktree stays for a look; the log is in `.git/pulse/go/<n>.log`. Fix the cause, then run `pulse go` again.
+Its claim goes back to the backlog and its worktree stays for a look; the log is in `.git/pulse/go/<n>.log`. Fix the cause, then run `pulse go` again.
 
 ### `pulse go` refuses a branch with a foreign upstream
 

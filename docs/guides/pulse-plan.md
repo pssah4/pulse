@@ -7,7 +7,7 @@ description: From a ready spec to a Plan the builder can execute, after checking
 
 Planning turns a ready spec into a Plan. It reads the code first, plans so that as much as possible can run in parallel, and keeps the few decisions that a future agent needs to know.
 
-Planning runs as a step of other commands: [`/pulse-re`](./pulse-re) plans ready published work items in its session, [`/pulse-build`](./pulse-build) (in Codex `$pulse:pulse-build`) plans an item before building it, and [`pulse go`](./pulse-go) prepares published items in the ramp. An epic gets no implementation Plan. All three follow the `pulse-plan` skill, marked `user-invocable: false`; Codex still lists that skill, so start through `/pulse-build` there as well.
+Planning runs as a step of other commands: [`/pulse-re`](./pulse-re) plans ready published work items in its session, [`/pulse-build`](./pulse-build) (in Codex `$pulse:pulse-build`) plans an item before building it, and [`pulse go`](./pulse-go) prepares published items in the backlog. An epic gets no implementation Plan. All three follow the `pulse-plan` skill, marked `user-invocable: false`; Codex still lists that skill, so start through `/pulse-build` there as well.
 
 ## Code first
 

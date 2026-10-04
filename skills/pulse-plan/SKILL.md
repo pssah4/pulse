@@ -147,7 +147,7 @@ merge cleanly:
   each wave ends with its checks passing before the next begins.
 
 **Coverage gate** (before any code, re-run whenever the spec or a
-decision changes). `pulse go` and the ramp check P1 to P6 mechanically:
+decision changes). `pulse go` and the backlog check P1 to P6 mechanically:
 
 1. P1: the frontmatter names `issue`, `spec`, `files`, and `verify`,
    and the file is UTF-8.

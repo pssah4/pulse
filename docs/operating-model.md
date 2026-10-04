@@ -12,7 +12,7 @@ Pulse has three parts:
 ```
 Pulse
 |- Operating model              rhythm: three tempos, conscious filter, roles as hats (this page)
-|- Collaboration                claims, ramp, pulse go, the live map
+|- Collaboration                claims, backlog, pulse go, the live map
 `- Digital Innovation Agents    the V-Model method: BA, RE, plan, build, test, audit
 ```
 
@@ -105,7 +105,7 @@ the same time.
 
 ### Execution layer (hourly)
 
-Each person works with one or more agents. The ramp orders authorized work
+Each person works with one or more agents. The backlog orders authorized work
 by dependencies, priority and available files. `pulse go` plans published
 specs, builds valid Plans and verifies their results. It publishes the
 result and integrates only with current final approval. Spontaneous ideas
@@ -237,7 +237,7 @@ When implementation is cheap, the temptation is to turn every idea
 into a feature immediately. Pulse creates a deliberate pipeline:
 
 ```
-Ideas channel -> Sync call filter -> Authorized scope -> Ramp -> Checked result
+Ideas channel -> Sync call filter -> Authorized scope -> Backlog -> Checked result
                  matches BA and      spec and Plan      plan,   final approval,
                  roadmap                              build    integration
 
@@ -384,7 +384,7 @@ What changed: the
 second pattern. Code that proves a design wrong amends the decision
 record first, in the same flow as the bug trigger. With parallel
 builds, the first merge no longer holds silent authority either: the
-ramp holds back items with overlapping planned files, and `pulse go`
+backlog holds back items with overlapping planned files, and `pulse go`
 starts from the fetched base commit and its configuration. Each completed
 result receives full verification before integration; CI status adds no
 separate start or integration gate.

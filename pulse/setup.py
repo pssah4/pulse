@@ -229,6 +229,11 @@ prefix_rule(
     justification = "A person decides who takes over a claim",
 )
 prefix_rule(
+    pattern = ["pulse", ["on", "off"]],
+    decision = "forbidden",
+    justification = "A person switches Pulse for themselves, in their own terminal",
+)
+prefix_rule(
     pattern = ["pulse", "auto", ["plan", "build", "merge"]],
     decision = "forbidden",
     justification = "A person switches their own auto mode, in their own terminal or the Pulse map",

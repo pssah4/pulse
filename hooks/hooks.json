@@ -36,7 +36,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|PowerShell|Monitor|mcp__.*",
+        "matcher": "^(Bash|PowerShell|Monitor|mcp__.*|Edit|Write|MultiEdit|NotebookEdit|apply_patch)$",
         "hooks": [
           {
             "type": "command",
@@ -46,7 +46,7 @@
         ]
       },
       {
-        "matcher": "^(Edit|Write|Read|MultiEdit|NotebookEdit|Glob|Grep|LS|Task|Agent|AskUserQuestion|apply_patch|update_plan|spawn_agent|send_input|wait_agent)$",
+        "matcher": "^(Read|Glob|Grep|LS|Task|Agent|AskUserQuestion|update_plan|spawn_agent|send_input|wait_agent)$",
         "hooks": [
           {
             "type": "command",

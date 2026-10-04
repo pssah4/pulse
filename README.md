@@ -23,7 +23,7 @@ An illustrative excerpt of `pulse map` in a sample project:
 ▐▛▝▘
 
 WHO IS DOING WHAT ──────────────────────────────────────────────────────────────
-● Sebastian                                   4 of 4 slots busy, 4 agents active
+● Sebastian                          5 items, 4 sessions, pulse go: 4 of 4 slots
 ├ ● #19 fix: token expiry                                               building
 ├ ● #11 auth: session refresh                                     review running
 ├ ● #17 docs: auth flow                                                fix round
@@ -35,7 +35,7 @@ WHO IS DOING WHAT ────────────────────�
 ● Bob                                                                     1 item
 └ ● #16 perf: query cache                           tests failed, work preserved
 
-RAMP all open work, in the order it goes out ───────────────────────────────────
+BACKLOG all open work, in the order it goes out ────────────────────────────────
   #13 ui: token banner                                             waits for #11
   #15 ui: dark mode                                                      on hold
   #18 ui: settings panel                          locked: token.ts in use by #11
@@ -95,6 +95,7 @@ The saved objective, scope and completion evidence survive restarts. `pulse go -
 | `/pulse-audit` | OWASP Top 10, LLM Top 10, static analysis, dependencies, supply chain |
 | `/pulse-realign` | take over existing code, or move a project from the Digital Innovation Agents plugin |
 | `/pulse-go` | start or steer `pulse go` from the chat, with your whole text as its goal |
+| `/pulse-off`, `/pulse-on` | turn Pulse off or on for you in this project, or with `--host` on your computer, without changing your team's configuration |
 
 ## Discovery before implementation
 
@@ -139,7 +140,7 @@ Pulse replaces the Digital Innovation Agents plugin (DIA, versions up to 4.0.2).
 1. Understand the problem before designing the solution.
 2. Separate what the system does (observable, free of technology) from how it does it (the plan, decision records).
 3. Give each fact an authoritative home: content on item branches, confirmed workflow state on the shared state branch, relationships on the board, rules in hooks, behavior in the code and tests.
-4. Everything a script can decide, a script decides: claims, dependencies, the ramp, the checks.
+4. Everything a script can decide, a script decides: claims, dependencies, the backlog, the checks.
 5. No claim of success without fresh evidence from this turn.
 
 ## License

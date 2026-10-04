@@ -199,3 +199,4 @@ still come first. `Esc` cancels. The picker also reaches epics in the board.
 | `/pulse-audit` | security audit |
 | `/pulse-realign` | take over an existing codebase or a DIA project |
 | `/pulse-go` | start or steer `pulse go` with the person's goal |
+| `/pulse-off`, `/pulse-on` | turn Pulse off or on for the person here, or with `--host` on this computer |

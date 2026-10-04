@@ -93,6 +93,10 @@ For each task of the Plan:
    one Plan change-log line saying why.
 4. **Run the task's check** before the next task: the tests the task
    touches, not the whole suite.
+5. **Close it.** Make one commit for the finished task with the trailers
+   `Pulse-Task: <n>`, the task's `#` in the Plan's Tasks table, and
+   `Refs: #<n>` of the item. The map counts these as "Plan k/n"; the
+   gates never read them.
 
 After each step, run the tests that step affects, not the whole suite;
 use targeted checks. Under `pulse go`, the supervisor runs the full

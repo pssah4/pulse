@@ -84,7 +84,7 @@ Commit and push the metadata registration writes on the same item branch. Keep e
 
 Planning runs inside `/pulse-re`, `/pulse-build` and `pulse go`. Here `/pulse-re` plans the published features while their requirements are fresh; an epic gets no implementation Plan. One Plan per feature in `_devprocess/plans/` records tasks, files and decisions, including rejected alternatives. Disjoint tasks share a wave. A constraint future changes must respect, such as "cards are stored without author", becomes a decision record behind `_devprocess/decisions/README.md`.
 
-The files lists matter beyond the item: the ramp compares them to keep parallel work apart.
+The files lists matter beyond the item: the backlog compares them to keep parallel work apart.
 
 Each Plan passes `pulse check --plan <path>`, is committed alone as `docs(plan): #<n>`, and is pushed on its item branch. A valid Plan permits the authorized build when prerequisites, file reservations and base checks allow it. #4 can be planned while #3 is open, but cannot build until #3 is integrated.
 
@@ -94,7 +94,7 @@ Each Plan passes `pulse check --plan <path>`, is committed alone as `docs(plan):
 pulse status
 ```
 
-The ramp starts with #2 and #3, because their files do not overlap. #4 waits for #3. Alice wants #2 herself and claims it from her machine (`pulse claim 2`, then `/pulse-build 2`), so Sebastian's run takes #3; #4 waits for the merge of #3:
+The backlog starts with #2 and #3, because their files do not overlap. #4 waits for #3. Alice wants #2 herself and claims it from her machine (`pulse claim 2`, then `/pulse-build 2`), so Sebastian's run takes #3; #4 waits for the merge of #3:
 
 ```bash
 pulse go

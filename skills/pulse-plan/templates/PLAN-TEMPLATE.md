@@ -15,7 +15,7 @@ verify:                       # the commands that prove the item; the builder ru
 #   - {dependency, schema, public-api, or destructive}
 ---
 
-<!-- See skills/pulse-plan/SKILL.md. `pulse go` and the ramp check P1 to
+<!-- See skills/pulse-plan/SKILL.md. `pulse go` and the backlog check P1 to
      P6: every FR and SC of the spec
      covered by a task (or "Deferred: SC-nn reason"), one spec test per FR
      in wave 1 (an FR the spec marks `(unchanged)` may keep an existing
@@ -50,6 +50,9 @@ needs. Self-contained: an agent that never saw this repository can start.}
 when nothing crosses a module boundary.}
 
 ## Tasks
+
+<!-- Each finished task gets one commit with the trailer `Pulse-Task: <n>`, n its # below;
+     the Map shows "Plan k/n" from them. Display only, no gate reads it. -->
 
 | # | Task | Covers | Files | Wave | Diff budget | Check |
 |---|---|---|---|---|---|---|

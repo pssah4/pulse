@@ -69,7 +69,7 @@ A folder listing thus groups the features of an epic, and every ID names its epi
 
 The issue number stays the ID of the record: branches, commits (`Refs: #14`), and every `pulse` command use it. `pulse new` puts the spec's ID in front of the record's title, so the board and the map show it.
 
-A Plan adds `spec:` and the `files:` it touches, which the ramp compares to keep parallel work apart. A decision record adds `applies-to` and `read-when`. Keys like `status`, `phase`, or `claim` are flagged by `pulse check`.
+A Plan adds `spec:` and the `files:` it touches, which the backlog compares to keep parallel work apart. A decision record adds `applies-to` and `read-when`. Keys like `status`, `phase`, or `claim` are flagged by `pulse check`.
 
 ## Line caps
 

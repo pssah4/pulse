@@ -77,6 +77,7 @@ Grants live in Pulse's local store outside the repository, never in a file, the 
 | `/pulse-audit` | security audit: the third gate of every feature, or by hand with a chosen scope |
 | `/pulse-realign` | take over existing code, or move a project from the predecessor plugin |
 | [`/pulse-go`](./pulse-go) | start or steer `pulse go` from the chat, with your whole text as its goal |
+| [`/pulse-off`, `/pulse-on`](./pulse-setup#your-own-switch) | turn Pulse off or on for you in this project, or with `--host` on your computer, without changing your team's configuration |
 
 [Planning](./pulse-plan) runs as a step inside `/pulse-re`, for each ready feature, improvement, or fix in its session (an epic gets no Plan), and inside `/pulse-build` and `pulse go`; review and audit run inside `/pulse-build` and `pulse go`.
 

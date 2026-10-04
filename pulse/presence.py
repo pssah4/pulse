@@ -19,6 +19,10 @@ EVENTS = {"SessionStart", "SubagentStart", "UserPromptSubmit", "PreToolUse", "Pe
           "PostToolUse", "Stop", "SubagentStop", "SessionEnd"}
 IDENT = re.compile(r"[\w.:-]{1,160}\Z", re.ASCII)
 PATCH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.M)
+SPAWNS = {"Agent": ("description", "subagent_type", "general-purpose"),                         # Claude Code
+          "Task": ("description", "subagent_type", "general-purpose"),
+          "spawn_agent": ("task_name", "agent_type", "")}                                          # Codex
+TASKS = 8                       # the latest calls of a session's agent tool it keeps, to name its subagents (#234)
 
 
 def _text(value, limit=512):
@@ -55,7 +59,8 @@ def _location(root, env):
         return _location(outer, {"PULSE_PRESENCE": env.get("PULSE_PRESENCE")}) if outer else None
     data = config._parse(_small(source), strict=True)
     mode = config.DIA_MODES.get(data.get("mode"), "on") if source.parent.name == ".dia" else data.get("mode")
-    return (root, gitdir, common / "pulse" / "presence") if mode == "on" else None
+    return (root, gitdir, common / "pulse" / "presence") if mode == "on" and not config.switched(root, common) \
+        else None
 
 
 def _target(tool, given):
@@ -182,6 +187,12 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
         "waiting" if waiting else "idle" if event in {"Stop", "SessionStart"} else "working"
     kind = harness(payload, env, previous.get("harness", "claude"))
     item = (env.get("PULSE_ITEM") or "") if holder else ""       # the item pulse go gave its agent (#213)
+    tasks = [t for t in previous.get("tasks", []) if isinstance(t, dict) and stamp - t.get("at", 0) < EXPIRE]
+    given = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    if event == "PreToolUse" and tool in SPAWNS:       # what a subagent it starts is for, by its type (#234)
+        said, typed, default = SPAWNS[tool]
+        words, kind_ = (str(given.get(k) or "").strip().split("\n")[0] for k in (said, typed))
+        tasks = [*tasks, {"type": _text(kind_, 64) or default, "description": _text(words, 120), "at": stamp}][-TASKS:]
     head = _small(gitdir / "HEAD").strip()
     row = {"id": who, "parent": session if agent else previous.get("parent", ""),
            "cwd": str(root), "branch": head[16:] if head.startswith("ref: refs/heads/") else "",
@@ -194,6 +205,9 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
            "target": _target(tool, payload.get("tool_input")) if event in {"PreToolUse", "PermissionRequest"} else "",
            "denied": tool if holder and event == "PermissionRequest" else "",
            "last": stamp}
+    same = all(previous.get(k) == row[k] for k in ("state", "tool", "target"))
+    row.update(began=previous.get("began") or stamp, since=previous.get("since", stamp) if same else stamp,
+               type=_text(payload.get("agent_type"), 64) or previous.get("type", ""), tasks=tasks)
     temporary = "." + os.urandom(8).hex()
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     try:
@@ -213,7 +227,7 @@ def read(root, now=None, env=None):
         where = _location(root, os.environ if env is None else env)
         if where is None:
             return []
-        rows, ended = {}, set()
+        rows, ended, gone = {}, set(), []
         now = time.time() if now is None else now
         with _directory(where[2]) as directory:
             for name in os.listdir(directory):
@@ -232,6 +246,7 @@ def read(root, now=None, env=None):
                         continue
                     if row["state"] == "ended":
                         ended.add(row["id"])
+                        gone.append(row)            # a finished subagent still holds the call it took (#234)
                         continue
                     if not 0 <= now - row["last"] < EXPIRE or row["state"] not in {"working", "waiting", "idle"}:
                         continue
@@ -243,6 +258,46 @@ def read(root, now=None, env=None):
             parent = rows.get(row["parent"])
             if parent and parent is not row:
                 parent["agents"].append(row)
+        for row in rows.values():
+            try:
+                _describe(row, [g for g in gone if g["parent"] == row["id"]])
+            except (TypeError, ValueError, KeyError, AttributeError):
+                pass                            # one odd snapshot names no subagent; the others stay
         return [row for row in rows.values() if row["parent"] not in rows]
     except (OSError, ValueError, TypeError, AttributeError):
         return []
+
+
+def _began(agent):
+    """When a subagent began, as a number, else None."""
+    try:
+        return float(agent.get("began") or agent["last"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _at(task):
+    """When an agent call was made, as a number, else None."""
+    try:
+        return float(task.get("at", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _describe(row, finished=()):
+    """Each running subagent of row gets the description of the agent call that started it (#234): over its running
+    and finished subagents, newest first, each takes the latest call not yet taken at or before its start, of its
+    type where one is. So a finished subagent keeps its call, and an older call never names a newer subagent."""
+    tasks = sorted((t for a in (row, *row["agents"], *finished)             # a subagent's own call too (#239)
+                    for t in (a.get("tasks") if isinstance(a.get("tasks"), list) else ())
+                    if isinstance(t, dict) and _at(t) is not None), key=_at)  # an unreadable one costs only itself
+    running = [id(a) for a in row["agents"]]
+    for agent in sorted([*row["agents"], *finished], key=lambda a: _began(a) or 0, reverse=True):
+        began = (_began(agent) or 0) + PARALLEL
+        early = [t for t in tasks if _at(t) <= began][::-1]
+        task = next((t for t in early if t.get("type") == agent.get("type")), early[0] if early else None)
+        if task:
+            tasks.remove(task)
+            if id(agent) in running:
+                agent["description"] = str(task.get("description") or "")
+                agent["type"] = agent.get("type") or str(task.get("type") or "")
