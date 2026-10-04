@@ -2,7 +2,8 @@
 
 The PreToolUse hook asks verdict() before every shell, Monitor, and MCP call of a session and its
 subagents. It reads the command only, without network; the hook passes the base and default branch
-and the command's directory, and only a push that names no branch costs a git call. Text sent into
+and the command's directory, and only a push that names no branch and a git command that records work on the
+branch checked out cost a git call: no agent commits or merges on the base or default branch (#213). Text sent into
 another terminal (Herdr, tmux, osascript) is checked like a command, and no agent without this guard
 starts in a pane. Nothing goes into the pane of a live map, which runs as the person, and no pulse map
 goes into another terminal (FR-10 of #121): a pane that map-pane names, and while a map of this user
@@ -33,6 +34,21 @@ MARKERS = {"PULSE_HOLDER", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID"
 STORE = re.compile(r"outbox\.sqlite|\blever_(?:grants|asks|requests|uses)\b|\bpulse_hook\b|\brun-hook\.cmd\b"
                    r"|\bpulse\.levers\b|\bfrom\s+pulse\s+import\b[^\n;|&]*\blevers\b")
 ASKING = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?levers[ \t]+allow\b")     # alone it gets the dialog, never here
+BRANCH_REASON = ("The Pulse guard refuses it: agents commit and merge only on the item branch <type>/<n>-<slug>, "
+                 "never on the base or default branch. Switch to the item branch, or work in its worktree, and commit "
+                 "there. A directory the guard cannot reach (~, a variable, a path made later in the line) counts as "
+                 "the base: run it in the worktree itself.")
+# git that records work on the branch checked out, with the short and long options that take the next word
+RECORDS = {"commit": ("", ()),
+           "merge": ("mFsX", ("--message", "--file", "--strategy", "--strategy-option", "--into-name", "--cleanup")),
+           "cherry-pick": ("mX", ("--mainline", "--strategy", "--strategy-option", "--cleanup")),
+           "revert": ("mX", ("--mainline", "--strategy", "--strategy-option", "--cleanup")),
+           "rebase": ("sXx", ("--strategy", "--strategy-option", "--exec")),       # --onto's value is a word
+           "am": ("Cp", ("--directory", "--exclude", "--include", "--resolvemsg", "--patch-format", "--whitespace",
+                         "--quoted-cr")),
+           "pull": ("sXjo", ("--strategy", "--strategy-option", "--depth", "--deepen", "--shallow-since",
+                             "--shallow-exclude", "--jobs", "--upload-pack", "--server-option", "--negotiation-tip",
+                             "--refmap", "--cleanup"))}
 STORE_REASON = ("Lever grants come only from the person's confirmation in Claude Code's own dialog or in the "
                 "Pulse map. Run pulse levers allow run|session|always on its own; no other command reaches "
                 "the grants or the hook that writes them.")
@@ -543,14 +559,17 @@ def _git(args, ctx, depth):
         moved = moved or a.startswith(("--git-dir", "--work-tree"))
         i += 2 if a in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") else 1
     sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
-    if sub in ("checkout", "switch"):                   # the chain goes on in another branch
-        ctx.branch = _target(sub, rest, ctx.bases)
+    if sub == "switch" or sub == "checkout" and ("--" not in rest or {"-b", "-B", "--orphan"} & set(rest)):
+        ctx.branch = _target(sub, rest, ctx.bases)     # the chain goes on in another branch; -- only takes files
     if hooks_off and sub in ("commit", "push"):
         return True
-    if sub == "commit":
-        return _flag(rest, ("--no-verify",), "n", "mFCct", "Su", prefix=True, long_takes=(
+    if sub == "commit" and _flag(rest, ("--no-verify",), "n", "mFCct", "Su", prefix=True, long_takes=(
             "--message", "--file", "--author", "--date", "--reuse-message", "--reedit-message", "--fixup", "--squash",
-            "--template", "--cleanup", "--trailer", "--pathspec-from-file"))
+            "--template", "--cleanup", "--trailer", "--pathspec-from-file")):
+        return True
+    if sub in RECORDS and _on_base(sub, rest, where, moved, ctx):
+        ctx.said.append(BRANCH_REASON)
+        return True
     if sub != "push":
         return False
     takes = ("--repo", "--receive-pack", "--exec", "--push-option")
@@ -604,6 +623,63 @@ def _git(args, ctx, depth):
     return lease and _item_of(branch) is None
 
 
+def _on_base(sub, rest, where, moved, ctx):
+    """Whether sub, a git command that records work on the branch checked out, records it on a base branch (#213
+    FR-04): after the chain's cd, pushd, -C, checkout, or switch. Where the guard cannot tell (another repository,
+    a directory or branch unknown, git that does not answer) it counts as the base. An abort records nothing, and a
+    base that merges or pulls only its own branch of origin catches up."""
+    opts, named = _args(rest, *RECORDS[sub])
+    if sub not in ("commit", "pull") and {"--abort", "--quit", "--skip"} & set(opts):
+        return False
+    place = ctx.where()
+    if place is False:
+        return False                                    # another guarded agent runs it and judges it there
+    if moved or ctx.branch is None or place is None and not any(os.path.isabs(w) for w in where):
+        return True
+    here = os.path.join(place or os.sep, *where)
+    if isinstance(ctx.branch, tuple):                   # a checkout of a word: a branch, or a file or a commit
+        ctx.branch = ctx.branch[1] if ctx.lookup(_is_branch, here, ctx.branch[1]) else None
+        if ctx.branch is None:
+            return True
+    if sub == "rebase":                                 # git rebase [--onto X] <upstream> <branch> checks out <branch>
+        k = 1 + ("--onto" in opts) - ("--root" in opts)
+        if len(named) > k:
+            target = named[k]
+            return (target[len("refs/heads/"):] if target.startswith("refs/heads/") else target) in ctx.bases
+    branch = ctx.branch or ctx.lookup(_head, here)
+    if branch is None or branch not in ctx.bases:
+        return branch is None
+    if sub == "rebase" and any(o.startswith(("--onto", "--root", "--exec", "--interactive")) or
+                               not o.startswith("--") and set(o[1:]) & set("xi") for o in opts):
+        return True                                     # onto another commit, or running commands: never catching up
+    own = (f"origin/{branch}", f"refs/remotes/origin/{branch}")
+    tracked = {"@{u}", "@{upstream}", f"{branch}@{{u}}", f"{branch}@{{upstream}}"}
+    if sub in ("pull", "rebase") and not named[sub == "pull":] or \
+            sub in ("merge", "rebase") and named and set(named) <= tracked:
+        return ctx.lookup(_upstream, here) not in ("", *own)    # what the branch tracks, unless set elsewhere
+    if sub == "pull":                                   # the remote, then what it merges: this branch only
+        return any(w not in (branch, f"refs/heads/{branch}", f"{branch}:{branch}") for w in named[1:])
+    return sub not in ("merge", "rebase") or not named or any(w not in own for w in named)   # --continue names none
+
+
+def _args(args, takes, long_takes):
+    """(options, words) of a git command: a short letter of takes at the end of its cluster, or a long option of
+    long_takes or a start of one, without =, takes the next word as its value, which is neither."""
+    opts, words, skip = [], [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a.startswith("--") and a != "--":
+            opts.append(a)
+            skip = "=" not in a and len(a) > 3 and any(long.startswith(a) for long in long_takes)
+        elif a.startswith("-") and len(a) > 1 and a != "--":
+            opts.append(a)
+            skip = a[-1] in takes and not any(c in takes for c in a[1:-1])
+        elif a != "--":
+            words.append(a)
+    return opts, words
+
+
 def _item_of(branch):
     from pulse import state
     return state.item_of(branch)
@@ -630,6 +706,30 @@ def _branch(where):
                              text=True, timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _head(where):
+    """The branch checked out in where, read from HEAD without network: "" for a detached HEAD or no repository,
+    None when git does not answer in time or where is no directory the guard can reach (#213). An unborn branch counts
+    by its name."""
+    if not os.path.isdir(where):                        # ~, $VAR, a path xargs or a later worktree add makes
+        return None
+    try:
+        out = subprocess.run(["git", "-C", where, "symbolic-ref", "-q", "--short", "HEAD"], capture_output=True,
+                             text=True, timeout=1)        # with _upstream far below the hook's 5 s
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _upstream(where):
+    """What the branch checked out in where tracks, as remote/branch: "" for none, None when git does not answer."""
+    try:
+        out = subprocess.run(["git", "-C", where, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+                             capture_output=True, text=True, timeout=1)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     return out.stdout.strip() if out.returncode == 0 else ""
 
 

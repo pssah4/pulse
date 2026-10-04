@@ -27,9 +27,11 @@ pulse go mach alle items die zu epic 4 gehören und finde eine Lösung für das 
 
 This asks Pulse to finish the Epic 4 work and investigate the UI problem while continuing the queue. Pulse uses existing items and registers any new epics, features, improvements or fixes visibly before their agents start. Each follows the ordinary spec, Plan, build and verification workflow. A goal grants no additional permissions.
 
-An explicit restriction limits the run, for example `pulse go only finish the features in Epic 4`. `--epic EPIC-04` and `--item 12` are optional shortcuts. Dependencies outside that scope remain visible as blockers. The restriction also applies to result refresh and integration.
+An explicit restriction limits the run, for example `pulse go only finish the features in Epic 4`. `--epic EPIC-04` and `--item 12` restrict the run the same way; next to a text they add to it and never replace it. Item numbers in the text restrict the run until the interpretation is confirmed; it then decides whether only those items run, as in `pulse go -- '#569 and #580, leave the rest'`, or the queue goes on beside them, as in `pulse go -- 'Fix the header, #1 priority'`. Given next to a text, `--item` or `--epic` wins: it sets the scope, item numbers in the text do not widen it, and an interpretation that needs other items pauses the goal with that reason. Dependencies outside that scope remain visible as blockers. The restriction also applies to result refresh and integration.
 
-The saved goal retains its objective, scope, criteria and progress across runs. The Map shows the local intent separately when the runner has not yet applied it. Steering takes effect at a phase boundary:
+If the interpretation fails, Pulse pauses the goal and names the reason in the output of `pulse go` and in the Map. Nothing outside a confirmed scope starts; `pulse go --resume` interprets the goal again.
+
+The saved goal retains its objective, scope, criteria and progress across runs. Every agent that specifies, plans, builds or fixes an item reads the goal and its criteria. The Map shows the local intent separately when the runner has not yet applied it. Steering, pausing or changing the goal stops only the jobs whose item leaves its scope; the others go on, and a pause starts nothing new until you resume:
 
 ```bash
 pulse go --pause
@@ -37,7 +39,7 @@ pulse go --steer "Keep the public API unchanged"
 pulse go --resume
 ```
 
-A goal is complete only when its assigned work and completion evidence are verified. An empty ready queue, a foreign claim or a failed refresh leaves it open with a reason.
+A goal is complete only when its assigned work and completion evidence are verified. An empty ready queue, a foreign claim or a failed refresh leaves it open with a reason that names the items holding it, such as `#580 failed: ...` or `#2 waits for #1`. The Map shows its progress (`k of n items complete`) from the interpretation on, also while jobs run.
 
 In your terminal the runner stays in the foreground and Ctrl-C stops it. From your interactive chat, `/pulse-go` and your goal (in Codex `$pulse:pulse-go`) start it with your whole text as the goal, and `/pulse-go pause`, `resume`, `stop` or `steer <direction>` control it; an explicit request to `/pulse` (in Codex `$pulse:pulse`) works as well. Without a TTY, Pulse owns a managed process: the command returns a receipt with its run ID, PID, report and log after the child has saved its startup report. The process survives the calling tool's exit. A quick completed run reports its actual outcome; an unconfirmed start reports an error.
 
@@ -104,7 +106,7 @@ Pulse verifies the completed result before integration. The supervisor runs full
 
 A project hook that refuses a commit, push or base merge of the runner holds only that item; other items keep starting. Pulse records the item, phase, step, hook, the check npm or pnpm names in its last `> package@version script` header, the time and the base commit, with the last lines of the output. The whole output stays in `.git/pulse/go/<n>.hook.txt` of this clone.
 
-The item then gets one fix round within its usual round limit. The round receives the output and the open fix items on the board. When the cause lies in the item's own change, the round fixes it and the build continues. When it lies in a check the whole project shares, the round changes nothing outside the item and names the prerequisite under `needs:` in `_devprocess/plans/<n>-needs.md`: `'#m title'` for an open fix item, otherwise a short title, which becomes one draft. The item then waits for it with its work preserved and its claim released. Without a named prerequisite the item fails and names the decision: change the item so the check passes, or name what it waits for.
+The item then gets one fix round of its own for the refusal, whatever rounds its gates spent: a push the hook refuses after the review's fix round still gets one. The round receives the output and the open fix items on the board. When the cause lies in the item's own change, the round fixes it and the build continues. When it lies in a check the whole project shares, the round changes nothing outside the item and names the prerequisite under `needs:` in `_devprocess/plans/<n>-needs.md`: `'#m title'` for an open fix item, otherwise a short title, which becomes one draft. The item then waits for it with its work preserved and its claim released. Without a named prerequisite the item fails and names the decision: change the item so the check passes, or name what it waits for.
 
 The record survives restarts. A restart alone starts nothing again: a waiting item stays held until every item it names is closed and the base has moved. Then the runner takes the current base into the preserved worktree, runs the hooks again and publishes the preserved plan without a new planner, once per base. `pulse publish-plan` takes the current base in before its commit as well.
 

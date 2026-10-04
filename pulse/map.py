@@ -407,6 +407,8 @@ def _doing(actor: dict) -> tuple:
         return actor.get("note") or "a check failed", "31"
     if st == "idle":
         return "idle", "90"
+    if actor.get("denied"):                    # an agent of pulse go asked nobody: its call was denied (#210)
+        return f"permission denied: {actor['denied']}", "90"
     tool, target = actor.get("tool", ""), actor.get("target", "")
     if "/" in target and " " not in target:
         target = target.rsplit("/", 1)[-1]
@@ -506,9 +508,10 @@ def _goal(text) -> str:
 
 
 def places(vm: dict) -> dict:
-    """{item number, else branch or "no branch": every agent on it}. An agent counts for the item
-    its claim holds, wherever its directory stands (FIX-02), else for the item of its branch; the
-    a result branch also identifies the item whose writer published it."""
+    """{item number, else branch, "detached", or "pulse go": every agent on it}. An agent of pulse go counts for
+    the item the run gave it, also in a detached gate or goal folder (#213); any other agent for the item its claim
+    holds, wherever its directory stands (FIX-02), else for the item of its branch; a result branch also
+    identifies the item whose writer published it. One without an item stands by its branch, a run's by the run."""
     by_number = {i["number"]: i for i in vm["items"]}
     holds = {}                            # session or Codex subagent id -> the items its claims hold
     for x in vm["items"]:
@@ -519,13 +522,16 @@ def places(vm: dict) -> dict:
     for s in vm["sessions"]:
         for a in [s, *s["agents"]]:
             b = vm["branches"].get(a.get("cwd", ""), "")
-            i = by_number.get(state.item_of(b)) or next(
-                (x for x in vm["items"] if b and (x.get("result") or {}).get("branch") == b),
-                None)
-            own = holds.get(a.get("holder")) or holds.get(a["id"]) or holds.get(s["id"]) or []
-            if own and i not in own:
-                i = own[0]
-            feats.setdefault(i["number"] if i else (b or "no branch"), []).append(a)
+            i = by_number.get(int(a["item"])) if str(a.get("item") or "").isdecimal() else None
+            if i is None:
+                i = by_number.get(state.item_of(b)) or next(
+                    (x for x in vm["items"] if b and (x.get("result") or {}).get("branch") == b),
+                    None)
+                own = holds.get(a.get("holder")) or holds.get(a["id"]) or holds.get(s["id"]) or []
+                if own and i not in own:
+                    i = own[0]
+            run = str(a.get("holder") or "").startswith("go:")
+            feats.setdefault(i["number"] if i else "pulse go" if run else b or "detached", []).append(a)
     return feats
 
 
@@ -581,6 +587,10 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     actors = [a for s in vm["sessions"] for a in [s, *s["agents"]]]
     groups = board(vm)
     rows, phases, failed = vm["ramp"].get("rows", []), vm.get("phases", {}), vm.get("failed", {})
+    # what the local runner prepares or runs a job on stands under WHO IS DOING WHAT only, also before the board
+    # shows its claim (#211)
+    local = {n for n in [runner.get("item"), *phases] if n in by_number and not by_number[n].get("hold")}
+    rows = [x for x in rows if x["number"] not in local]
     held = sorted(((login, i) for i in groups["in progress"] + groups["in review"]      # held drafts too (#55)
                    for login in i["assignees"]), key=lambda x: (x[0].lower(), x[1]["number"]))
 
@@ -691,6 +701,10 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         the state a person acts on first, the age after it, where a cut takes it. An item nobody
         holds says what its ramp row says."""
         if i["number"] not in lit:
+            if i["number"] in local:               # the runner's, its claim not on the board yet (#211)
+                n = i["number"]
+                return "working", (runner.get("title") or runner.get("phase", "")) if runner.get("item") == n \
+                    else PHASE.get(phases[n], phases[n])
             if i.get("draft") and i["assignees"]:      # its spec is being written, under its holder only (#55)
                 since = i.get("claimed_beat") or i.get("claimed_at")
                 who = i.get("claimed_by") or i["assignees"][0]
@@ -919,6 +933,11 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                 else:
                     doing, code = said(agents)
                     rows.append(lr(pad + "└ " + p(doing, code), "", w))
+            branch = (e.get("result") or {}).get("branch") or e.get("branch") or (e.get("work") or {}).get("branch") \
+                or next((b for a in agents for b in [vm["branches"].get(a.get("cwd", ""), "")]
+                         if state.item_of(b) == e["number"]), "")
+            if branch:                         # the branch its work goes on (#213)
+                rows.append(fit(pad + "  " + p(branch, "90"), w))
         return rows
 
     others = {}                           # the holder's claim mark decides, else the assignee
@@ -930,6 +949,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
     entries = [(by_number[k] if isinstance(k, int) else k, agents) for k, agents in feats.items() if k not in theirs]
     entries += [(i, []) for login, i in held if login == vm["me"] and i["number"] not in feats
                 and i["number"] not in theirs]
+    entries += [(by_number[n], []) for n in sorted(local) if n not in feats and not by_number[n]["assignees"]]
 
     r = vm["ramp"]
     busy = sum(a["state"] != "idle" for a in actors) + len(jobs)
@@ -992,7 +1012,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
             out += [" " + p(line, "90") for line in wrap(text, w - 1)]
             continue
         if r.get("state") == "decision":
-            text = "You: " + (r.get("why") or f"decide #{n}")
+            text = "You: " + (r.get("why") or f"decide #{n}") + \
+                (f"; the failure is {go.UNSENT}" if r.get("unsent") else "")      # FR-03 of #209
         elif r.get("state") == "waits":
             stand = "; ".join(f"#{m} {by_number[m]['title']}: {gate(by_number[m])[1] or 'open'}" if m in by_number
                               else f"#{m} closed" for m in r.get("needs") or ())
@@ -1017,7 +1038,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         title = p.link(f"#{row['number']}", row.get("url")) + f" {row['title']}"
         if row["number"] not in shown:
             shown.append(row["number"])
-        left = p("▲ " + title, "36") if row["stage"].startswith("starts next") else "  " + title
+        left = p("▲ " + title, "36") if row["stage"].startswith("starts next") and row["number"] not in failed \
+            else "  " + title
         if row["number"] == selected:
             left = p("› " + title, "1")
         stage, code = says(row, beside(left, w))
@@ -1944,11 +1966,14 @@ def _git(cwd: str, *args) -> str:
 
 def failures(root: Path, items=()) -> dict:
     """{item: why} for what the last run of pulse go failed, from its report (D-14). A claim or a
-    sign of life on the item since then is newer work, whoever holds it: the map shows that one."""
+    sign of life on the item since then is newer work, whoever holds it: the map shows that one. A failure this
+    clone keeps until the board has it says so first, where no cut takes it (FR-03 of #209)."""
     since = {i["number"]: max(i.get("claimed_at") or "", i.get("claimed_beat") or "") for i in items}
     try:
         report = json.loads((config.pulse_dir(root) / "go" / "report.json").read_text(encoding="utf-8"))
-        return {int(n): r.get("why") or "failed" for n, r in report["items"].items()
+        kept = go.unsent(root)
+        return {int(n): (f"{go.UNSENT}: " if int(n) in kept else "") + (r.get("why") or "failed")
+                for n, r in report["items"].items()
                 if r.get("result") == "failed" and since.get(int(n), "") <= (r.get("at") or "")}
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return {}
@@ -2365,8 +2390,10 @@ def main(args) -> int:
     drawn, drawn_at = [], None                       # the rows on the screen, and the size they were drawn at
     read = keys = _keys()
     # the image logo (#166): where the terminal answers its question; never on Windows, in GNU screen (STY) or in tmux
-    # (TMUX), which pass no graphics command on and show one as their status line or pane title
-    png = logo_png() if color and keys and sys.platform != "win32" and not {"STY", "TMUX"} & set(os.environ) else None
+    # (TMUX), which pass no graphics command on and show one as their status line or pane title, nor in a Herdr pane,
+    # which confirms the question and then prints each placement as text (#212)
+    png = (logo_png() if color and keys and sys.platform != "win32" and not {"STY", "TMUX"} & set(os.environ)
+           and os.environ.get("HERDR_ENV") != "1" else None)
     graphic = asked = sent = placed = False         # confirmed; question written; data and place on the screen
     handlers = {s: signal.signal(s, go._exit)          # a closed terminal still runs the cleanup
                 for s in (signal.SIGTERM, getattr(signal, "SIGHUP", None)) if s}

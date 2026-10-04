@@ -105,6 +105,15 @@ def _held(r: dict) -> str:
         f"{go.refusal_effect(r)}"
 
 
+def _goal_said(goal) -> None:
+    """The goal's state and why, when something holds it: a failed interpretation pauses with its reason and the
+    person's next step (#206)."""
+    if (goal or {}).get("reason"):
+        step = "; go on: pulse go --resume, or change it: pulse go --steer '<new text>', then pulse go --resume" \
+            if goal["status"] == "paused" else ""
+        print(ready.printable(f"  goal {goal['status']}: {goal['reason']}{step}"))
+
+
 def _fetch(root, now=False):
     """ready.fetch, and one line when the last fetch failed or none could run: what git said, as every
     command names it (#85), or that origin did not answer, where git said nothing; on stderr, so --json
@@ -214,6 +223,7 @@ def cmd_go(args):
                 print(ready.printable(f"  {key}: {receipt[key]}"))
         if receipt.get("goal"):
             print(ready.printable(f"  runner goal revision: {receipt['goal'].get('revision', '')}"))
+            _goal_said(receipt["goal"])
         if receipt["status"] == "started":         # the managed run picks the same (#182)
             spec, why = go.workers(config.load(root), os.environ)
         else:                                     # a run already active or done: the workers its report names
@@ -270,6 +280,7 @@ def cmd_go(args):
         print(ready.printable(f"  kept the worktree of closed #{u['number']}, it has changes: {u['worktree']}"))
     for r in go.refusals(root):         # each item a hook's refusal holds, with cause and effect (FR-10 of #178)
         print(ready.printable(_held(r)))
+    _goal_said(rep.get("goal"))
     if rep.get("halt"):
         print(ready.printable(f"  held: {rep['halt']}"))     # a hook's name and git's words (L-4)
         kind = go.halt_kind(rep)

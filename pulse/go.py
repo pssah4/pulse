@@ -16,6 +16,7 @@ import math
 import shlex
 import shutil
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from pulse import actions, auto, base, check, compat, config, goals, lifecycle, 
 
 TIMEOUT_UNIT = 60              # agent_timeout is in minutes
 REVIEW_ROUNDS = 1              # fix rounds per item for its gates, RED too (#117, #126); then the PR says why
+HOOK_ROUNDS = 1                # fix rounds per item for a project hook that refused it, apart from those (#208)
 PLAN_ROUNDS = 2                # fix rounds for a Plan that fails P1 to P6; then the item fails
 TOKENS = ("input", "output", "cache_read", "cache_write")
 GATES = ("tests", "review", "audit")           # in this order after every build; a fix repeats the tests and the red ones
@@ -512,7 +514,23 @@ def _agent(job: Job, cfg: dict, logs: Path, phase: str, prompt: str, template: s
     job.prompt, job.cwd, job.redone = prompt, cwd, again
     template = review.gate_template(cfg, job.agent) if cwd else _allowing(template or cfg["agents"][job.agent],
                                                                          cfg, job)
-    _launch(job, config.agent_argv(template, prompt), logs, phase, **({"cwd": cwd} if cwd else {}))
+    _launch(job, config.agent_argv(template, prompt if cwd else prompt + _brief(job.worktree)), logs, phase,
+            **({"cwd": cwd} if cwd else {}))
+
+
+def _brief(worktree: Path) -> str:
+    """The run's goal for an item's agent, read when its phase starts, so a steer reaches the jobs that go on
+    (FR-01 of #207): the person's objective and the criteria as JSON after the instructions, never formatted into
+    them. A gate or the interpretation runs in a cwd of its own and gets none."""
+    try:
+        goal = goals.read(worktree)
+    except state.StateError:           # a busy outbox costs the phase its brief, never its start
+        return ""
+    if not goal or goal["status"] == "complete" or goal["objective"] == "Process the Pulse queue":
+        return ""
+    data = {"objective": goal["objective"], "criteria": [str(c["text"])[:500] for c in goal["criteria"]][:10]}
+    return "\n\nThe goal of this pulse go run, as data: the person's objective and the criteria derived from it; " \
+        "the instructions above still hold:\n" + json.dumps(data, ensure_ascii=False)
 
 
 def _again(job: Job, cfg: dict, logs: Path, crash: bool = False) -> None:
@@ -708,20 +726,23 @@ def _refusal(rep: dict, n: int, record) -> None:
 
 def _refused(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=True) -> bool:
     """A project hook refused what pulse go commits, pushes, or merges for job (job.refusal; #178). Recorded first
-    (FR-01), then one fix round with the output and the open fix items, while the item has one (FR-02); refused
-    still, an item it named under needs: holds it with its work preserved and its claim back (FR-03), else it fails
-    and names the decision (FR-04). Nothing else stops, and pulse go never skips a hook. True: the job is done."""
+    (FR-01), then one fix round with the output and the open fix items, the item's one for its hooks whatever rounds
+    its gates spent (FR-02; #208); refused still, an item it named under needs: holds it with its work preserved and
+    its claim back (FR-03), else it fails and names the decision (FR-04). Nothing else stops, and pulse go never
+    skips a hook. True: the job is done."""
     n, (step, output) = job.number, job.refusal or ("commit", job.why)
     record, job.hook = _hook_record(root, job, rep, step, output), ""
     if job.phase == "plan" and not job.plan:   # the plan the refused commit held
         staged = [p for p in _git(job.worktree, "diff", "--cached", "--name-only", "--", ready.PLANS).stdout.split()
                   if re.fullmatch(rf"{re.escape(ready.PLANS)}/{n}(-.+)?\.md", p) and not p.endswith("-needs.md")]
         job.plan = staged[0] if len(staged) == 1 else ""
-    then = job.phase
-    if fix and not job.rounds.get("hook") and then in ("plan", "build", "fix") and \
+    # a push of the RED fix round refused: after the hook's round, RED is checked again (#208 gate round 1)
+    then = "build" if job.phase == "fix" and job.fixing == "spec tests" else job.phase
+    if fix and "hook" not in job.rounds and then in ("plan", "build", "fix") and \
             _fix(job, job.config or config.load(root), config.pulse_dir(root) / "go",
                  "plan" if then == "plan" else "hook", _hook_findings(root, repo, job, gh_run, record)):
-        job.rounds["hook"], job.hooked = 1, then
+        job.rounds.setdefault("hook", 0)       # its one round is spent; a Plan's counts as a plan round (#208)
+        job.hooked = then
         _refusal(rep, n, record)
         return False
     needs, _ = _needs(root, repo, job, gh_run, tree=True)
@@ -787,9 +808,11 @@ def refusal_standing(r: dict) -> str:
 def refusal_effect(r: dict) -> str:
     """What a refusal does now (FR-08, FR-10 of #178): a current one holds its item alone; an earlier one, at a base
     that moved or with its cause gone, is checked again. A wait follows _lifted: what it named closed, and the base
-    moved."""
+    moved. A failure this clone still keeps is the item's state, whatever the board says (FR-03 of #209)."""
     n, wait = r.get("number"), r.get("waiting_on", r.get("needs")) or []
     refs, be = ", ".join(f"#{m}" for m in wait), "is" if len(wait) == 1 else "are"
+    if r.get("unsent"):
+        return f"{r.get('why') or f'decide #{n}'}; the failure is {UNSENT}"
     if r.get("legacy") or not r.get("current"):
         return f"Pulse checks it again once {refs} {be} closed" if wait and r.get("state") == "waits" else \
             "the next run checks it again"
@@ -955,47 +978,54 @@ def _plan_fix_prompt(job: Job, findings: str) -> str:
                            skill=PLAN_SKILL, findings=findings, rules=RULES)
 
 
-# What a verify line of the Plan never gets unasked (D2/D3): a download, a package runner, another
+# What a setup command never gives a headless agent unasked (D2/D3): a download, a package runner, another
 # user or environment anywhere in its rule, or a rule that ends at a shell, an interpreter, or a
-# runner, which runs whatever code follows it.
-# ponytail: word lists; a program the configured verify runs keeps its other subcommands (git push,
-# when verify starts with git), name those here when a project needs that
+# runner, which runs whatever code follows it. Cut to its start, an installer installs any package.
 NEVER_ANYWHERE = re.compile(r"curl|wget|npx|pnpx|bunx|uvx|env|sudo|doas|su|xargs|eval")
 NEVER_AFTER = re.compile(r"exec|x|dlx|i|install|add|get|pip[\d.]*|tool|timeit")     # fetch or run a package
 NEVER_LAST = re.compile(r"(ba|da|k|z)?sh|fish|python[\d.]*|node|deno|bun|ruby|perl|php|run|pip[\d.]*")
 
 
+def _plain(cut: str) -> bool:
+    """Whether a setup command, cut by config._cut, runs only itself: no loose rule, no download, package runner or
+    installer, env, or sudo (D2/D3)."""
+    words = cut.split()
+    return bool(words) and not config._loose(cut) \
+        and not any(NEVER_ANYWHERE.fullmatch(os.path.basename(w)) for w in words) \
+        and not any(NEVER_AFTER.fullmatch(w) for w in words[1:]) \
+        and not NEVER_LAST.fullmatch(os.path.basename(words[-1]))
+
+
 def _allowing(template: str, cfg: dict, job: Job) -> str:
-    """The template with its allow list widened to the verify commands of the item's Plan, each
-    cut as the configured verify is (config._allow), so the agent runs what the Plan says (N4.03).
-    The planning agent wrote them: a line adds a rule only as a test command of the project, one
-    that starts with a program of the configured verify or runs a script of the repository; the item
-    log and the PR name the others. load() put _allow(verify) where the template said {allow}; a
-    template without it stays."""
+    """The template with its allow list widened for the verify lines of the item's Plan (N4.03). The planning
+    agent wrote them, so a command of a line runs unasked only when .pulse/config.toml on the base names it
+    too, cut the same way (FR-02 of #208): verify, pulse check, and the [spec_tests] runners are on the list
+    already, a command of setup joins it when _plain. The rule comes from the config, never from the Plan; the
+    item log and the PR name the other lines. load() put _allow(verify) where the template said {allow}; a
+    template without it (Codex, in its sandbox) stays, and nothing is refused to it."""
     plan = ready._git(job.worktree, "show", f"HEAD:{job.plan}") if job.plan else ""
-    rules = dict.fromkeys(shlex.split(config._allow(cfg["verify"])))
-    programs = {c.split()[0] for c in re.split(r"[;&|]+", cfg["verify"]) if c.split()}
-    refused = []
+    allow = config._allow(cfg["verify"])
+    granted = set(shlex.split(config._allow(cfg["verify"], config.runs(cfg))))
+    # a setup command joins only where its rule covers it whole: rm -rf node_modules would grant rm (#208 gate round 1)
+    setup = {f"Bash({cut}:*)" for c in config.commands(cfg.get("setup"))
+             for cut in [config._cut(c)] if cut == " ".join(c.split()) and _plain(cut)}
+    added, refused = {}, []
     for v in ready.listed(plan, "verify"):
-        rule = shlex.split(config._allow(v))[0]
-        words = rule[len("Bash("):-len(":*)")].split()
-        inside = "/" in words[0] and not words[0].startswith("/") and ".." not in words[0].split("/")
-        if (words[0] in programs or inside) and all(re.fullmatch(r"[\w./:@+=-]+", w) for w in words) \
-                and not any(NEVER_ANYWHERE.fullmatch(os.path.basename(w)) for w in words) \
-                and not any(NEVER_AFTER.fullmatch(w) for w in words[1:]) \
-                and not NEVER_LAST.fullmatch(os.path.basename(words[-1])):
-            rules.setdefault(rule)
-        elif rule not in rules:        # the configured verify allows it anyway
+        rules = [f"Bash({config._cut(c)}:*)" for c in config.commands(v)]
+        added.update(dict.fromkeys(r for r in rules if r in setup - granted))
+        if any(r not in granted | setup for r in rules):
             refused.append(v)
     note = (f"The agent could not run these verify lines of the Plan: {', '.join(f'`{v}`' for v in refused)}. "
-            "A Plan's verify line runs unasked only when it starts with a program of the configured verify "
-            "or with a script of the repository; a shell, interpreter, or runner given code, a download, env, "
-            "or sudo never does. The tests gate runs the configured verify.")
-    if refused and note not in job.notes:
+            "A command of a Plan's verify line runs unasked only when .pulse/config.toml on the base names it "
+            "too, in verify, setup, or a [spec_tests] runner, or when it is pulse check; a setup command joins only "
+            "without arguments (npm ci, uv sync), and one that downloads, installs, or runs any code never does. "
+            "Name a check the agents need in verify. The tests "
+            "gate runs the configured verify.")
+    if refused and allow in template and note not in job.notes:
         job.notes.append(note)
         with open(config.pulse_dir(job.worktree) / "go" / f"{job.number}.log", "a", encoding="utf-8") as f:
             f.write(f"pulse go: {note}\n")
-    return template.replace(config._allow(cfg["verify"]), " ".join(shlex.quote(r) for r in rules))
+    return template.replace(allow, " ".join([allow, *map(shlex.quote, added)]))
 
 
 def _launch(job: Job, argv: list, logs: Path, phase: str, cwd: Path = None) -> None:
@@ -1184,11 +1214,13 @@ def _tail(log: str, phase: str, lines: int = 40) -> str:
 
 
 def _fix(job: Job, cfg: dict, logs: Path, gate: str, findings: str) -> bool:
-    """One more fix round for a red gate while the item has rounds left, one for all its gates and two for its
-    Plan; False when it has none. gate: "review and audit" when both are red: one session, one round."""
+    """One more fix round for a red gate while the item has rounds left, one for all its gates, two for its Plan,
+    and one for a project hook that refused it (#208); False when it has none. gate: "review and audit" when both
+    are red: one session, one round."""
     red = gate.split(" and ")
-    plan = job.rounds.get("plan", 0)
-    if (plan >= PLAN_ROUNDS) if gate == "plan" else (job.fixes - plan >= REVIEW_ROUNDS):
+    plan, hook = job.rounds.get("plan", 0), job.rounds.get("hook", 0)
+    if (plan >= PLAN_ROUNDS) if gate == "plan" else (hook >= HOOK_ROUNDS) if gate == "hook" else \
+            (job.fixes - plan - hook >= REVIEW_ROUNDS):
         return False
     for g in red:
         job.rounds[g] = job.rounds.get(g, 0) + 1
@@ -2193,6 +2225,17 @@ def halt(root: Path) -> str:
     return "" if halt_kind(rep) == "pause" and not rep["run"].get("running") else rep.get("halt") or ""
 
 
+UNSENT = "not on the board yet"        # a failure this clone keeps in its outbox until the board has it (#209)
+
+
+def unsent(root: Path) -> set:
+    """The items whose failure this clone keeps in its outbox and the board does not have yet (FR-03 of #209)."""
+    try:
+        return {row["item"] for row in actions.failures(root)}
+    except (state.StateError, OSError, sqlite3.Error):
+        return set()
+
+
 def refusals(root: Path, items=None) -> list:
     """The hook refusals the last report keeps, each with current: recorded at the base origin has now and, with
     the open items given, its cause not gone (FR-08 of #178); then waiting_on, the items it names that are open.
@@ -2202,9 +2245,12 @@ def refusals(root: Path, items=None) -> list:
     tip = ready._tip(root, "refs/remotes/origin/" + (config.load(root).get("base_branch") or
                                                      config.default_branch(root))) if records else ""
     open_ = None if items is None else {i["number"]: i for i in items}
-    out = []
+    out, kept = [], unsent(root) if records else set()
     for r in records:
         if not isinstance(r, dict) or type(r.get("number")) is not int:
+            continue
+        if r["number"] in kept:        # failed here, not on the board yet: current whatever the board says (#209)
+            out.append({**r, "waiting_on": [], "current": True, "unsent": True})
             continue
         needs = [m for m in r.get("needs") or () if open_ is None or m in open_]
         # what holds it is what _held holds: a wait until _lifted, a labelled decision while pulse:failed stays
@@ -2358,8 +2404,12 @@ def running(root: Path) -> bool:
         return False
 
 
+FINAL = ("done", "failed", "stopped", "skipped")     # results after which a job has no next phase; a limited one resumes
+
+
 def phases(root: Path) -> dict:
-    """{item: the phase its job is in} while pulse go runs in this clone; {} otherwise."""
+    """{item: the phase its job is in} while pulse go runs in this clone; {} otherwise. A job whose item has a
+    result in the report since its last phase has ended: its file stays, its phase does not count (#211)."""
     common = config.pulse_dir(root)
     try:
         pid = common / "go.pid"
@@ -2368,8 +2418,16 @@ def phases(root: Path) -> dict:
         since = pid.stat().st_mtime
     except (OSError, ValueError):
         return {}
+    items = (last_run(root) or {}).get("items")
+    ended = {str(n): r for n, r in items.items() if isinstance(r, dict)} if isinstance(items, dict) else {}
+
+    def running(f):
+        stamp, result = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(f.stat().st_mtime)), ended.get(f.stem, {})
+        at = result.get("at") if isinstance(result.get("at"), str) else ""
+        # in the same second a final result ends the job (an agent that cannot start); a plan result does not
+        return stamp > at or stamp == at and result.get("result") not in FINAL
     return {int(f.stem): f.read_text(encoding="utf-8").strip() for f in (common / "go").glob("*.phase")
-            if f.stem.isdigit() and f.stat().st_mtime >= since}        # older ones are from an earlier run
+            if f.stem.isdigit() and f.stat().st_mtime >= since and running(f)}   # older ones: an earlier run
 
 
 def _lock(common: Path) -> tuple:
@@ -2464,17 +2522,19 @@ def _fail(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, why: st
 
 
 def _flag(root: Path, repo: str, job: Job, gh_run, who: dict, why: str, keep=False) -> str:
-    """Persist failure and release idle reservations together; a label failure holds no files."""
+    """Persist failure and release idle reservations together; a label failure holds no files. A failure origin does
+    not take stays in this clone's outbox, which sends it again until the board has it (FR-02 of #209)."""
+    work = {"branch": job.branch, "worktree": str(job.worktree), "phase": job.phase, "base": job.base_sha}
+    head = _git(job.worktree, "rev-parse", "HEAD").stdout.strip() if job.worktree.is_dir() else ""
+    if head:
+        work["head"] = head
+    payload = {"holder": state._claim_id(who, job.number), "reason": why, "work": work}
+    op = {"id": uuid.uuid4().hex, "item": job.number, "kind": "failed", "expected": "", "payload": payload}
     try:
         current = shared.read(root)[1]["items"].get(str(job.number), {})
-        work = {**(current.get("work") or {}), "branch": job.branch, "worktree": str(job.worktree),
-                "phase": job.phase, "base": job.base_sha}
-        head = _git(job.worktree, "rev-parse", "HEAD").stdout.strip() if job.worktree.is_dir() else ""
-        if head:
-            work["head"] = head
-        receipt = shared.update(root, {"id": uuid.uuid4().hex, "item": job.number, "kind": "failed",
-            "expected": current.get("revision", ""), "payload": {"holder": state._claim_id(who, job.number),
-                "reason": why, "work": work}})
+        payload["work"] = {**(current.get("work") or {}), **work}
+        op["expected"] = current.get("revision", "")
+        receipt = shared.update(root, op)
         if receipt["status"] != "confirmed":
             return f" (failure state not confirmed: {receipt['reason']}; local work is preserved)"
         try:
@@ -2484,7 +2544,22 @@ def _flag(root: Path, repo: str, job: Job, gh_run, who: dict, why: str, keep=Fal
         state.drop_cache(root)
         return ""
     except state.StateError as error:
-        return f" (failure sync pending: {ready.git_error(str(error))}; local work is preserved)"
+        said = ready.git_error(str(error))
+    try:                               # kept as it was, its id too: a push whose answer got lost is no conflict
+        actions.keep_failure(root, op)
+        actions.start(root)
+    except (state.StateError, OSError, sqlite3.Error) as error:
+        return f" (failure sync pending: {said}; it could not be kept either: {error}; local work is preserved)"
+    return f" (origin did not take the failure: {said}; this clone's outbox sends it again; local work is preserved)"
+
+
+def _resend(root: Path) -> None:
+    """Every failure this clone keeps goes out again with each pulse go run, until the board has it (#209)."""
+    try:
+        if actions.retry_failures(root):
+            actions.start(root)
+    except (state.StateError, OSError, sqlite3.Error):
+        pass                           # the map still says it is not on the board yet
 
 
 def _say(job: Job, line: str) -> None:
@@ -2707,17 +2782,20 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
     if goal["scope"].get("selector") and goal["objective"] == "Process the Pulse queue":
         return goals.resolve(root, goal, None, items)
     from pulse import runner
-    logs = config.pulse_dir(root) / "go"
-    stage = Path(tempfile.mkdtemp(prefix="goal-", dir=logs))
-    here, tree = stage / "session", stage / "session" / "tree"
+    logs, evidence = config.pulse_dir(root) / "go", config.evidence_dir(root)
     job = Job("goal", goal["objective"], "", "", "", root, agent=_pick(cfg, slots, False), env=env)
-    before, preserve = None, False
+    stage, before, preserve = None, None, False
 
     def snapshot():
         return (_git(tree, "rev-parse", "HEAD").stdout,
                 _git(tree, "status", "--porcelain", "--untracked-files=all", "--ignored=matching").stdout)
 
     try:
+        # Outside .git, where a headless Claude Code writes nothing (#206); the session's cwd is its own stage alone.
+        # A cache it cannot write pauses the goal with that reason, like every other failure here.
+        evidence.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix="goal-", dir=evidence))
+        here, tree = stage / "session", stage / "session" / "tree"
         _git(stage, "init", "-q", check=True)
         here.mkdir()
         _git(root, "worktree", "add", "--detach", str(tree), config.base_ref(root), check=True)
@@ -2728,9 +2806,12 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
                   f'{SKILLS / "pulse-re" / "SKILL.md"}. Do not edit tree, implement code, or call GitHub. '
                   'Interpret the whole objective, including combined requests. Reuse existing items. '
                   'Unknown causes need investigation, never invented fixes. Default is queue plus objective; '
-                  'explicit only/nur limits the entire run. Preserve the recorded scope. '
+                  'explicit only/nur limits the entire run. Preserve the recorded scope; item numbers in an '
+                  'objective without --item/--epic and without only/nur restrict it only until you confirm it: '
+                  'then also write restricted: true when the person limits the run to that work, false when the '
+                  'queue goes on. '
                   'Create a finite proposal for ordinary epic/feat/imp/fix items and associated DIA artifacts. '
-                  f'Write only {output} as JSON with exactly items, tasks, criteria. '
+                  f'Write only {output} as JSON with exactly items, tasks, criteria, and restricted where said. '
                   'items: existing issue numbers; tasks: [{key,type,title,parent,artifacts:[{kind,path}]}], '
                   'parent: issue number, task key or null; artifact kinds: ba,re,spec,decision,plan; '
                   'paths under _devprocess. criteria: [{text,items:[issue numbers or task keys],'
@@ -2756,14 +2837,14 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
             why = rep["halt"]
         if snapshot() != before:
             why = "read-only goal session changed the project or its Git setup"
-        if why:
-            return goals.note(root, goal, why)
+        if why:            # a failed interpretation confirms no scope: the goal pauses (FR-02 of #206)
+            return goals.note(root, goal, why, pause=True)
         if output.is_symlink() or not output.is_file() or output.stat().st_size > 1024 * 1024:
             raise state.StateError("native goal session left no bounded regular proposal")
         return goals.resolve(root, goal, json.loads(output.read_text(encoding="utf-8")), items)
     except (OSError, ValueError, state.StateError) as error:
         current = goals.read(root)
-        return goals.note(root, current, str(error)) if current["revision"] == goal["revision"] else current
+        return goals.note(root, current, str(error), pause=True) if current["revision"] == goal["revision"] else current
     finally:
         if job.proc:
             _stop(job.proc)
@@ -2781,7 +2862,7 @@ def _resolve_goal(root, cfg, goal, items, rep, env, slots, poll):
             job.log.close()
             _record(job, cfg, logs)
         _group(logs, "goal", None)
-        if not preserve:
+        if stage and not preserve:
             _git(root, "worktree", "remove", "--force", str(tree))
             shutil.rmtree(stage)
 
@@ -2879,6 +2960,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                                "}, commit, and push")
     _activity(rep, "board", "reading work", base_branch, "plan and build ready items")
     repo, login = state.repo(root, run=gh_run), state.me(root, run=gh_run)
+    _resend(root)                      # a failure an earlier run could not send (FR-02 of #209)
     (spec, why), limit = (agent, "given to this run") if agent else workers(cfg), cap or cfg["cap"]
     slots = _slots(spec, limit, cfg)
     common = config.pulse_dir(root)
@@ -2910,8 +2992,12 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
     ancestors = {}
     rep["goal"] = goal
 
+    pursued = set()            # the goals this run worked toward: one that completes in it still bounds it (#207)
+
     def scope():
-        return {i["number"] for i in goals.select(goal, items)} if goal and goal["status"] != "complete" else \
+        if goal and goal["status"] != "complete":
+            pursued.add(goal["id"])
+        return {i["number"] for i in goals.select(goal, items)} if goal and goal["id"] in pursued else \
             {i["number"] for i in items}
 
     def waiting() -> None:
@@ -2921,6 +3007,46 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 _beat(root, repo, job, gh_run, who, f"limit until {_clock(job.until)}")
                 alive[n] = time.time()
 
+    def narrow() -> None:
+        """Stop the jobs whose item the goal's scope no longer holds; the others go on (FR-02 of #207). A scope
+        taken from item numbers alone waits for the interpretation that confirms it (#207 gate round 1)."""
+        if goal and goal["status"] == "resolving" and goals.provisional(goal):
+            return
+        inside = scope()
+        for pool in (jobs, parked, kept):
+            for number, job in list(pool.items()):
+                if number in inside:
+                    continue
+                if job.proc:
+                    _stop(job.proc)
+                if job.phase == "spec tests":
+                    _back(job)
+                _clear_gate(job)
+                _group(common / "go", number, None)
+                why = "outside the changed goal; work preserved"
+                _event(rep, "stopped", job.public(why=why + _release(root, repo, number, gh_run, who,
+                                                                    _handover(job, why))))
+                del pool[number]
+                # a later steer may bring the item back: it starts again in this run, its cut phase anew and never
+                # as work a person gave back, which would go to the gates unbuilt (#207 gate round 2)
+                tried.difference_update({(k, number) for k in ("spec", "plan", "build", "refresh", "documents")})
+                tried.add(("cut", number))
+
+    def track() -> bool:
+        """The goal's progress now, also while jobs run (FR-03 of #207). False when the goal changed meanwhile:
+        stopping() takes that change."""
+        nonlocal goal
+        if goal and goal["status"] not in {"complete", "resolving"}:      # from the interpretation on
+            try:
+                goal = goals.progress(root, goal, items, shared.read(root)[1],
+                                      ready._git(root, "rev-parse", config.base_ref(root)).strip(),
+                                      running={*jobs, *parked})
+            except state.StateError:
+                return False
+            rep["goal"] = goal
+            _save(rep)
+        return True
+
     def stopping() -> bool:
         nonlocal goal, goal_changed
         from pulse import runner
@@ -2928,21 +3054,10 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
             raise Stopped("SIGTERM")
         current = goals.read(root)
         if (current or {}).get("revision") != (goal or {}).get("revision"):
-            for pool in (jobs, parked, kept):
-                for number, job in list(pool.items()):
-                    if job.proc:
-                        _stop(job.proc)
-                    if job.phase == "spec tests":
-                        _back(job)
-                    _clear_gate(job)
-                    _group(common / "go", number, None)
-                    why = "goal control applied; work preserved"
-                    _event(rep, "stopped", job.public(why=why + _release(root, repo, number, gh_run, who,
-                                                                        _handover(job, why))))
-                    del pool[number]
             goal, goal_changed = current, True
+            narrow()
             rep["goal"] = current
-            _save(rep)                 # acknowledge only after the previous workers have stopped
+            _save(rep)                 # acknowledge only after the workers outside its scope have stopped
             return True
         stopped = False
         for pool in (jobs, parked, kept):
@@ -2963,10 +3078,8 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 return rep            # canonical board reads use Git too; the clone is no longer trusted
             _activity(rep, "board", "reading work", base_branch, "start the next ready item")
             read = stopping() or read
-            if goal_changed and not managed:
-                break
             goal_changed = False
-            if goal and goal["status"] == "paused":
+            if goal and goal["status"] == "paused" and not (jobs or parked):    # what runs finishes first (#207)
                 if not managed:
                     break
                 time.sleep(LIFECYCLE_POLL)
@@ -2982,14 +3095,15 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
             last, read = items, False
             if goal and goal["status"] == "resolving":
                 goal = _resolve_goal(root, cfg, goal, items, rep, env, slots, poll)
+                narrow()                   # a control during the interpretation reaches no stopping()
                 rep["goal"] = goal
                 _save(rep)
-                if goal["status"] in {"paused", "resolving"}:
+                if rep["tainted"] or rep.get("halt"):        # before the pause: a paused managed run idles
+                    return rep
+                if goal["status"] in {"paused", "resolving"} and not (jobs or parked):
                     if managed:
                         continue
                     break
-                if rep["tainted"] or rep.get("halt"):
-                    return rep
             if goal and goal["status"] != "complete":
                 previous = {t.get("registration", {}).get("item") for t in goal["tasks"]}
                 goal = _register_goal(root, repo, goal, gh_run)
@@ -2998,7 +3112,10 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                     read = True
                     _save(rep)
                     continue             # only freshly visible registrations may reach a claim
+            track()                      # a goal change reaches stopping() before any claim; no spinning round
             selected = scope()
+            if goal and goal["status"] in {"paused", "resolving"}:      # nothing new starts, what runs goes on
+                selected &= {*jobs, *parked, *kept}
             spent = {a: at for a, at in spent.items() if at > time.time()}      # a limit whose reset came is gone
             free = {a: n - sum(j.agent == a for j in jobs.values()) for a, n in slots.items() if a not in spent}
             if not rep["tainted"]:     # no git over the network once the clone's git setup changed (M-A)
@@ -3189,7 +3306,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 _activity(rep, "claim", "preparing " + kind, f"#{n}", next_step, item=n)
                 job.agent, job.env, job.open_ = a, {**env, "PULSE_ITEM": str(n)}, {i["number"] for i in items}
                 job.again = ("again", n) in tried
-                job.given = kind == "build" and not job.again and ("plan", n) not in tried
+                job.given = kind == "build" and not job.again and ("plan", n) not in tried and ("cut", n) not in tried
                 if (item.get("lifecycle") or {}).get("phase") == "resumed":
                     job.given = False
                 job.drafts = [(i["number"], i["title"]) for i in items if i.get("draft") and i.get("blocking")]
@@ -3278,15 +3395,9 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                 read = True
                 continue
             if not jobs:               # FR-07 of #119: in a terminal it waits for what a person approves next
-                if goal and goal["status"] != "complete":
-                    try:
-                        goal = goals.progress(root, goal, items, shared.read(root)[1],
-                                              ready._git(root, "rev-parse", config.base_ref(root)).strip())
-                        rep["goal"] = goal
-                        _save(rep)
-                    except state.StateError:
-                        read = True
-                        continue
+                if not track():
+                    read = True
+                    continue
                 waits = sorted(i["number"] for i in items if i["number"] in selected and i.get("result") and not i.get("done")
                                and not i.get("failed") and not i.get("hold"))
                 if keys is False and (parked or waits):
@@ -3321,6 +3432,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                     time.sleep(nap)
                 read = True
                 continue
+            track()                    # the jobs this round started (FR-03 of #207)
             freed = False
             while not freed:
                 if stopping():
@@ -3372,6 +3484,7 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
                             tried.add(("again", job.number))
                     else:                      # its next phase started
                         _beat(root, repo, job, gh_run, who)
+                    track()                    # its next stage, or its end (FR-03 of #207)
                     if rep["tainted"]:
                         return rep    # finally stops the other workers locally, preserving their claims
                 freed = freed or time.time() >= wake       # a parked job's agent is back

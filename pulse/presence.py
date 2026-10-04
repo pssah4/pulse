@@ -14,6 +14,7 @@ from pathlib import Path
 from pulse import config
 
 EXPIRE = 30 * 60
+PARALLEL = 1                    # seconds: a tool call that starts sooner after the last event runs beside a waiting one
 EVENTS = {"SessionStart", "SubagentStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
           "PostToolUse", "Stop", "SubagentStop", "SessionEnd"}
 IDENT = re.compile(r"[\w.:-]{1,160}\Z", re.ASCII)
@@ -49,8 +50,9 @@ def _location(root, env):
     if source is None:
         source = next((common.parent / d / "config.toml" for d in (".pulse", ".dia")
                        if (common.parent / d / "config.toml").is_file()), None)
-    if source is None:
-        return None
+    if source is None:        # a gate or goal session of pulse go: a repository of its own inside the clone (#213)
+        outer = config.find_root(root.parent) if env.get("PULSE_HOLDER") else None
+        return _location(outer, {"PULSE_PRESENCE": env.get("PULSE_PRESENCE")}) if outer else None
     data = config._parse(_small(source), strict=True)
     mode = config.DIA_MODES.get(data.get("mode"), "on") if source.parent.name == ".dia" else data.get("mode")
     return (root, gitdir, common / "pulse" / "presence") if mode == "on" else None
@@ -151,36 +153,47 @@ def _update(payload, env, now, event, session, agent, who, root, gitdir, directo
         return                                # a late parallel tool result cannot revive an ended actor
     tool = _text(payload.get("tool_name"), 100)
     tool = tool if IDENT.fullmatch(tool) else ""
+    try:
+        holder = json.loads(env.get("PULSE_HOLDER") or "null")
+    except ValueError:
+        holder = None
+    holder = _text(holder.get("id"), 160) if isinstance(holder, dict) else ""
+    stamp = time.time() if now is None else now
     waiting = previous.get("waiting", {})
     call = _text(payload.get("tool_use_id"), 160) or "tool:" + tool
-    if event == "PermissionRequest" or tool == "AskUserQuestion" and event == "PreToolUse":
+    if holder:
+        waiting = {}                           # an agent of pulse go runs headless: nobody answers it (#210)
+    elif event == "PermissionRequest" or tool == "AskUserQuestion" and event == "PreToolUse":
         if len(waiting) < 16:
             waiting[call] = tool
         else:
             waiting["overflow"] = ""           # stays waiting until Stop or the next prompt
     elif event == "PostToolUse":
         waiting.pop(call, None)                # another parallel tool never answers this permission
-    elif event in {"UserPromptSubmit", "Stop", "SessionStart"}:
+        # Claude Code's and Codex's PermissionRequest name no tool_use_id (#210). ponytail: a result of another call
+        # of the same tool in the same turn ends the wait too; key by a digest of tool_input when that matters
+        waiting.pop("tool:" + tool, None)
+    elif event in {"UserPromptSubmit", "Stop", "SessionStart"} or event == "PreToolUse" and \
+            env.get("CLAUDE_CODE_SESSION_ATTENDED") != "1" and stamp - previous.get("last", stamp) >= PARALLEL:
+        # a later call of a session nobody watches went on without the answer; an attended Claude Code session
+        # streams the next safe call beside an open prompt, so only its result or the person ends that (#210)
         waiting = {}
     status = "ended" if event in {"SessionEnd", "SubagentStop"} else \
         "waiting" if waiting else "idle" if event in {"Stop", "SessionStart"} else "working"
     kind = harness(payload, env, previous.get("harness", "claude"))
-    try:
-        holder = json.loads(env.get("PULSE_HOLDER") or "null")
-    except ValueError:
-        holder = None
-    holder = _text(holder.get("id"), 160) if isinstance(holder, dict) else ""
+    item = (env.get("PULSE_ITEM") or "") if holder else ""       # the item pulse go gave its agent (#213)
     head = _small(gitdir / "HEAD").strip()
     row = {"id": who, "parent": session if agent else previous.get("parent", ""),
            "cwd": str(root), "branch": head[16:] if head.startswith("ref: refs/heads/") else "",
-           "harness": kind, "holder": holder,
+           "harness": kind, "holder": holder, "item": item if re.fullmatch(r"[0-9]{1,9}", item) else "",
            # an attended Claude Code session can get the person's lever grant in the map (#197 FR-03, FR-06)
            "attended": kind == "claude" and not holder and env.get("CLAUDE_CODE_SESSION_ATTENDED") == "1",
            "waiting": waiting,
            "state": status, "tool": next(iter(waiting.values())) if waiting else
            tool if event in {"PreToolUse", "PermissionRequest"} else "",
            "target": _target(tool, payload.get("tool_input")) if event in {"PreToolUse", "PermissionRequest"} else "",
-           "last": time.time() if now is None else now}
+           "denied": tool if holder and event == "PermissionRequest" else "",
+           "last": stamp}
     temporary = "." + os.urandom(8).hex()
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     try:

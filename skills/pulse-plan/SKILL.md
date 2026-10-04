@@ -89,10 +89,12 @@ it without asking. It carries:
 - **files:** the union of every file the tasks touch. `pulse go` keeps
   plans with overlapping files from running at the same time.
 - **verify:** the build and test commands that prove the item. The
-  agents of `pulse go` run a line only when it starts with a program of
-  the configured `verify` or with a script of the repository (`bin/pulse
-  check`); a shell or interpreter given code, a download, `npx`, `env`,
-  or `sudo` is left out, and the item log names it.
+  agents of `pulse go` run a command of a line only when
+  `.pulse/config.toml` on the base names it too (in `verify`, `setup`
+  without arguments, or a `[spec_tests]` runner) or it is `pulse check`;
+  the item log names
+  every other line. A check the agents need, such as a typecheck, goes
+  into the configured `verify`.
 - **Wave** per task: tasks with the same wave number touch disjoint files
   and do not need each other's output, so they can run at once. A task
   that needs another one's result goes into a later wave.

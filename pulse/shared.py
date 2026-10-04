@@ -11,9 +11,10 @@ import posixpath
 import re
 import subprocess
 import unicodedata
+import uuid
 
 from pulse import ready
-from pulse.state import StateError
+from pulse.state import StateError, clone_prefix
 
 REF = "refs/heads/pulse-state"
 RETRIES = 6
@@ -493,6 +494,35 @@ def publish(root, operation, branch, head, expected_head):
     raise StateError("\n".join(filter(None, (pushed.stdout.strip(), pushed.stderr.strip()))) or reason)
 
 
+def _push_state(root, commit):
+    """Push one state commit to pulse-state alone, without the project's pre-push hooks: they judge a branch's code,
+    and pulse-state carries only Pulse's state (ADR-14). The one refspec is built here, so no push that also names a
+    code branch skips them; publish pushes those, through the hooks."""
+    if not _sha(commit):
+        raise StateError("invalid shared state commit")
+    return ready.net_git(root, "push", "--no-verify", "--porcelain", "origin", f"{commit}:{REF}")
+
+
+def send_failure(root, operation):
+    """Send a failure pulse go kept (#209): True once the board has it, from this send or one whose answer got lost,
+    or once its claim generation is gone, or the claim is no run of this clone's, and the failure no longer applies;
+    False while a competing write wins. A fact of the claim its holder still holds: the item revision it observed may
+    have moved on. Transport errors raise."""
+    _operation(operation)
+    if operation["kind"] != "failed":
+        raise StateError("only a kept failure is sent again")
+    _, snapshot = read(root)
+    current = snapshot["items"].get(str(operation["item"]), _empty())
+    claim = current.get("claim") or {}
+    # a landed failure clears the claim, so a lost answer ends here too (#209 gate round 2)
+    if claim.get("holder") != operation["payload"].get("holder") or \
+            not str(claim.get("session") or "").startswith(clone_prefix(root)):
+        return True
+    # its id on the board with the claim still held is a recorded conflict, no failure: send it anew
+    fresh = {"id": uuid.uuid4().hex} if operation["id"] in snapshot["operations"] else {}
+    return update(root, {**operation, "expected": current["revision"], **fresh})["status"] == "confirmed"
+
+
 def update(root, operation):
     """Apply an operation once; stale state is a persisted conflict, transport errors raise."""
     _operation(operation)
@@ -502,7 +532,7 @@ def update(root, operation):
         if not changed:
             return {**result, "revision": revision}
         commit = _commit(root, snapshot, revision, operation)
-        push = ready.net_git(root, "push", "--porcelain", "origin", f"{commit}:{REF}")
+        push = _push_state(root, commit)
         if push.returncode == 0:
             return {**result, "revision": commit}
         said = push.stderr.strip() or push.stdout.strip() or "shared state push failed"

@@ -333,7 +333,8 @@ records, stubs without an open item). It must report nothing.
 1. Report: the audit file, findings resolved, findings deferred with
    their item numbers.
 2. Commit `docs(audit): <scope> <date>` with `Refs:` for the item and
-   the fix items, on the branch you audit or a docs branch. Push after
+   the fix items, on the item branch you audit, else on a docs branch,
+   never on the base or default branch. Push after
    every commit. The body names unresolved P0/P1 findings and why,
    architectural concerns that need redesign rather than patching (for
    a future Plan), and the release verdict: green, yellow, or

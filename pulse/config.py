@@ -37,7 +37,7 @@ EXECUTABLE = ("setup", "setup_timeout", "verify", "protected", "base_branch", "s
 DIA_MODES = {"off": "off", "git-only": "on", "github-sync": "on"}
 # How `pulse go` starts one headless agent per item, cwd = the item's worktree.
 # Headless runs keep the user's permission rules and ask nobody: acceptEdits lets edits through,
-# {allow} what the build runs (verify and git; a flag must follow the list, or it takes the prompt),
+# {allow} what the build runs (verify, git, pulse check; a flag must follow the list, or it takes the prompt),
 # and {gitdir} opens the shared git dir, which Codex's sandbox keeps read-only, so a worktree can
 # commit. load() fills both, in any template.
 # Both print JSON, so pulse go can read what each phase used (.git/pulse/usage.jsonl).
@@ -180,22 +180,42 @@ def evidence_dir(root: Path) -> Path:
 
 
 def _cut(command) -> str:
-    """A command up to its first option, path, or placeholder argument: what a rule of it allows."""
-    # ponytail: a runner without subcommands keeps its plain arguments (pytest tests), and a command that
-    # chains others (a && b) gets a rule for its start only; parse per runner when a project needs that
+    """A command up to its first option, path, number, placeholder, or shell sign: what a rule of it allows."""
+    # ponytail: a runner without subcommands keeps its plain arguments (pytest tests); parse per runner when a
+    # project needs that
     words = str(command or "").split()
     if words[1:2] == ["-m"]:
         return " ".join(words[:3])                           # python3 -m pytest
     # uv run pytest -q; go test ./... -> go test; npx playwright test {files} -> npx playwright test
-    return " ".join(words[:1] + list(itertools.takewhile(lambda w: not re.match(r"[-&|;]|.*[/.{]", w), words[1:])))
+    return " ".join(words[:1] + list(itertools.takewhile(lambda w: not re.match(r"[-&|;<>()$`]|\d+$|.*[/.{]", w),
+                                                         words[1:])))
+
+
+def commands(line) -> list:
+    """The commands a shell line runs one after another (a && b; c || d), split where no quote holds the sign; a
+    pipe goes on as one command, which _cut ends at the pipe. A line with an open quote is one command (#208)."""
+    lex = shlex.shlex(str(line or ""), posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    out = [[]]
+    try:
+        for token in lex:
+            if token in ("&&", "||", ";", "&"):
+                out.append([])
+            else:
+                out[-1].append(token)
+    except ValueError:
+        return [str(line)]
+    return [" ".join(c) for c in out if c]
 
 
 def _allow(verify, runs=()) -> str:
-    """What a headless Claude runs unasked: verify and each runner of [spec_tests] (#119) cut by _cut, and git.
-    _allow(verify) starts _allow(verify, runs), so a template's allow list widens in place."""
-    cmds = [c for c in [_cut(verify)] if c] + [f"git {g}" for g in ("add", "commit", "status", "diff", "log")]
-    cmds += [c for c in map(_cut, runs) if c and not _loose(c)]      # the tests gate still runs the others
-    return " ".join(shlex.quote(f"Bash({c}:*)") for c in dict.fromkeys(cmds))
+    """What a headless Claude runs unasked: each command of verify (#208) and each runner of [spec_tests] (#119) cut by
+    _cut, but a loose one, then git and pulse check, which only reads (FR-03 of #208). _allow(verify) starts
+    _allow(verify, runs), so a template's allow list widens in place."""
+    cmds = [c for c in map(_cut, commands(verify)) if c and not _loose(c)]
+    cmds += [f"git {g}" for g in ("add", "commit", "status", "diff", "log")] + ["pulse check"]
+    cmds += [c for c in (_cut(c) for r in runs for c in commands(r)) if c and not _loose(c)]   # the tests gate still
+    return " ".join(shlex.quote(f"Bash({c}:*)") for c in dict.fromkeys(cmds))                 # runs the others
 
 
 # A rule that ends at a shell or an interpreter runs whatever code follows it, env any program: gh too (M2 of #119).
@@ -203,9 +223,12 @@ INTERPRETER = re.compile(r"(ba|da|k|z)?sh|fish|python[\d.]*|node|deno|bun|ruby|p
 
 
 def _loose(rule: str) -> bool:
-    """Whether a runner's rule would let a headless Claude run any code: it ends at an interpreter or names env."""
+    """Whether a rule from the config would let a headless Claude run more than the configured command: it ends at an
+    interpreter, names env, has a shell sign in a word, is git without a subcommand, or runs gh or pulse, whose levers
+    are the person's; pulse check has its own rule (FR-06 of #208)."""
     words = [os.path.basename(w) for w in rule.split()]
-    return INTERPRETER.fullmatch(words[-1]) is not None or "env" in words
+    return INTERPRETER.fullmatch(words[-1]) is not None or "env" in words or words == ["git"] or \
+        words[0] in ("gh", "pulse") or not all(re.fullmatch(r"[\w./:@+=-]+", w) for w in rule.split())
 
 
 def runs(cfg: dict) -> list:

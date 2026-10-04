@@ -55,8 +55,28 @@ def _selector(value):
     return dict(value)
 
 
-def _scope(text, selector=None, previous=None):
-    restricted = bool(re.search(r"\b(nur|only|ausschließlich|exclusively)\b", text, re.I))
+RESTRICTS = re.compile(r"\b(nur|only|ausschließlich|exclusively)\b", re.I)
+
+
+def provisional(goal):
+    """Whether the goal's restriction comes from item numbers alone: it holds only until an interpretation is
+    confirmed, which then decides whether the rest of the queue goes on (FR-04 of #206)."""
+    scope = goal["scope"]
+    return scope["mode"] == "restricted" and not scope.get("selector") and not RESTRICTS.search(goal["objective"])
+
+
+def _scope(text, selector=None, previous=None, explicit=True):
+    if previous and previous.get("selector") and selector is None:
+        return copy.deepcopy(previous)       # --item or --epic wins over every steer, "only" or not (#222)
+    restricted = bool(RESTRICTS.search(text))
+    # #580 in the text: those items until the interpretation confirms its own; an epic's number is no item (#206)
+    items = sorted({int(n) for n in re.findall(r"(?<![\w#&])#([1-9][0-9]*)\b",
+                                               re.sub(r"\bepic[\s-]*#?[0-9]+", "", text, flags=re.I))})
+    named = previous.get("items") if previous and previous["mode"] == "restricted" else None
+    if named and restricted and selector is None and explicit:
+        kept = copy.deepcopy(previous)       # an "only" steer on named items narrows them, never widens (#222)
+        kept["items"] = sorted(set(named) & set(items)) or kept["items"]
+        return kept
     epic = re.search(r"\bepic[\s-]*(#?[0-9]+)\b", text, re.I) if restricted else None
     if selector is None and epic:
         name = epic.group(1)
@@ -64,8 +84,10 @@ def _scope(text, selector=None, previous=None):
     if selector is not None:
         return {"mode": "restricted", "selector": _selector(selector), "items": []}
     if previous and previous["mode"] == "restricted" and not restricted:
-        return copy.deepcopy(previous)
-    return {"mode": "restricted" if restricted else "additive", "selector": None, "items": []}
+        kept = copy.deepcopy(previous)       # a steer like "also #7" adds its items to the restriction
+        kept["items"] = sorted(set(kept["items"]) | set(items))
+        return kept
+    return {"mode": "restricted" if restricted or items else "additive", "selector": None, "items": items}
 
 
 def submit(root, objective=None, selector=None, expected=None):
@@ -88,8 +110,9 @@ def control(root, action, expected, text=None):
             raise state.StateError("no goal or invalid goal control")
         if action == "steer":
             addition = _text(text)
+            explicit = not provisional(goal)     # "#1 bauen" restricts only until the person says "nur" (#222)
             goal["objective"] = _text(goal["objective"] + "\n" + addition)
-            goal["scope"] = _scope(addition, previous=goal["scope"])
+            goal["scope"] = _scope(addition, previous=goal["scope"], explicit=explicit)
             goal.update(status="resolving", criteria=[], reason="")
         else:
             goal["status"] = "paused" if action == "pause" else "active" if goal["criteria"] else "resolving"
@@ -97,9 +120,9 @@ def control(root, action, expected, text=None):
     return _edit(root, change, expected)
 
 
-def note(root, goal, why):
+def note(root, goal, why, pause=False):
     def change(current):
-        current.update(status="paused" if current["status"] == "paused" else "waiting", reason=_text(why))
+        current.update(status="paused" if pause or current["status"] == "paused" else "waiting", reason=_text(why))
         return current
     return _edit(root, change, goal["revision"], goal["id"])
 
@@ -153,12 +176,22 @@ def resolve(root, goal, proposal, items):
 
 
 def _resolve(root, goal, proposal, items):
+    if isinstance(proposal, dict) and "restricted" in proposal:     # any proposal may answer it (#206)
+        proposal = dict(proposal)
+        only = proposal.pop("restricted")
+        if type(only) is not bool:
+            raise state.StateError("restricted must be true or false")
+        if provisional(goal) and not only:       # only item numbers restricted it: the queue goes on
+            goal = {**goal, "scope": {"mode": "additive", "selector": None, "items": []}}
     resolved = copy.deepcopy(goal)
     selected = select(goal, items)
     numbers = {row["number"] for row in items} | set(goal["items"])
     allowed = {row["number"] for row in selected}
     finite = goal["scope"]["mode"] == "restricted" and not goal["scope"].get("selector")
+    named = set(goal["scope"]["items"]) if finite and not provisional(goal) else set()
     if finite and isinstance(proposal, dict) and isinstance(proposal.get("items"), list):
+        if named and not set(proposal["items"]) <= named:      # "nur #5 und #6" never becomes #7 by a proposal
+            raise state.StateError("the proposal widens the goal's explicit restriction")
         allowed = set(proposal["items"])
     if goal["scope"]["mode"] == "restricted":
         if not allowed and not (finite and isinstance(proposal, dict) and proposal.get("tasks")):
@@ -199,7 +232,7 @@ def _resolve(root, goal, proposal, items):
             visited.add(parent)
             parent = by_key[parent]["parent"]
         if parent is not None and (type(parent) is not int or parent not in numbers) or \
-                goal["scope"]["mode"] == "restricted" and not finite and parent not in allowed:
+                goal["scope"]["mode"] == "restricted" and (not finite or named) and parent not in allowed:   # #222
             raise state.StateError("task hierarchy is cyclic, unknown or outside the goal")
     if finite:
         resolved["scope"]["tasks"] = sorted(keys)
@@ -304,8 +337,9 @@ def _ancestor(root, commit, base):
         _git(root, "merge-base", "--is-ancestor", commit, base).returncode == 0
 
 
-def progress(root, goal, items, snapshot, base_head):
-    """The runner supplies a freshly fetched base and shared snapshot. No GitHub access here."""
+def progress(root, goal, items, snapshot, base_head, running=()):
+    """The runner supplies a freshly fetched base and shared snapshot, and the items its jobs work on. No GitHub
+    access here."""
     observed = copy.deepcopy(goal)
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("items"), dict) or \
             not isinstance(base_head, str) or not SHA.fullmatch(base_head):
@@ -345,8 +379,29 @@ def progress(root, goal, items, snapshot, base_head):
     unresolved = any((row.get("registration") or {}).get("status") != "confirmed" for row in tasks.values())
     complete = criteria_met and not unresolved and completed == required
     observed.update(queue=sorted(queue), progress={"done": sorted(completed), "remaining": sorted(required - completed)})
+    rows = {row["number"]: row for row in items}
+
+    def holding(number):
+        """(severity, number, words): why one open item holds the goal (FR-04 of #207)."""
+        record, row = snapshot["items"].get(str(number), {}), rows.get(number, {})
+        claim, blockers = record.get("claim") or {}, row.get("blocked_by") or []
+        rank, words = (0, "failed: " + (record.get("failure") or "its failure needs a decision")) \
+            if record.get("failed") else \
+            (0, "on hold") if record.get("hold") else \
+            (2, "in progress") if number in running else \
+            (1, "waits for " + ", ".join(f"#{b}" for b in blockers)) if blockers else \
+            (1, f"held by {row.get('claimed_by') or claim.get('actor') or claim.get('holder')}") if claim else \
+            (2, "waits for integration") if record.get("result") else \
+            (3, "not started")
+        return rank, number, f"#{number} {words}"
+
+    said = [words for _, _, words in sorted(map(holding, required - completed))]
+    named = "; ".join(said[:6]) + (f"; +{len(said) - 6} more" if len(said) > 6 else "")
     if goal["status"] not in {"paused", "resolving"}:
         unresolved_reason = goal["reason"] if not goal["criteria"] else ""
-        observed.update(status="complete" if complete else "waiting", reason="" if complete else
-                        unresolved_reason or "waiting for queue work and assigned completion evidence")
+        observed.update(status="complete" if complete else "active" if set(running) & (required - completed) else
+                        "waiting", reason="" if complete else
+                        unresolved_reason or named or "waiting for queue work and assigned completion evidence")
+    if observed == goal:       # nothing new: no write, and no new revision a runner would take for a control
+        return goal
     return _edit(root, lambda current: observed, goal["revision"], goal["id"])

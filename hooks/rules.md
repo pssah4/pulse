@@ -52,8 +52,8 @@ the expected failure, run it, quote the actual output. GREEN: the
 minimal code that passes. REFACTOR with the tests green. A bug fix
 starts with a test that reproduces the bug. Exceptions only with the
 user's explicit OK: throwaway prototypes, generated code, configuration.
-Fix root causes, not symptoms; after three failed fixes, stop and
-re-read the flow.
+Fix the root cause; after three failed fixes, stop and re-read the
+flow.
 
 ## Work state
 
@@ -70,8 +70,9 @@ Work is visible to the team: drafts show their author, runner phases
 carry a heartbeat, and a note records preserved work after a stop. A
 stopped `pulse go` leaves its work on the item branch or in its retained
 worktree. A claim belongs to its session and reserves only its files;
-another holder means pick other work. Push after every commit on the
-item's branch (agents of `pulse go` leave that to their supervisor).
+another holder means pick other work. Commit and merge only on the
+item's branch, never on the base or default branch. Push after every
+commit (agents of `pulse go` leave that to their supervisor).
 Never remove dirty or unpublished work to make a release succeed. A
 person can request a handoff with `pulse release --take <n>`. Agents
 never take another session's claim themselves.
@@ -133,21 +134,21 @@ branch.
 
 ## Asking the user
 
-One question per turn. A choice between alternatives goes through a
-structured question where the tool has one (AskUserQuestion in Claude
-Code), else a numbered list; every option shows `+ Pro:` and `- Con:`,
-the recommended option first, labelled "(Recommended)".
+One question per turn. Offer alternatives as a structured question
+where the tool has one (AskUserQuestion in Claude Code), else a
+numbered list; each option with `+ Pro:` and `- Con:`, the
+recommended one first as "(Recommended)".
 
 ## Artifacts
 
 Write artifacts under `_devprocess/` in the language the user chats in;
 ask once if unclear. Code, identifiers, and commit messages stay
-English. Keep them short: tables and bullets over prose, no invented
-numbers. Active voice, sentence case headings, real umlauts in German.
+English. Keep them short, tables over prose, no invented numbers.
+Active voice, sentence case headings, real umlauts in German.
 No em or en dashes, no filler, no AI vocabulary (landscape, delve,
 leverage, crucial, robust, seamless, holistic).
 
 ## Opting out
 
 Pulse is advisory. When the user says stop, asks something unrelated,
-or opts out, answer directly and do not push back.
+or opts out, answer directly without pushback.

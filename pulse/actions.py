@@ -21,7 +21,7 @@ from pathlib import Path
 from pulse import config
 from pulse.state import StateError
 
-KINDS = {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}
+KINDS = {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}   # an older Pulse rejects any other
 STATUSES = {"queued", "syncing", "confirmed", "conflict", "error"}
 ATTEMPTS = 5
 DATABASE = "outbox.sqlite"
@@ -117,6 +117,10 @@ def _database(root):
             db.execute("""CREATE TABLE IF NOT EXISTS claim_receipts (
                 session TEXT NOT NULL, item INTEGER NOT NULL, operation TEXT NOT NULL,
                 PRIMARY KEY(session,item))""")
+            # failures pulse go could not send (#209): a table of their own, which an older Pulse never reads
+            db.execute("""CREATE TABLE IF NOT EXISTS failures (
+                item INTEGER PRIMARY KEY, id TEXT NOT NULL, operation TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, next_due REAL NOT NULL DEFAULT 0)""")
             if version == 0:                  # a write: a reader that writes it waits for every other writer (#204)
                 db.execute("PRAGMA user_version=1")
             with db:
@@ -234,6 +238,59 @@ def integration_held(root, item):
                for row in entries)
 
 
+def keep_failure(root, operation):
+    """Keep a failure pulse go could not send (#209), one per item, its operation as it was: sent again with the same
+    id, it is found on the board when only the answer of its push got lost."""
+    with _database(root) as db:
+        db.execute("INSERT OR REPLACE INTO failures(item,id,operation) VALUES(?,?,?)",
+                   (operation["item"], operation["id"], json.dumps(operation, sort_keys=True, allow_nan=False)))
+
+
+def failures(root):
+    """The failures this clone keeps until the board has them: [{item, id, operation, attempts, next_due}]."""
+    with _database(root) as db:
+        rows = db.execute("SELECT * FROM failures ORDER BY item").fetchall()
+    out = []
+    for row in rows:
+        try:
+            out.append({**dict(row), "operation": json.loads(row["operation"])})
+        except ValueError:
+            continue           # a row that is no operation sends nothing
+    return out
+
+
+def retry_failures(root):
+    """Every kept failure is due again: each pulse go run sends them anew, until the board has them."""
+    with _database(root) as db:
+        return db.execute("UPDATE failures SET attempts=0,next_due=0").rowcount
+
+
+def _send_failures(root, send, clock):
+    """Send each kept failure that is due; its row goes once send says the board has it or its claim moved on. A
+    failed try waits as an action's does. -> how many it tried."""
+    tried = 0
+    for row in failures(root):
+        if row["attempts"] >= ATTEMPTS or row["next_due"] > clock():
+            continue
+        tried += 1
+        try:
+            done = send(root, row["operation"])
+        except (StateError, OSError, ValueError, TypeError, KeyError):
+            done = False
+        with _database(root) as db:
+            if done:
+                db.execute("DELETE FROM failures WHERE item=? AND id=?", (row["item"], row["id"]))
+            else:
+                db.execute("UPDATE failures SET attempts=attempts+1,next_due=? WHERE item=? AND id=?",
+                           (clock() + min(2 ** (row["attempts"] + 1), 8), row["item"], row["id"]))
+    return tried
+
+
+def _send(root, operation):
+    from pulse import shared
+    return shared.send_failure(root, operation)
+
+
 def retry(root, ident):
     """Explicit retry of a retained transport error; conflicts need new observed intent."""
     with _database(root) as db:
@@ -329,23 +386,23 @@ def sync_once(root, transport=None, clock=time.time):
         return _sync(root, transport or _transport, clock)
 
 
-def _drain(root, transport, clock, sleep):
+def _drain(root, transport, clock, sleep, send=_send):
     _recover(root)
     count = 0
     while True:
-        attempted = _sync(root, transport, clock)
+        attempted = _sync(root, transport, clock) + _send_failures(root, send, clock)
         count += attempted
         if not attempted:
-            ready = _eligible(pending(root))
+            ready = _eligible(pending(root)) + [row for row in failures(root) if row["attempts"] < ATTEMPTS]
             if not ready:
                 return count
             sleep(max(0, min(entry["next_due"] for entry in ready) - clock()))
 
 
-def drain(root, transport=None, clock=time.time, sleep=time.sleep):
-    """Finish available local intent with at most five transport attempts per row."""
+def drain(root, transport=None, clock=time.time, sleep=time.sleep, send=None):
+    """Finish available local intent and kept failures with at most five transport attempts per row."""
     with _lock(root) as lock:
-        return 0 if lock is None else _drain(root, transport or _transport, clock, sleep)
+        return 0 if lock is None else _drain(root, transport or _transport, clock, sleep, send or _send)
 
 
 def start(root):
@@ -354,7 +411,8 @@ def start(root):
         if lock is None:
             return False
         entries = pending(root)
-        if not _eligible(entries) and not any(entry["status"] == "syncing" for entry in entries):
+        if not _eligible(entries) and not any(entry["status"] == "syncing" for entry in entries) and \
+                not any(row["attempts"] < ATTEMPTS for row in failures(root)):
             return False
         try:
             subprocess.Popen([sys.executable, "-m", "pulse.actions", str(Path(root).resolve()), str(lock)],

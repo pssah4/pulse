@@ -23,7 +23,9 @@ words after `$pulse:pulse-go` in the person's message.
 Keep every word of the text, combined instructions included, and pass it
 as one argument in single quotes, each `'` in it written as `'\''`, so the
 shell expands nothing; `--` and `--steer=` keep a text that begins with `-`
-from being read as an option. A goal that only begins with `pause`,
+from being read as an option. Never replace the text with `--item` or
+`--epic`: item numbers such as `#580` in the text already bound the run, and
+a flag only ever goes next to the text. A goal that only begins with `pause`,
 `resume` or `stop`, such as "stop the flicker in the map", stays a goal.
 For `steer` without a direction, ask the person for it.
 

@@ -7,6 +7,16 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.3.7 to 0.3.8
+
+Update the plugin in Claude Code and Codex. Then check these points in each project:
+
+- `pulse go` interprets your goal text again. If the interpretation fails, the goal pauses with its reason instead of working the whole queue; go on with `pulse go --resume` or change it with `--steer`. Item numbers such as `#580` in the text limit the run until the interpretation decides; `--item` and `--epic` always win over the text and over every steer.
+- Headless agents of `pulse go` may now run every command of your `verify`. Put the checks your pre-push hook runs into `verify`, for example `npm run test:run && npm run typecheck && npm run lint`, so an agent can run them before a push; a hook refusal gets its own fix round.
+- Pulse pushes its state branch `pulse-state` without your project's pre-push hooks (ADR-14); code branches always go through them. A failure that could not be pushed stays local and is sent again.
+- The guard refuses an agent's `git commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am` and a `pull` of another branch on your base or default branch. Agents work on their item branch; your own terminal is not affected.
+- The live map shows a run's sessions under their item with its branch, no longer counts headless agents as needing you, shows the item `pulse go` works on once, and keeps its text signet in a Herdr pane.
+
 ## From 0.3.6 to 0.3.7
 
 Update the plugin in Claude Code and Codex. Nothing to change in a project. Two Pulse commands that use the local action outbox at once, such as two sessions claiming work, both go through.

@@ -227,7 +227,9 @@ or times out ends the chain the same way as under the RED check: no
 further gate, preserved work with a finding naming the round. A session that gives no
 verdict (it failed, timed out, changed the branch, or wrote no verdict
 line) gets no fix round. A gate still red after the round leaves the
-result blocked with its open findings available for repair.
+result blocked with its open findings available for repair. A project
+hook that refuses a commit or push of the result gets one round of its
+own on top ([a hook that refuses](../guides/pulse-go#a-hook-that-refuses)).
 
 **The published result.** Pulse records the branch, result head, base,
 gates and findings in shared state and keeps the full review and audit

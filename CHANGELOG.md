@@ -5,6 +5,23 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-10-04
+
+### Changed
+
+- The live map shows every session of a `pulse go` run under its item, also its review and goal sessions in their detached folders, names each item's branch under it, and names a session without an item by its branch or `detached` instead of `no branch`. The Pulse guard refuses an agent's `git commit`, `merge`, `cherry-pick`, `revert`, `am` and a `pull` of another branch on the base or default branch and points to the item branch; aborting and catching up with the branch's own origin branch stay open (#213).
+- The goal of `pulse go` guides the whole run: every agent that plans, builds or fixes an item reads the goal and its criteria, steering or pausing stops only the jobs whose item leaves the scope, the Map shows the progress while jobs run, and an open goal names the items that hold it (#207).
+
+### Fixed
+
+- In a Herdr pane the live map keeps its text signet and no longer prints graphics commands such as `Ga=p,i=...` as text every second: Herdr confirms the Kitty graphics question but passes each image placement on as text, so the map no longer asks there (#212).
+- The live map no longer shows an agent of `pulse go` as "needs you" or counts it in the header: nobody can answer a headless agent's permission request, so its row shows `permission denied: <tool>` instead. An approved permission request of your own session now ends when its call returns, and a session nobody attends stops waiting once it starts its next tool call without an answer (#210).
+- The live map shows the item `pulse go` prepares or runs once, under Who is doing what with its real stage such as `preparing build` or `tests running`, instead of also as `starts next` in the ramp while the board does not show the claim yet. A job that ended no longer keeps its phase, and `▲` marks only ramp rows that start next and have not failed (#211).
+- `pulse go` gates check what a push checks: a headless Claude may run every command a chained `verify` names and `pulse check`; a verify line of a Plan runs only as a command `.pulse/config.toml` on the base names too, and the result names the others. A project hook that refuses a commit or push of the result gets a fix round of its own, so a pre-push typecheck that fails after the review's fix round no longer ends the item with a decision (#208).
+- An item's failure no longer gets lost when Pulse cannot push its state: a push that changes only `pulse-state` runs without the project's pre-push hooks, while a push with an item branch still runs them; a failure origin does not take stays in the local outbox and goes out again; and until the board has it, the map shows the item as failed and "not on the board yet" instead of "the next run checks it again" (#209).
+- `pulse go` interprets a goal again: the agent writes its proposal outside `.git`, where Claude Code lets a headless session write. A failed interpretation pauses the goal with its reason in `pulse go` and the map instead of working the whole queue, item numbers such as `#580` in the text limit the run to those items until the interpretation decides whether the rest of the queue goes on, and `/pulse-go` always passes your whole text (#206).
+- A steer never widens a goal's explicit scope: `--item` and `--epic` hold whatever the steer says, an "only" steer on named items only narrows them, and a task the interpretation proposes never adds an item outside an explicit "only #5 and #6" restriction (#222).
+
 ## [0.3.7] - 2026-10-03
 
 ### Fixed

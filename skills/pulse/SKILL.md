@@ -113,9 +113,13 @@ receipt with its run ID, PID, report and log. A second managed start finds
 the existing run. No Herdr, extra coordinator or shell detachment is
 required. Never use `nohup` or erase markers to force a start.
 
-Pass any free-text objective directly as the positional words after `pulse go`.
-Preserve the whole request, including combined instructions such as finishing
-Epic 4 and investigating a UI problem. Flags are optional shortcuts. Without
+Pass the person's whole free text as the goal, one quoted argument after
+`--`: `pulse go -- '<the whole text>'`. Preserve the whole request, including
+combined instructions such as finishing Epic 4 and investigating a UI problem.
+`--item` and `--epic` only add to that text and never replace it; item numbers
+such as `#580` in the text limit the run to those items until the runner
+confirms its interpretation. A failed interpretation pauses the goal with its
+reason, which `pulse go` and the map name: report it. Without
 an objective, process the queue; with one, process the queue plus that objective.
 Only an explicit restriction bounds the run. Do not replace a compound request
 with an epic flag that would drop the other instruction. The runner records
