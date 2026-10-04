@@ -96,6 +96,8 @@ Text that goes into another terminal gets the same check: `herdr pane run`, `sen
 
 A heredoc body is data, a commit message or a pull request text through `cat` too, unless a shell, `eval`, `osascript`, or `tmux load-buffer` reads it, or `$(cat <<EOF ...)` hands it to a pane, a shell's `-c`, or `eval`. The pulse lever text rule reads every body. The quoted-text rule is strict on purpose: an agent that searches for the phrase, such as `grep -r "pulse approve" docs/`, is denied too. It can search for `pulse.approve` instead.
 
+The guard judges each command within 3.5 seconds, well inside the 5 seconds Claude Code gives a hook. A command it cannot judge in that time, such as a very long or deeply nested line, is refused with a request to split it into shorter commands; ordinary commands take milliseconds. The guard is a process fence for cooperative agents that keeps them on Pulse's process steps; the sandbox of the operating system and of the agent is the security boundary.
+
 In Codex the guard works only after you trust the Pulse hooks (`/hooks` in the CLI, the Hooks page in the settings of the IDE extension); until then the command line and the Codex rules hold. No layer stops a script file, a program of the agent's own, or a token read out of `gh`: the layers stop a lever pulled in the open, not an agent that looks for a way around them. An interactive Pulse skill may execute an explicitly requested `pulse go`, retaining all session markers. Without a TTY Pulse owns a managed process; with one the runner stays in the foreground. Runner agents and child sessions cannot start another runner. Starting one writes no approval and changes no auto switch.
 
 ## What others see
