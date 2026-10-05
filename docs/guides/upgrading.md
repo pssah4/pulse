@@ -7,6 +7,10 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## From 0.4.0 to 0.4.1
+
+Update the plugin in Claude Code and Codex. Nothing to change in a project. A `pulse go` job that a handoff stops while it publishes acknowledges its stop, and the next run in the same clone acknowledges the stop of an earlier job that ended without it, so resume works again for such an item. While a process group a run noted for that job still runs, the stop stays open and the run report says why.
+
 ## From 0.3.8 to 0.4.0
 
 Update the plugin in Claude Code and Codex, run `pulse setup --codex-rules` once on each computer that uses Codex, and start new sessions; Codex asks for its normal review of changed hooks. Then check these points in each project:

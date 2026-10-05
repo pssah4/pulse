@@ -5,6 +5,12 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-05
+
+### Fixed
+
+- A handoff that reaches a `pulse go` job while it publishes no longer leaves its stop request open for good: the fenced job acknowledges its stop before it ends, and the next run in the same clone acknowledges the stop of an earlier job that ended without it, so resume continues the preserved work (#249).
+
 ## [0.4.0] - 2026-10-04
 
 ### Added

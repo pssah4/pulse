@@ -85,7 +85,7 @@ Regular checked results complete automatically by default. A person with reposit
 
 Publish committed work before `pulse release <n>`. A later run retains and reuses the item's branch and worktree. A stored current result proceeds toward approval or integration; a stale result is revalidated explicitly. A dirty or unpublished worktree remains where it was and cannot be silently replaced by a clean clone.
 
-A person can request a handoff with `pulse release --take <n>`, including a claim under another account. Pulse requests the writer to stop and preserve its work before releasing the claim. A missing acknowledgement remains visible; it is not permission for two writers. Defer keeps work paused until `pulse resume <n>` is confirmed. See [Map actions](./pulse-map#actions).
+A person can request a handoff with `pulse release --take <n>`, including a claim under another account. Pulse requests the writer to stop and preserve its work before releasing the claim. A missing acknowledgement remains visible; it is not permission for two writers. A job whose publication a handoff fences acknowledges its stop before it ends. If a job of an earlier run ended without acknowledging, the next run in the same clone acknowledges its stop at the start, with the job's worktree there, and resume continues the preserved work in that clone. While a process group a run recorded for the job still runs, the stop stays open and the run report says why; an item the run before held stays open for one run. A writer of another clone or account or an attended session keeps its stop open until it acknowledges. Defer keeps work paused until `pulse resume <n>` is confirmed. See [Map actions](./pulse-map#actions).
 
 ## One run per clone
 

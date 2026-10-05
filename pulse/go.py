@@ -2124,9 +2124,14 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=N
     None: publish_plan records it itself."""
     if _lifecycle_stop(root, repo, job, gh_run, rep, config.pulse_dir(root) / "go", who, strict=True):
         return False
+    # A handoff that lands after that check fences the publication below: acknowledge its stop before
+    # ending, or no one can, and resume waits for good (#249).
+    fenced = lambda: _lifecycle_stop(root, repo, job, gh_run, rep, config.pulse_dir(root) / "go", who)  # noqa: E731
     current = shared.read(root)[1]["items"].get(str(job.number), {})
     holder = state._claim_id(who, job.number)
     if (current.get("claim") or {}).get("holder") != holder:
+        if fenced():
+            return False
         _event(rep, "failed", job.public(phase=job.phase, why="claim was released or handed over; local work is preserved",
                                          log=_log_path(job)))
         return False
@@ -2156,6 +2161,8 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=N
     try:
         receipt = shared.publish(job.worktree, operation, job.branch, head, before)
     except state.StateError as error:
+        if fenced():
+            return False
         # Keep project output before Git's generic error line, including custom hook diagnostics.
         job.why = "publication blocked: " + ready.printable(" ".join(str(error).split()))
         hook = _hook(job.worktree, "pre-push")
@@ -2170,6 +2177,8 @@ def _pushed(root: Path, repo: str, job: Job, gh_run, rep: dict, who: dict, fix=N
             why=job.why + _release(root, repo, job.number, gh_run, who, _handover(job, job.why), work=work)))
         return False
     if receipt["status"] != "confirmed":
+        if fenced():
+            return False
         why = f"publication blocked: {receipt['reason']}; local work is preserved"
         work = _retained_plan(root, job, "push", why)
         _event(rep, "stopped", job.public(step="push", published=False, log=_log_path(job), work=work,
@@ -2810,7 +2819,8 @@ def _unheld(root: Path, repo: str, job: Job, gh_run, who: dict) -> str:
 
 def _take_over(root: Path, repo: str, login: str, left: dict, gh_run, rep: dict, base_branch: str,
                who: dict, off: set) -> list:
-    """End this clone's orphan processes, then release only its recorded predecessor's claims."""
+    """End this clone's orphan processes, then release only its recorded predecessor's claims and acknowledge the
+    stops its earlier jobs left open."""
     for pgid in (left.get("groups") or {}).values():
         if isinstance(pgid, int) and pgid > 1 and pgid != os.getpgrp():
             _end(pgid)
@@ -2829,7 +2839,71 @@ def _take_over(root: Path, repo: str, login: str, left: dict, gh_run, rep: dict,
             _event(rep, "failed", job_for(root, item, base_branch).public(why=stays, log=""))
         else:
             rep["took"].append(n)
+    # what stays unconfirmed goes into this run's own note, so that every later run sees it too (#249)
+    left["unconfirmed"] = _ended_stops(root, items, base_branch, who, login, left, rep)
     return items
+
+
+def _group_alive(pgid) -> bool:
+    """Whether a noted process group still has a member; one this user may not signal counts as alive."""
+    if not isinstance(pgid, int) or pgid <= 1:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _ended_stops(root: Path, items: list, base_branch: str, who: dict, login: str, left: dict, rep: dict) -> dict:
+    """A job of an earlier run in this clone that a handoff stopped may have ended before it acknowledged (#249).
+    This run holds the clone's lock, so such a job can still run only in a process group a run noted and could not
+    end. While one lives, the stop stays open, and the group comes back for this run's note, so that every later
+    run checks it again (only with signal 0: its pgid may be reused). An item the run before held stays open for
+    this run. Otherwise acknowledge the stop with the worktree the job keeps here, as the supervisor does after a
+    confirmed process end (ADR-10). A writer of another clone or account or an attended session keeps its stop
+    open until it acknowledges (FEAT-02-08 FR-06)."""
+    prefix, snapshot, kept = state.clone_prefix(root), None, {}
+    noted = {**(left.get("unconfirmed") or {}), **(left.get("groups") or {})}
+    held = left.get("held") or []
+    for item in items:
+        n, stop = item["number"], item.get("stop") or {}
+        if item.get("claim") or stop.get("status") != "requested":
+            continue
+        if snapshot is None:
+            try:
+                snapshot = shared.read(root)[1]
+            except (state.StateError, ValueError, OSError):    # nothing judged: the next run reads again
+                return {k: v for k, v in noted.items() if _group_alive(v)}
+        claims = [record["result"]["data"].get("claim") or {} for record in snapshot["operations"].values()
+                  if record["operation"]["item"] == n]
+        writers = {(c.get("session") or "", c.get("actor") or "") for c in claims
+                   if c.get("holder") == stop.get("holder")}          # one generation keeps one session
+        session, actor = next(iter(writers)) if len(writers) == 1 else ("", "")
+        if not session.startswith(prefix) or session == who["id"] or actor != login:
+            continue                   # another clone, an attended session, this run or another account
+        entry = {"number": n, "title": item.get("title", "")}
+        try:
+            job = job_for(root, item, base_branch)
+            entry = job.public()
+            pgid = noted.get(str(n))
+            if _group_alive(pgid):
+                kept[str(n)] = pgid
+                why = "its stop stays open: a process group noted for its job from an earlier run still runs"
+            elif n in held:
+                why = "its stop stays open for this run: the run before held the item; the next run acknowledges " \
+                      "it unless a process of its job is noted"
+            else:
+                lifecycle.queue_stop(root, n, {"id": session, "claims": {str(n): stop["holder"]}},
+                                     str(job.worktree), job.branch)
+                why = f"acknowledged the stop of its ended job from an earlier run; resume continues the work in " \
+                      f"{job.worktree}"
+        except (state.StateError, ValueError, OSError) as error:
+            why = f"its stop stays open: {error}"
+        _event(rep, "skipped", {**entry, "why": why})
+    return kept
 
 
 LEVERS = ("not approved", ready.MOVED, *ready.WAITS)      # gate texts of an approval due from a person
@@ -2859,10 +2933,11 @@ def removal(root: Path, repo: str, operation: dict, confirmation: str, gh_run=st
                                  current["confirmation"]}, repo, gh_run)
     common = config.pulse_dir(root)
     lock, left = _lock(common)
+    kept = {"unconfirmed": left["unconfirmed"]} if left.get("unconfirmed") else {}     # #249: it stays noted
     try:
         if left.get("groups") or left.get("holder"):
             raise state.StateError("unfinished pulse go run; resolve its recorded processes before removal")
-        _note(lock, {"pid": os.getpid(), "groups": {}})
+        _note(lock, {"pid": os.getpid(), "groups": {}, **kept})
         if check:
             remove.check_scope(root, repo, current, gh_run)
             _removal_gates(root, repo, current, gh_run, common / "go")
@@ -2874,7 +2949,7 @@ def removal(root: Path, repo: str, operation: dict, confirmation: str, gh_run=st
         return remove.integrate(root, repo, operation, confirmation, run=gh_run)
     finally:
         if _noted(lock).get("pid") == os.getpid() and not _noted(lock).get("groups"):
-            _note(lock, {})
+            _note(lock, kept)
         lock.close()
         (common / "go.pid").unlink(missing_ok=True)
 
@@ -3147,7 +3222,8 @@ def run(root: Path, cap=None, agent=None, gh_run=state.gh, poll=5.0, *, managed=
         rep["run"]["ended"] = _now()
         _save(rep)
         if _noted(lock).get("pid") == os.getpid() and not _noted(lock).get("groups"):
-            _note(lock, {})
+            kept = _noted(lock).get("unconfirmed")       # an unconfirmed end outlives the run that saw it (#249)
+            _note(lock, {"unconfirmed": kept} if kept else {})
         try:
             (common / "go.pid").unlink()
         except FileNotFoundError:
@@ -3293,7 +3369,8 @@ def _run(root: Path, cap, agent, gh_run, poll, rep: dict, lock, left, managed=No
     try:
         config.PINNED[str(Path(root).resolve())] = cfg     # the run reads its config once (#44)
         items = _take_over(root, repo, login, left, gh_run, rep, base_branch, who, off)
-        _note(lock, {"pid": os.getpid(), "holder": who["id"], "groups": {}})
+        _note(lock, {"pid": os.getpid(), "holder": who["id"], "groups": {},
+                     **({"unconfirmed": left["unconfirmed"]} if left.get("unconfirmed") else {})})
         _save(rep)
         rep["guard"] = _shared(root, config.common_dir(root))      # the clone's git setup as the run found it (M-A)
         while True:          # at the start and whenever a slot came free: read the board, fill the slots (F5.09)
