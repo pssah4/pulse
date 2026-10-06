@@ -11,7 +11,7 @@ runs, any pane whose processes hold one, asked of Herdr or tmux and ps; a pane i
 counts as a map. Nowhere starts a claude with every hook or the Pulse plugin off or an opencode run, and no shell
 write, rm, or truncate takes mode in .pulse/config.toml away from on, read from the command's text (#112). No
 agent pushes through an alias or config of its line or to pulse-state, and a worker of pulse go starts no agent
-that drops this guard, its permission checks or its sandbox, and writes neither the running Pulse copy nor the
+that drops this guard, and writes neither the running Pulse copy nor the
 clone's .pulse/, also with its edit tools (#229). It
 stops a lever pulled in the open; a script file, a program of the agent's own, or a token read out of gh passes
 (Analysis 5.8).
@@ -29,20 +29,15 @@ import subprocess
 import threading
 import time
 
-from .config import NO_NET, OPEN, codex_settings
-
 REASON = ("Gate levers belong to a person or to their own auto switch. Tell the person which gate waits: "
           "a in the Pulse map, or pulse approve in their terminal.")
 PULSE = re.compile(r"\bpulse[ \t]+(?:--[ \t]+)?(?:approve|revoke|handoff|retry|done|defer|resume|discard|delete|auto(?:[ \t]+[\w=.:-]+){0,4}?[ \t]+(?:on|off)|"
                    r"claim[ \t]+--take|release[ \t]+--take)(?![\w.-])")      # quoted too, in comments and bodies
 # What a worker of pulse go keeps (#229, ADR-15), read from what it starts and writes, never from text it names: the
-# guard of an agent it starts (the variables its hook reads), that agent's permission checks and sandbox, the running
-# Pulse copy and the clone's .pulse/.
-FENCE = ("A worker of pulse go keeps Pulse's guard: it starts no agent without it, past its permission checks or "
-         "outside its sandbox, and writes neither the running Pulse copy nor the project's .pulse/. Changing that is "
-         "the person's call.")
+# guard of an agent it starts (the variables its hook reads), the running Pulse copy and the clone's .pulse/.
+FENCE = ("A worker of pulse go keeps Pulse's guard: it starts no agent without it and writes neither the running "
+         "Pulse copy nor the project's .pulse/. Changing that is the person's call.")
 GUARDED = {"PULSE_HOLDER", "PULSE_CLONE", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SIMPLE", "CODEX_HOME", "HOME"}
-UNCHECKED = {"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"}
 EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"}       # Codex reports every edit as apply_patch
 PATCHED = re.compile(r"^[ \t]*\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$", re.M)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # the running Pulse copy (config.ROOT)
@@ -74,7 +69,7 @@ SETTERS = {"export", "declare", "typeset", "readonly", "local", "unset"}
 # git that pushes where a line's config says (#229 FR-02, FR-03): no agent pushes with config of its line, through
 # an alias it defines, or to pulse-state; no worker writes the config a push follows
 CONFIGURED = ("The Pulse guard refuses it: no push through a git alias or config set in the line, and no push to "
-              "pulse-state, which only Pulse writes. Push the item branch by name: git push origin <type>/<n>-<slug>.")
+              "pulse-state, which only Pulse writes. Push the item branch by name: git push origin HEAD:<type>/<n>-<slug>.")
 STATE = "pulse-state"
 PUSHES = re.compile(r"(?:alias|push|include|includeif)\.|remote\..+\.push|branch\..+\.merge", re.I)
 STEERS = re.compile(r"(?:alias|include|includeif)\.", re.I)             # config that may turn a word into a push
@@ -364,8 +359,27 @@ def _denied(text, ctx, depth, strict):
             names, ends, last = [_name(w) for w in cmd], [0] * len(cmd), {}
             for i in reversed(range(len(cmd))):         # a program's words end where its name comes again:
                 ends[i], last[names[i]] = last.get(names[i], len(cmd)), i      # linear, however long the line
+            directory, wrapped = (ctx._cwd, ctx.branch, ctx.went), False
             for i, name in enumerate(names):            # env, command, sudo, xargs, a path: the program anywhere
                 check, args = CHECKS.get(name), cmd[i + 1:ends[i]]
+                if not ctx.switches and name == "env" and i in progs:
+                    options, k, target = cmd[i + 1:], 0, None    # an option value named env is not a program
+                    while k < len(options) and options[k].startswith("-") and options[k] != "--":
+                        word = options[k]
+                        if word in ("-C", "--chdir"):
+                            target = options[k + 1] if k + 1 < len(options) else ""
+                        elif word.startswith("--chdir="):
+                            target = word.split("=", 1)[1]
+                        elif not word.startswith("--"):
+                            value = _getopt(options[k:k + 2], "uCSP").get("C")
+                            if value is not None:
+                                target = value
+                        k += 1 + _takes("env", word)
+                    if target is not None:             # the last option, relative to this wrapper's caller
+                        ctx.chdir([target], "cd")
+                        ctx.went, wrapped = True, True
+                        if not target or ctx.where() is None or not os.path.isdir(ctx.where()):
+                            return True
                 if ctx.switches:                # only what runs another line, and pulse itself (#231)
                     check = _carried if name in PANES else check if name in CARRIERS else None
                 if check and (name not in PROGRAM_ONLY or i in progs or       # a setter after { or then too (#236)
@@ -373,6 +387,8 @@ def _denied(text, ctx, depth, strict):
                         check(args, ctx, depth, i in progs) if name in SHELLS or name == "pulse" else
                         check(args, ctx, depth)):
                     return True
+            if wrapped:                                # env changes its child's directory, not the shell's
+                ctx._cwd, ctx.branch, ctx.went = directory
             ctx.vars = line
         return False
     finally:
@@ -438,6 +454,8 @@ def _programs(cmd, n, launchers=True):
 def _takes(wrapper, word):
     """Whether an option word of a wrapper takes the next word as its value: one of TAKES; for script as getopt reads
     it (#236), a cluster whose first value letter ends it (-qt 0, -qc cmd) or a long option of SCRIPT_LONGS."""
+    if wrapper == "env" and word.startswith("-") and not word.startswith("--"):
+        return next((j for j, c in enumerate(word) if c in "uCSP"), -1) == len(word) - 1
     if wrapper != "script":
         return word in TAKES.get(wrapper, ())
     if word.startswith("--"):
@@ -842,6 +860,12 @@ def _git(args, ctx, depth):
     branch = ctx.branch or ctx.lookup(_branch, here)
     if not branch:
         return True                                     # a branch git cannot name: denied (FR-08)
+    if not dsts:
+        selected = _values(rest, "--repo")
+        target = ctx.lookup(_push_target, here, branch, words[0] if words else selected[-1] if selected else "")
+        if target is None or target == STATE or target in ctx.bases and not granted:
+            ctx.said.append(CONFIGURED)
+            return True
     if branch in ctx.bases:
         return delete or lease or not granted
     return branch == STATE or lease and _item_of(branch) is None
@@ -945,6 +969,29 @@ def _head(where):
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _push_target(where, branch, remote=""):
+    """Stored default push destination for this branch, locally; None if Git cannot answer (#241)."""
+    if "$" in remote or "`" in remote:
+        return None
+    args = ["git", "-C", where] + (["-c", f"branch.{branch}.pushRemote={remote}"] if remote else [])
+    try:
+        out = subprocess.run([*args, "for-each-ref",
+                              "--format=%(push:remoteref)%00%(push)%00%(upstream)%00%(upstream:remoteref)",
+                              "refs/heads/" + branch], capture_output=True, text=True, timeout=1)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    parts = out.stdout.strip().split("\0")
+    if len(parts) != 4:
+        return None
+    target, pushed, tracked, upstream = parts
+    # Git leaves push:remoteref empty for push.default=upstream; the resolved refs still agree.
+    if not target and pushed and pushed == tracked:
+        target = upstream
+    return re.sub(r"^(?:refs/)?heads/", "", target)
 
 
 def _upstream(where):
@@ -1327,7 +1374,7 @@ def _claude(args, ctx, depth):
     """claude without this guard: --bare, or --settings that switch every hook or the Pulse plugin off, as JSON or
     in the file it names (FR-01 of #112). A file the guard cannot read, a value it cannot name ($, `), and a file the
     command names twice (it may write it first) are denied; a plain path that does not exist passes, claude refuses
-    it. A worker's claude keeps the guard and its permission checks (_started); a person's may leave --setting-sources
+    it. A worker's claude keeps the guard (_started); a person's may leave --setting-sources
     without the source that enables the plugin."""
     if "--bare" in args:
         return True
@@ -1345,30 +1392,17 @@ def _claude(args, ctx, depth):
                 return True
         if text is not None and _off(text):
             return True
-        if text is not None and ctx.worker and "bypassPermissions" in text:
-            return _fence(ctx)                          # a default mode past the checks (#229 FR-01)
     return False
 
 
 def _started(prog, args, ctx):
-    """Whether a worker starts claude or codex without Pulse's guard, past its permission checks or outside its
-    sandbox (#229 FR-01): the line changed a variable the started agent's guard reads, or the agent's own arguments
-    say so. ponytail: the line's variables count for every agent after them in it, also a prefix of another command."""
+    """Whether a nested worker removes Pulse's markers or hook sources. The native harness owns its general
+    permissions and sandbox; this check protects only the Pulse process rules."""
     if GUARDED & set(ctx.vars):
         return True
     if prog == "codex":
-        configs = _values(args, "--config", "c")
-        roots = _values(args, "--add-dir") + [r for v in configs if "writable_roots" in v
-                                               for r in re.findall(r"[^\s\[\]\"',]+", v.split("=", 1)[-1])]
-        said = [a for a in args if a.startswith("-")] + configs + _values(args, "--sandbox", "s")
-        # the network the person's own Codex settings give is no fence down (#230); read, bounded, only to judge it
-        mine = "sandbox_workspace_write.network_access=true" if any("network_access" in a for a in said) and \
-            codex_settings(read=_read).get("network") else NO_NET
-        return any(OPEN.search(a) and a not in (NO_NET, mine) for a in said) or \
-            any("hooks" in v for v in configs + _values(args, "--disable")) or any(_fenced(r, ctx, True) for r in roots)
-    return bool(UNCHECKED & {a.split("=", 1)[0] for a in args}) or \
-        "bypassPermissions" in _values(args, "--permission-mode") or \
-        any("user" not in s.split(",") for s in _values(args, "--setting-sources"))
+        return any("hooks" in value for value in _values(args, "--config", "c") + _values(args, "--disable"))
+    return any("user" not in source.split(",") for source in _values(args, "--setting-sources"))
 
 
 def _sets(cmd, n):

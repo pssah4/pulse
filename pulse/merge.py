@@ -37,11 +37,13 @@ def protected(cfg: dict, files: list) -> list:
             any(f.startswith(p) if p.endswith("/") else fnmatch.fnmatchcase(f, p) for p in rules)]
 
 
-def evidence(root: Path, head: str, gates) -> str:
+def evidence(root: Path, head: str, gates, *, binding=None) -> str:
     """"" when this clone's pulse go vouches for head (FR-03): gates/<head> in config.evidence_dir, written for
     exactly that commit (#117) where no agent writes (FIX-02-06-11), shows pass for every gate; else what is
     missing. A status on GitHub is no evidence: anyone who may push can set one."""
     entry = base._read(base._gates(root) / head) if base.SHA.fullmatch(head) else {}
+    if binding is not None and entry.get("binding") != binding:
+        return "no own gate evidence bound to this item, head, base and tree"
     missing = [g for g in gates if entry.get(g) != "pass"]
     return f"no own evidence at {head[:12]}: {', '.join(missing)} did not pass here on it" if missing else ""
 
@@ -94,7 +96,7 @@ def _contained(root, commit, branch):
     if not tip:
         return False
     _fetch_branch(root, branch)
-    return _git(root, "merge-base", "--is-ancestor", commit, tip).returncode == 0
+    return _git(root, "--no-replace-objects", "merge-base", "--is-ancestor", commit, tip).returncode == 0
 
 
 def _abort_integration(root, n, holder, branch, merge_sha, attempted):
@@ -111,10 +113,11 @@ def _abort_integration(root, n, holder, branch, merge_sha, attempted):
 
 def _close_integrated(root, repo, n, current, branch, run):
     result, merged = current.get("result"), current.get("merge")
-    if not result or not merged or not _contained(root, merged, branch):
-        return {"status": "conflict", "why": "recorded integration is not present on the remote base"}
-    parents = _git(root, "rev-list", "--parents", "-1", merged)
-    if parents.returncode or parents.stdout.split()[1:] != [result["base"], result["head"]]:
+    try:
+        binding = _merged(root, merged, branch)
+    except state.StateError as error:
+        return {"status": "conflict", "why": str(error)}
+    if not result or any(binding[key] != result[key] for key in ("base", "head")):
         return {"status": "conflict", "why": "recorded merge does not contain the approved result and base"}
     if current.get("removal"):
         return {"status": "done", "why": "removal integrated; original issue retained", "merge": merged}
@@ -134,6 +137,76 @@ def _close_integrated(root, repo, n, current, branch, run):
         run(["issue", "close", str(n), "--repo", repo])
     state.drop_cache(root)
     return {"status": "done", "why": "integrated and closed", "merge": merged}
+
+
+def _merged(root, merged, branch):
+    """The exact result and base of a published merge, independent of its subject."""
+    if not isinstance(merged, str) or not base.SHA.fullmatch(merged) or not _contained(root, merged, branch):
+        raise state.StateError("merge is not confirmed on the remote base; publish the project merge first")
+    if _git(root, "--no-replace-objects", "cat-file", "-t", merged).stdout.strip() != "commit":
+        raise state.StateError("completion needs the merge commit SHA itself, not a tag object")
+    parents = _git(root, "--no-replace-objects", "rev-list", "--parents", "-1", merged).stdout.split()[1:]
+    if len(parents) != 2:
+        raise state.StateError("completion needs one ordinary two-parent project merge")
+    before, head = parents
+    tree = _git(root, "--no-replace-objects", "rev-parse", head + "^{tree}").stdout.strip()
+    if (_git(root, "--no-replace-objects", "merge-base", "--is-ancestor", before, head).returncode
+            or tree != _git(root, "--no-replace-objects", "rev-parse", merged + "^{tree}").stdout.strip()):
+        raise state.StateError("merge changes the checked result or reverses its parents; verify the actual integrated contents")
+    return {"head": head, "base": before, "tree": tree}
+
+
+def completion(root, repo, n, merged, run):
+    """Observe one explicit completion. This does not claim, approve, run gates or write state."""
+    from pulse import actions, ready, shared, spec
+    branch = config.clone_config(root).get("base_branch") or config.default_branch(root)
+    binding = _merged(root, merged, branch)
+    _, snapshot = shared.read(root)
+    current = snapshot["items"].get(str(n), shared._empty())
+    item = state.item(repo, n, run=run)
+    if current["done"]:
+        if current["merge"] != merged or any(current["result"][k] != binding[k] for k in ("head", "base")):
+            raise state.StateError("item already has a different confirmed completion")
+        own = current["result"]["branch"]
+    else:
+        if (current["claim"] or not current["revision"] and (item.get("claimed_by") or item.get("assignees"))):
+            raise state.StateError(f"#{n} is still claimed; its writer must release it, or a person can use pulse handoff {n}")
+        if (current["hold"] or current.get("failed") or current.get("revoked") or current.get("removal")
+                or (current.get("stop") or {}).get("status") == "requested" or snapshot["integration"]
+                or actions.integration_held(root, n)
+                or not current["revision"] and any(item.get(k) for k in ("hold", "failed"))):
+            raise state.StateError(f"#{n} has an active hold, stop, revocation or integration; inspect pulse status {n} first")
+        refs = ready.net_git(root, "ls-remote", "--heads", "origin")
+        if refs.returncode:
+            raise state.StateError(ready.git_error(refs.stderr) or "origin did not answer")
+        candidates = [ref.removeprefix("refs/heads/") for row in refs.stdout.splitlines()
+                      for sha, ref in [row.split()] if sha == binding["head"] and state.item_of(ref.removeprefix("refs/heads/")) == n]
+        known = (current.get("result") or current.get("work") or {}).get("branch")
+        own = known if known in candidates else candidates[0] if len(candidates) == 1 else ""
+        text = ready._git(root, "show", f"{binding['head']}:{item.get('spec')}") if item.get("spec") else ""
+        if not own or str(spec.front(text).get("issue", "")).lstrip("#") != str(n):
+            raise state.StateError(f"merge result is not the uniquely published branch and registered spec of #{n}")
+    return current, item, {**binding, "branch": own, "merge": merged, "gates": dict.fromkeys(("tests", "review", "audit"), "pass")}
+
+
+def complete(root, repo, operation, run):
+    """Authenticated transport for the existing outbox. Retry closure after a confirmed shared write."""
+    from pulse import shared
+    n, payload = operation["item"], operation["payload"]
+    current, _, observed = completion(root, repo, n, payload.get("merge"), run)
+    if observed != {k: v for k, v in payload.items() if k != "proof"}:
+        raise state.StateError("completion binding changed; inspect the published result again")
+    binding = {"item": n, **{k: observed[k] for k in ("head", "base", "tree")}}
+    why = "" if current["done"] else evidence(root, observed["head"], observed["gates"], binding=binding)
+    if why:
+        raise state.StateError(why + f"; run pulse done {n} --merge {observed['merge']} --verify")
+    receipt = shared.update(root, operation)
+    if receipt["status"] == "confirmed":
+        branch = config.clone_config(root).get("base_branch") or config.default_branch(root)
+        outcome = _close_integrated(root, repo, n, receipt["data"], branch, run)
+        if outcome["status"] != "done":
+            raise state.StateError(outcome["why"])
+    return receipt
 
 
 def integrate(root: Path, repo: str, n: int, holder: str, run=state.gh) -> dict:

@@ -624,11 +624,3 @@ def template(cfg: dict, agent=None) -> str:
     if not found:
         raise state.StateError(f"no agent template '{name}' in [agents] of .pulse/config.toml")
     return found
-
-
-def gate_template(cfg: dict, agent=None) -> str:
-    """The template of a gate session of pulse go: its allow list also runs git on the checkout the
-    way the prompt says (`git -C tree ...`); a template without {allow} stays as it is."""
-    allow = config._allow(cfg["verify"])
-    tree = " ".join(f"'Bash(git -C tree {g}:*)'" for g in ("diff", "log", "show", "status"))
-    return template(cfg, agent).replace(allow, f"{allow} {tree}")

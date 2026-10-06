@@ -89,12 +89,11 @@ it without asking. It carries:
 - **files:** the union of every file the tasks touch. `pulse go` keeps
   plans with overlapping files from running at the same time.
 - **verify:** the build and test commands that prove the item. The
-  agents of `pulse go` run a command of a line only when
-  `.pulse/config.toml` on the base names it too (in `verify`, `setup`
-  without arguments, or a `[spec_tests]` runner) or it is `pulse check`;
-  the item log names
-  every other line. A check the agents need, such as a typecheck, goes
-  into the configured `verify`.
+  native harness decides which commands a worker may run; a Plan grants
+  no permission. The supervisor runs the configured project `verify`
+  on the completed result. Include checks required by pre-push hooks
+  there. A concrete native prerequisite failure preserves the work and
+  names what must change before retrying.
 - **Wave** per task: tasks with the same wave number touch disjoint files
   and do not need each other's output, so they can run at once. A task
   that needs another one's result goes into a later wave.

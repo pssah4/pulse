@@ -147,6 +147,21 @@ def _work(root, worktree, branch, remote=True):
             "dirty": dirty, "remote": bool(remote and not dirty and _remote(root, branch, head))}
 
 
+def handoff_work(root, item, number):
+    """Read the exact retained checkout named by the current item, without changing any file."""
+    work = item.get("work") or {}
+    branch = work.get("branch", "")
+    if state.item_of(branch) != number or not work.get("head") or not work.get("worktree"):
+        raise state.StateError("stop confirmation needs the current item's preserved branch, head and worktree")
+    branches = _git(root, "worktree", "list", "--porcelain").splitlines()
+    if branches.count("branch refs/heads/" + branch) != 1:
+        raise state.StateError("the preserved branch must have exactly one registered worktree")
+    kept = _work(root, work["worktree"], branch, remote=False)
+    if kept["head"] != work["head"]:
+        raise state.StateError("preserved work changed since the recorded head; refresh and inspect the item")
+    return {**work, **kept}
+
+
 def queue_stop(root, number, who, worktree, branch):
     """Keep a factual acknowledgement after the caller confirmed physical process end."""
     from pulse import actions
@@ -197,6 +212,34 @@ def _interactive_work(root, raw, current, actor):
     return _work(root, *candidates[0]) if len(candidates) == 1 else {}
 
 
+def recovery(item: dict) -> dict:
+    """Describe retained failure and the next command without requesting a transition."""
+    work, result = item.get("work") or {}, item.get("result") or {}
+    if (item.get("stop") or {}).get("status") == "requested":
+        return {"cause": "the previous writer's stop is not confirmed",
+                "branch": ready.printable(work.get("branch") or "unknown"), "resume": False,
+                "label": "confirm stopped",
+                "next": "After confirming the writer has ended, run in your terminal: "
+                        f"pulse release --take {item['number']} --stopped"}
+    retry, failure = work.get("retry") or {}, work.get("failure") or {}
+    gates = result.get("gates") or {}
+    red = result and (any(gates.get(g) != "pass" for g in ("tests", "review", "audit")) or
+                      any(value != "pass" for value in gates.values()))
+    cause = item.get("failure") or retry.get("cause") or failure.get("cause") or \
+        ("result checks have not all passed" if red else "")
+    if not cause:
+        return {}
+    resume = not retry or item.get("failed") or item.get("hold")
+    number = item["number"]
+    return {"cause": ready.printable(cause),
+            "branch": ready.printable(work.get("branch") or result.get("branch") or "unknown"),
+            "resume": bool(resume),
+            "label": "resume confirmed" if not resume else "repair needed" if red or retry.get("result") or
+                     item.get("failed") and failure.get("phase") != "plan" else "publish plan",
+            "next": (f"pulse resume {number}; after confirmation: " if resume else "Resume confirmed; ") +
+                    f"pulse go --item {number}"}
+
+
 def preview(root, repo, number, action, run=state.gh) -> dict:
     if type(number) is not int or number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise state.StateError("a repository and positive item number are required")
@@ -210,12 +253,15 @@ def preview(root, repo, number, action, run=state.gh) -> dict:
             raise state.StateError("only open work can be deferred or resumed")
         if entry.get("type") not in state.WORK:
             raise state.StateError("select a feature, improvement or fix; no epic cascade")
+        kept = recovery(entry) if action == "resume" else {}
         return {"repo": repo, "number": number, "action": action, "actor": actor,
                 "revision": entry.get("revision", ""), "confirmation": action,
                 "record": entry, "work": entry.get("work") or {},
                 "lines": [f"#{number}: {entry['title']}",
                           "Defer requests a stop and preserves work." if action == "defer" else
-                          "Resume waits for the writer to stop and preserves other holds."]}
+                          "Resume waits for the writer to stop and preserves other holds."] +
+                         ([f"Cause: {kept['cause']}", f"Preserved branch: {kept['branch']}", kept["next"]]
+                          if kept else [])}
     actor = _actor(repo, run)
     raw = _read(repo, number, run)
     if raw.get("number") != number or raw.get("state") not in ("OPEN", "CLOSED"):

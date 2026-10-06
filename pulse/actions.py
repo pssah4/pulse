@@ -21,7 +21,7 @@ from pathlib import Path
 from pulse import config
 from pulse.state import StateError
 
-KINDS = {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}   # an older Pulse rejects any other
+KINDS = {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy", "complete"}
 STATUSES = {"queued", "syncing", "confirmed", "conflict", "error"}
 ATTEMPTS = 5
 DATABASE = "outbox.sqlite"

@@ -179,6 +179,8 @@ Defer retains code, specs, uncommitted work, branches, notes and evidence. Resum
 
 Local unpublished work remains in its original worktree. A later run must recover it there rather than replacing it with a clean branch. A waiting published result needs no claim merely to remain on the Map.
 
+When you publish a retained Plan from its item view, `publication started` means the publication command has confirmed its startup. It does not mean the Plan has been pushed. A startup failure names the item log and remains in the run report with the preserved Plan; a newer shared item state supersedes that local failure. If startup is unconfirmed, inspect the log before retrying. The command continues independently after the Map closes, and all claim and project-hook checks still apply.
+
 ### Deletion is a staged removal
 
 Discard and delete have different consequences. Discard closes the item while retaining its implementation. Delete first prepares and checks removal of the item's implementation, specs and active references; unrelated work and Git history remain. The preview names dependencies and ambiguity that must be resolved. Integration of the removal and irreversible deletion of its issue and comments require separate explicit confirmations. Follow the displayed removal workflow; ordinary final approval does not authorize permanent issue deletion.

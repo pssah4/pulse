@@ -7,10 +7,12 @@ outbox outside the clone; nothing in the repository, the config or the environme
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import tempfile
 import time
 import uuid
@@ -28,11 +30,11 @@ KEEP = 200                     # uses the log keeps
 IDENT = re.compile(r"[\w.:-]{1,160}\Z", re.ASCII)
 TABLES = (
     "CREATE TABLE IF NOT EXISTS lever_grants (id TEXT PRIMARY KEY, scope TEXT NOT NULL, session TEXT NOT NULL, "
-    "run TEXT NOT NULL, by TEXT NOT NULL, at REAL NOT NULL)",
+    "run TEXT NOT NULL, by TEXT NOT NULL, at REAL NOT NULL, origin TEXT NOT NULL DEFAULT '')",
     "CREATE TABLE IF NOT EXISTS lever_asks (tool_use TEXT PRIMARY KEY, session TEXT NOT NULL, scope TEXT NOT NULL, "
-    "at REAL NOT NULL)",
+    "at REAL NOT NULL, origin TEXT NOT NULL DEFAULT '')",
     "CREATE TABLE IF NOT EXISTS lever_requests (session TEXT NOT NULL, scope TEXT NOT NULL, run TEXT NOT NULL, "
-    "at REAL NOT NULL, PRIMARY KEY(session, scope))",
+    "at REAL NOT NULL, origin TEXT NOT NULL DEFAULT '', PRIMARY KEY(session, scope))",
     "CREATE TABLE IF NOT EXISTS lever_uses (at REAL NOT NULL, session TEXT NOT NULL, scope TEXT NOT NULL, "
     "grant_id TEXT NOT NULL, by TEXT NOT NULL, lever TEXT NOT NULL, source TEXT NOT NULL)")
 
@@ -66,7 +68,31 @@ def _db(root):
     with actions._database(root) as db:
         for table in TABLES:
             db.execute(table)
+        for table in ("lever_grants", "lever_asks", "lever_requests"):
+            if "origin" not in {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
         yield db
+
+
+def _origin(root) -> str:
+    """Bind the effective fetch and push endpoints, without the network; missing origin is a local identity.
+    Never cache this: a command before the next lever may have changed the remote or URL rewriting (#200)."""
+    def git(*args):
+        try:
+            result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=0.2)
+        except (OSError, subprocess.TimeoutExpired):
+            raise state.StateError("lever grant origin identity unavailable") from None
+        if result.returncode:
+            raise state.StateError("lever grant origin identity unavailable")
+        return result.stdout.splitlines()
+
+    if "origin" not in git("remote"):
+        return "absent-origin"
+    urls = [git("remote", "get-url", "--all", "origin"),
+            git("remote", "get-url", "--all", "--push", "origin")]
+    if any(not group or any(not url for url in group) for group in urls):
+        raise state.StateError("lever grant origin identity unavailable")
+    return hashlib.sha256(json.dumps(urls).encode()).hexdigest()
 
 
 def run_id(root) -> str:
@@ -90,8 +116,10 @@ def allowed(root, env) -> dict | None:
     if not sid or root is None:
         return None
     try:
+        origin = _origin(root)
         with _db(root) as db:
-            rows = [dict(r) for r in db.execute("SELECT * FROM lever_grants ORDER BY at DESC")]
+            rows = [dict(r) for r in db.execute("SELECT * FROM lever_grants WHERE origin = ? ORDER BY at DESC",
+                                              (origin,))]
     except (state.StateError, OSError, sqlite3.Error):
         return None
     current = run_id(root) if any(r["scope"] == "run" and r["run"] for r in rows) else ""
@@ -117,9 +145,10 @@ def who(root) -> str:
 def grant(root, scope, sid, by, run="") -> str:
     if scope not in SCOPES:
         raise state.StateError("scope is run, session or always")
-    gid = uuid.uuid4().hex
+    gid, origin = uuid.uuid4().hex, _origin(root)
     with _db(root) as db:
-        db.execute("INSERT INTO lever_grants VALUES (?,?,?,?,?,?)", (gid, scope, sid or "", run or "", by, time.time()))
+        db.execute("INSERT INTO lever_grants (id,scope,session,run,by,at,origin) VALUES (?,?,?,?,?,?,?)",
+                   (gid, scope, sid or "", run or "", by, time.time(), origin))
     return gid
 
 
@@ -133,30 +162,35 @@ def off(root) -> int:
 
 def ask(root, tool_use, sid, scope):
     """The guard showed the dialog for this tool use."""
+    origin = _origin(root) if scope in SCOPES else ""   # the person's switch has no repository grant
     with _db(root) as db:
         db.execute("DELETE FROM lever_asks WHERE at < ?", (time.time() - ASK,))
-        db.execute("INSERT OR REPLACE INTO lever_asks VALUES (?,?,?,?)", (tool_use, sid, scope, time.time()))
+        db.execute("INSERT OR REPLACE INTO lever_asks (tool_use,session,scope,at,origin) VALUES (?,?,?,?,?)",
+                   (tool_use, sid, scope, time.time(), origin))
 
 
 def request(root, sid, scope, run=""):
     """The CLI ran in that session: only after the person agreed, when the guard asked."""
+    origin = _origin(root)
     with _db(root) as db:
-        db.execute("INSERT OR REPLACE INTO lever_requests VALUES (?,?,?,?)", (sid, scope, run or "", time.time()))
+        db.execute("INSERT OR REPLACE INTO lever_requests (session,scope,run,at,origin) VALUES (?,?,?,?,?)",
+                   (sid, scope, run or "", time.time(), origin))
 
 
 def confirm(root, tool_use, sid, scope) -> bool:
     """PostToolUse of the asked tool use: the dialog, the command and its request together make the grant."""
-    now = time.time()
+    now, origin = time.time(), _origin(root)
     with _db(root) as db:
         asked = db.execute("SELECT * FROM lever_asks WHERE tool_use = ?", (tool_use,)).fetchone()
         wanted = db.execute("SELECT * FROM lever_requests WHERE session = ? AND scope = ?", (sid, scope)).fetchone()
         db.execute("DELETE FROM lever_asks WHERE tool_use = ? OR at < ?", (tool_use, now - ASK))
         if not (sid and asked and wanted and asked["session"] == sid and asked["scope"] == scope
+                and asked["origin"] == wanted["origin"] == origin
                 and now - asked["at"] <= ASK and asked["at"] <= wanted["at"] <= now):
             return False
         db.execute("DELETE FROM lever_requests WHERE session = ? AND scope = ?", (sid, scope))
-        db.execute("INSERT INTO lever_grants VALUES (?,?,?,?,?,?)",
-                   (uuid.uuid4().hex, scope, sid, wanted["run"], who(root), now))
+        db.execute("INSERT INTO lever_grants (id,scope,session,run,by,at,origin) VALUES (?,?,?,?,?,?,?)",
+                   (uuid.uuid4().hex, scope, sid, wanted["run"], who(root), now, origin))
     return True
 
 
@@ -231,8 +265,9 @@ def until(row) -> str:
 
 def listing(root) -> dict:
     """The grants that still hold and the latest uses (FR-10)."""
+    origin = _origin(root)
     with _db(root) as db:
-        rows = [dict(r) for r in db.execute("SELECT * FROM lever_grants ORDER BY at DESC")]
+        rows = [dict(r) for r in db.execute("SELECT * FROM lever_grants WHERE origin = ? ORDER BY at DESC", (origin,))]
         uses = [dict(r) for r in db.execute("SELECT * FROM lever_uses ORDER BY at DESC LIMIT 20")]
     current = run_id(root) if any(r["scope"] == "run" and r["run"] for r in rows) else ""
     grants = [{**r, "until": until(r)} for r in rows if not (r["scope"] == "run" and r["run"] and r["run"] != current)]

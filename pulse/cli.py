@@ -12,6 +12,7 @@ import os
 import posixpath
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -112,6 +113,8 @@ def _goal_said(goal) -> None:
     if (goal or {}).get("reason"):
         step = "; go on: pulse go --resume, or change it: pulse go --steer '<new text>', then pulse go --resume" \
             if goal["status"] == "paused" else ""
+        if goal.get("retry_after") is not None:
+            step = f"; retry at {go._clock(goal['retry_after'])} while pulse go runs; restart: pulse go; earlier: pulse go --resume"
         print(ready.printable(f"  goal {goal['status']}: {goal['reason']}{step}"))
 
 
@@ -154,6 +157,11 @@ def _item(args):
     items = state.load(root, repo, run=run, fresh=args.fresh)
     i = next((i for i in items if i["number"] == args.n), None)
     if i is None:
+        completed = (state.stored(root) or {}).get("completed", {}).get(str(args.n))
+        if completed:
+            print(json.dumps(completed, indent=2) if args.json else
+                  f"#{args.n}: done, confirmed integration {completed['merge']}")
+            return 0
         print(f"#{args.n} is not an open issue")
         return 1
     _fetch(root)               # as the board: the Plan another clone pushed counts
@@ -262,23 +270,25 @@ def cmd_go(args):
                               f"(from {j['base']}) in {j['worktree']}"))
     for j in rep.get("planned", []):
         print(f"  planned #{j['number']} -> {j['plan']} ({j['gate']}{_spent(j)})")
-    for j in rep["done"]:
+    for j in rep.get("published", []):
         rounds = f" after {j['rounds']} fix round{'s' if j['rounds'] != 1 else ''}" if j["rounds"] else ""
         gates = ", ".join(f"{g} {j[g].split(':')[0]}" for g in go.GATES)
         policy = auto.read(root)
-        state_ = "integrated" if j["number"] in rep.get("merged", []) else \
-            "published work preserved; a gate is red" if not all(j[g].startswith("pass") for g in go.GATES) else \
-            "automatic integration pending" if auto.active(policy["policy"]) and not policy.get("blocked") else \
+        state_ = "automatic integration pending" if auto.active(policy["policy"]) and not policy.get("blocked") else \
             "waits for integration approval"
-        print(f"  done   #{j['number']} -> {j.get('head', '')[:12]} ({gates}{rounds}, {state_}{_spent(j)})")
+        print(f"  published #{j['number']} -> {j.get('head', '')[:12]} ({gates}{rounds}, {state_}{_spent(j)})")
+    for j in rep["done"]:
+        gates = ", ".join(f"{g} {j['gates'][g]}" for g in go.GATES)
+        print(f"  done   #{j['number']} -> {j.get('head', '')[:12]} ({gates}, integrated as {j['merge'][:12]}{_spent(j)})")
     for j in rep["failed"]:
-        print(ready.printable(f"  failed #{j['number']}: {j['why']} (worktree {j['worktree']}, log {j['log']})"))
+        print(ready.printable(f"  failed #{j['number']}: {j['why']} "
+                              f"(branch {j.get('branch', '')}, worktree {j.get('worktree', '')}, log {j.get('log', '')}{_spent(j)})"))
+        if j.get("next"):
+            print(ready.printable(f"    next: {j['next']}"))
     for j in rep["limited"]:
         print(ready.printable(f"  limit  #{j['number']}: {j['why']} (log {j['log']})"))
     for j in rep["skipped"]:
-        print(ready.printable(f"  skipped #{j['number']}: {j['why']}"))
-    for n in rep.get("merged", []):
-        print(f"  closed #{n}: its approved result was integrated")
+        print(ready.printable(f"  skipped #{j['number']}: {j['why']}{_spent(j)}"))
     for j in rep.get("stopped", []):
         print(ready.printable(f"  stopped #{j['number']} in {j['phase']} ({j['why']})"))
     for u in rep.get("unclean", []):
@@ -675,7 +685,7 @@ def cmd_approve(args):
     return _local_action("approve", args.n)
 
 
-def _local_action(kind, numbers):
+def _local_action(kind, numbers, *, stopped=False):
     root, code = _root(), 0
     items = {item["number"]: item for item in state.cached(root) or []}
     for n in numbers:
@@ -685,7 +695,7 @@ def _local_action(kind, numbers):
             code = 1
             continue
         try:
-            intent = pmap.action_preview(root, item, kind)
+            intent = pmap.action_preview(root, item, kind, **({"stopped": True} if stopped else {}))
         except state.StateError as error:
             print(ready.printable(str(error)))
             code = 1
@@ -693,6 +703,37 @@ def _local_action(kind, numbers):
         print("\n".join(intent["lines"]))
         print(pmap.queue_action(root, intent))
     return code
+
+
+def cmd_done(args):
+    """Reconcile an explicit published project merge; never implement or integrate again."""
+    if _person_only("done", args.n):
+        return 1
+    from pulse import actions, merge
+    root, repo, run = _ctx()
+    current, item, payload = merge.completion(root, repo, args.n, args.merge, run)
+    binding = {"item": args.n, **{k: payload[k] for k in ("head", "base", "tree")}}
+    why = "" if current["done"] else merge.evidence(root, payload["head"], payload["gates"], binding=binding)
+    if why and args.verify:
+        go.verify_result(root, repo, item, payload, current["revision"], run)
+        current, item, checked = merge.completion(root, repo, args.n, args.merge, run)
+        if checked != payload:
+            raise state.StateError("published completion changed during verification; inspect it again")
+        why = merge.evidence(root, payload["head"], payload["gates"], binding=binding)
+    if why:
+        print(f"#{args.n}: {why}; run pulse done {args.n} --merge {args.merge} --verify")
+        return 1
+    prior = next((e for e in reversed(actions.pending(root)) if e["kind"] == "complete"
+                  and e["item"] == args.n and e["payload"] == payload and e["status"] != "conflict"), None)
+    if prior:
+        if prior["status"] == "error":
+            actions.retry(root, prior["id"])
+        actions.start(root)
+        print(f"#{args.n}: completion {prior['status']}; merge {args.merge}")
+    else:
+        print(pmap.queue_action(root, {"item": args.n, "kind": "complete", "payload": payload,
+                                      "expected": current["revision"]}))
+    return 0
 
 
 def cmd_auto(args):
@@ -728,7 +769,7 @@ def _said(result):
 
 def cmd_claim(args):
     """The claim carries the files of the Plan this clone has, so every ramp holds them without a fetch
-    (WP-56). Running work and the ramp's next-item reservations refuse a conflicting claim (#46, #102)."""
+    (WP-56). Actual claims refuse conflicting files; the queue orders automatic work."""
     if args.take and _person_only("claim --take", args.n) or _other_item("claim", args.n):
         return 1
     root, repo, run = _ctx()
@@ -741,21 +782,13 @@ def cmd_claim(args):
     plans = ready.plan_files(root, found)
     files = plans.get(args.n)
     if files:
-        # ponytail: read, then claim; two claims on different items that share a file in the same
-        # seconds can both win, and the ramp shows both. A read after the claim would close it.
+        # Name an observed holder before writing. The canonical claim reducer also checks
+        # overlapping reservations atomically if another writer arrives after this read.
         items = ready.current(root, state.load(root, repo, run=run, fresh=True))
         others = [i for i in items if i["number"] != args.n]
         hit = ready.clash([posixpath.normpath(f) for f in files], ready.held(others, plans))
         if hit:
             return _said((False, f"#{args.n}: {hit[0]} is in use by #{hit[1]}; start #{args.n} once #{hit[1]} is done"))
-        cfg = config.load(root)
-        gates = ready.gates(root, [dict(i, assignees=[]) for i in items],
-                            config.load(root, config.base_ref(root)), found)
-        ramp = ready.ramp(items, plans, cfg["cap"], state.me(root, run=run), gates=gates)
-        reserved = next((i for i in ramp["locked"] if i["number"] == args.n and i["reserved"]), None)
-        if reserved:
-            stage = next(i["stage"] for i in ramp["rows"] if i["number"] == args.n)
-            return _said((False, f"#{args.n}: {stage}; start #{reserved['holder']} first"))
     labels = set()             # as the claim read them: a draft starts on its docs branch (#99 FR-05)
     rc = _said(state.claim(root, repo, args.n, run=run, take=args.take, files=files, labels=labels))
     if rc == 0:
@@ -791,10 +824,14 @@ def _start_point(root, n, draft=False) -> str:
 
 def cmd_release(args):
     """--take also hands over another person's claim (D-13)."""
+    stopped = getattr(args, "stopped", False)
+    if stopped and not args.take:
+        print("pulse release: --stopped requires --take and your confirmation that the writer has ended")
+        return 2
     if args.take and _person_only("release --take", args.n) or _other_item("release", args.n):
         return 1
     if args.take:
-        return _local_action("handoff", [args.n])
+        return _local_action("handoff", [args.n], stopped=stopped)
     root, repo, run = _ctx()
     kept = [] if args.take else \
         ready.unpushed(root, args.n, config.load(root)["base_branch"] or config.default_branch(root))
@@ -827,6 +864,19 @@ def cmd_publish_plan(args):
     if why:
         print(f"pulse publish-plan: no nested publication from {why}; run it in your own terminal")
         return 1
+    fd = getattr(args, "started_fd", None)
+    if fd is not None:
+        try:
+            if fd < 3 or not stat.S_ISFIFO(os.fstat(fd).st_mode):
+                raise state.StateError("invalid publication startup channel")
+            try:
+                os.write(fd, b"1")             # the handler is ready; no repository or network work yet
+            except BrokenPipeError:
+                pass                          # the Map timed out or closed; publication still owns its work
+            finally:
+                os.close(fd)
+        except OSError as error:
+            raise state.StateError(f"publication startup channel: {error}") from None
     root, repo, run = _ctx()
     selection = {key: getattr(args, key) for key in ("worktree", "path", "content")}
     result = go.publish_plan(root, repo, args.n, selection, gh_run=run)
@@ -900,6 +950,13 @@ def parser() -> argparse.ArgumentParser:
         command = add(name, cmd_lifecycle, description, when=when, example=f"pulse {name} 12")
         command.add_argument("n", type=int)
 
+    c = add("done", cmd_done, "confirm an already published project merge using its checked result",
+            when="Work was integrated through the project's own merge procedure and its Pulse item remains open.",
+            example="pulse done 12 --merge <full-merge-sha> --verify")
+    c.add_argument("n", type=int)
+    c.add_argument("--merge", required=True, help="full SHA of the published two-parent project merge")
+    c.add_argument("--verify", action="store_true", help="run missing result checks only; no planning, build, fix or merge")
+
     c = add("auto", cmd_auto, "show or configure final integration approval; automatic by default",
             when="Inspect the final policy, or deliberately choose automatic or manual integration.", example="pulse auto")
     c.add_argument("gate", nargs="?", choices=auto.GATES, help="merge: final approval for verified regular results")
@@ -926,6 +983,7 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("n", type=int)
     for key in ("worktree", "path", "content"):
         c.add_argument("--" + key, required=True, help="the selected Plan's " + key)
+    c.add_argument("--started-fd", type=int, help=argparse.SUPPRESS)
 
     c = add("map", cmd_map, "live map in the terminal: who does what, what goes out next",
             when="Watch progress or inspect an item's available actions.", example="pulse map")
@@ -978,6 +1036,9 @@ def parser() -> argparse.ArgumentParser:
         c = add(name, fn, text, plumb=name == "claim", when=when, example=f"pulse {name} 12")
         c.add_argument("n", type=int)
         c.add_argument("--take", action="store_true", help=f"right after {name}: {take}")
+        if name == "release":
+            c.add_argument("--stopped", action="store_true", help="with --take: confirm the requested writer "
+                           "has ended and preserve its recorded worktree; existing holds and failures remain")
 
     c = add("new", cmd_new, "create the record of an item on the board (a GitHub issue) for a spec, "
             "or a draft without one; print its number", plumb=True,

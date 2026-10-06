@@ -7,6 +7,14 @@ description: Move an older Pulse project to the current published-result workflo
 
 The current workflow publishes specs, Plans and checked results on one item branch and integrates regular checked results automatically by default. Manual final approval is an explicit option. Update Pulse in each agent first ([Update](../tutorials/installation#update)), then work through this page once per project. The [changelog](https://github.com/pssah4/pulse/blob/main/CHANGELOG.md) lists every change. In Codex, type `$pulse:<name>` for `/<name>`.
 
+## Native worker permissions
+
+Pulse now leaves permissions, sandbox settings and model-provider authentication to the native Codex or Claude CLI. Each worker reads the settings applicable in its own working directory. It does not inherit temporary permissions from the chat that started Pulse, and that chat cannot answer its headless prompts.
+
+Remove `worker_permissions = "person"` and redundant old default entries in `[agents]`; they produce migration notices. An explicit `narrow`, an unknown value or a custom template with old permission placeholders stops before any claim. Configure the intended restrictions in the native harness and replace the obsolete template or key. Pulse changes no stored user or organization settings. See [the exact migration rules](../reference/configuration#migrating-old-permission-settings).
+
+Keep the Pulse hooks installed and trusted. Hook, marker, claim, Git-integrity and integration checks remain. `localhost = true` no longer forces a Claude worker; configure the chosen native harness for the project's tests. A concrete missing runtime, login, permission or required hook preserves the work and reports the next action without repeating the unchanged attempt.
+
 ## From 0.4.0 to 0.4.1
 
 Update the plugin in Claude Code and Codex. Nothing to change in a project. A `pulse go` job that a handoff stops while it publishes acknowledges its stop, and the next run in the same clone acknowledges the stop of an earlier job that ended without it, so resume works again for such an item. While a process group a run noted for that job still runs, the stop stays open and the run report says why.
@@ -18,7 +26,7 @@ Update the plugin in Claude Code and Codex, run `pulse setup --codex-rules` once
 - The live map is a command center. NEEDS YOU on top lists only what you must act on, with its key; NEXT and LOCAL ACTIONS are gone, and an open or failed action stands at its item. Each of your jobs shows a stage ladder and "Plan k/n". The map scrolls (`PgUp`, `PgDn`, `Home`, `End`, the wheel), sections fold with Enter or a click, and the section of all open work, in the order it goes out, is now called BACKLOG. Below it, DONE lists what Pulse integrated in the last 7 days.
 - Who is doing what reads as a tree: you, your items with their stage, and under each item its sessions, folded at the start. Unfold an item to see each session's place, activity and running subagents; Enter or a click on a session jumps into it in Herdr.
 - Agents close each task of a Plan with a commit that carries the trailer `Pulse-Task: <n>`. Plans written before 0.4.0 show only the stages.
-- Workers of `pulse go` get the rights you give your own sessions: your permission mode (also `bypassPermissions` when you set it in your user settings) and every tool you allow. Claude Code workers get an item as one `/goal`. Codex workers follow your own Codex settings for network and automatic review of approvals; their sandbox stays. The comments on an item's issue by people who may push reach its worker as data.
+- Claude Code workers get an item as one `/goal`. The comments on an item's issue by people who may push reach its worker as data. The permission-copying rules introduced with this version have since been replaced by [native worker permissions](#native-worker-permissions).
 - The guard keeps every agent away from your base branch, `pulse-state`, the clone's `.pulse/` and the Pulse copy, also an agent that starts another agent. It judges each command within 3.5 seconds and refuses one it cannot judge in time.
 - `/pulse-off` and `/pulse-on` (in Codex: run `pulse off` or `pulse on` in your own terminal) turn Pulse off and on for you in one project, or with `--host` on the whole computer, without changing your team's configuration. The switch for the computer lives in `~/.config/pulse-agents/`.
 
@@ -27,7 +35,7 @@ Update the plugin in Claude Code and Codex, run `pulse setup --codex-rules` once
 Update the plugin in Claude Code and Codex. Then check these points in each project:
 
 - `pulse go` interprets your goal text again. If the interpretation fails, the goal pauses with its reason instead of working the whole queue; go on with `pulse go --resume` or change it with `--steer`. Item numbers such as `#580` in the text limit the run until the interpretation decides; `--item` and `--epic` always win over the text and over every steer.
-- Headless agents of `pulse go` may now run every command of your `verify`. Put the checks your pre-push hook runs into `verify`, for example `npm run test:run && npm run typecheck && npm run lint`, so an agent can run them before a push; a hook refusal gets its own fix round.
+- Put the checks your pre-push hook runs into `verify`, for example `npm run test:run && npm run typecheck && npm run lint`, so the final gate checks the same result; a hook refusal gets its own fix round. Native harness settings decide whether an agent can run those checks itself.
 - Pulse pushes its state branch `pulse-state` without your project's pre-push hooks (ADR-14); code branches always go through them. A failure that could not be pushed stays local and is sent again.
 - The guard refuses an agent's `git commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am` and a `pull` of another branch on your base or default branch. Agents work on their item branch; your own terminal is not affected.
 - The live map shows a run's sessions under their item with its branch, no longer counts headless agents as needing you, shows the item `pulse go` works on once, and keeps its text signet in a Herdr pane.
@@ -62,7 +70,7 @@ Update the plugin in Claude Code and Codex. Nothing to change in a project. A re
 
 Update the plugin in Claude Code and Codex and start new sessions: the Pulse rules a session gets now fit the context Claude Code passes on whole, and an attended Claude Code session can start `pulse go` from the chat again. Codex asks for its normal review of changed hooks.
 
-`pulse go` now starts the workers of the session that starts it: claude workers from Claude Code, codex workers from Codex, those of `agent` from a terminal. A project that needs one kind of worker for every start, for example because it relies on the Codex sandbox, sets `workers = "fixed"` in `.pulse/config.toml`, or in the Map's settings (`s`).
+`pulse go` now starts the workers of the session that starts it: claude workers from Claude Code, codex workers from Codex, those of `agent` from a terminal. A project that needs one kind of worker for every start, for example because its native configuration targets that harness, sets `workers = "fixed"` in `.pulse/config.toml`, or in the Map's settings (`s`).
 
 A project hook that refuses a commit of `pulse go` now holds only its item. Earlier reports still show their old hook pause as an earlier event; the next run checks it again. The Map takes clicks and the mouse wheel and opens specs, Plans, decisions and check output in its reader.
 
@@ -80,7 +88,7 @@ The Map shows local actions as queued, syncing, confirmed, conflict or error. `p
 
 | Gone | Use instead |
 |---|---|
-| `pulse done <n>` | `pulse go` closes what it merged; close a dropped item or a draft on GitHub |
+| the old `pulse done <n>` without a merge proof | `pulse go` closes what it merged. For an already published project merge, use `pulse done <n> --merge <full-sha> --verify` in your own terminal. Use `pulse discard <n>` for a dropped item. |
 | `pulse approve-plan <n>`, the label `pulse:plan-ok`, the map's `p` | a valid published Plan proceeds to the authorized build; `pulse approve <n>` now approves only a final result and base |
 | the commands review and audit of `pulse`, and the review skill | `pulse go` and `/pulse-build` run review and audit themselves; `/pulse-audit` by hand for a chosen scope |
 | `pulse show <n>` | `pulse status <n>` |
@@ -103,8 +111,8 @@ The Map shows local actions as queued, syncing, confirmed, conflict or error. `p
 3. **Config on the base branch.** Add `[spec_tests]`, the runner of each spec test file, and `setup` if a fresh checkout needs one (`npm ci`, say), to `.pulse/config.toml`, and merge the change into the base branch. `pulse go` reads `verify`, `setup`, `[spec_tests]`, and `[agents]` only from the base branch as origin has it, and does not start without `[spec_tests]`. See [Configuration](../reference/configuration).
 4. **Old keys.** `plan_approval`, `go_autostart`, `parallel`, and `map_autostart` switch nothing any more, and Pulse names the first two once as ignored. Remove them once every clone of the team runs the new release.
 5. **Worktrees.** Item worktrees now live under `.worktrees/` in the repository. vitest, jest, and ESLint need `.worktrees/` in their ignore list; pytest and TypeScript skip it on their own.
-6. **Codex.** Update Pulse in Codex, trust the hooks again with `/hooks` in the CLI (or **Trust** on the Hooks page of the IDE extension), and run `pulse setup --codex-rules` again. A Codex template of your own in `[agents]` must name `--sandbox workspace-write` and no profile, or `pulse go` stops before its first claim.
-7. **Agents for localhost tests.** `pulse go` runs Codex without network, unless your own Codex settings turn it on (since #230). An item whose spec tests match a `[spec_tests]` pattern with `localhost = true` needs Claude: name it in `agent` (`claude:2,codex:2`, say), or the item waits with `needs a Claude agent (localhost spec tests)`.
+6. **Codex.** Update Pulse in Codex, trust the hooks again with `/hooks` in the CLI (or **Trust** on the Hooks page of the IDE extension), and run `pulse setup --codex-rules` again. Migrate old `[agents]` templates using [native worker permissions](#native-worker-permissions).
+7. **Agents for localhost tests.** Agent selection follows the configured slots. The native harness must permit the test server access the project needs; `localhost = true` no longer excludes Codex.
 
 8. **Plan compatibility.** Run `pulse setup --check-plan` before the planning handoff. Resolve findings in the tracked project validation without disabling real hooks.
 9. **Legacy state.** Old approval labels, Plan comments, auto settings and PR state grant no final integration authority. Read and resolve any migration finding rather than manually editing Pulse's shared state.

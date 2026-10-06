@@ -225,6 +225,24 @@ writer's stop and recorded work before releasing the claim. Until it is
 confirmed, do not begin a second writer. Continue its published branch
 or its original retained worktree; unpushed changes remain in that clone.
 
+### The item says `stop not confirmed`
+
+The previous writer has not acknowledged the stop request. No new claim can
+start while this remains open. Confirm that the named writer has ended, then
+run `pulse release --take <n> --stopped` in your own terminal, in the clone
+that holds its recorded worktree. This also works for an ended interactive
+session or another account's writer. Pulse checks your current write permission,
+the observed item revision, the stop generation and the preserved checkout.
+It reads the current worktree without changing files. A changed head, missing
+worktree or multiple checkouts of the branch requires inspection first.
+
+The action is queued locally and completed through background synchronization.
+Wait for `confirmed`. Existing holds and failed results still need
+`pulse resume <n>`; otherwise a regular claim can continue the preserved work.
+The confirmation starts no agent and adds no hold. Never use `--stopped` while
+the writer is still running. Pulse does not detect process termination on another
+computer.
+
 ### The backlog says `last run: ...`
 
 A `pulse go` run gave the item back and left a note on it: why it stopped (a failure or a stop) and which branch holds its work. The map shows the first line; `pulse status <n>` prints the whole note. Nobody holds the item, so claim it as usual. `pulse go` starts its worktree from the pushed item branch; in a session, `/pulse-build <n>` continues on that branch. Changes of a phase the run stopped halfway stay in that run's worktree, under `.worktrees/` in the repository of the machine that ran it.
@@ -261,9 +279,9 @@ A project hook refused a commit or push of `pulse go` for item #n. The run start
 
 `pulse go` runs each spec test with its own runner and reads the runners from `[spec_tests]` in `.pulse/config.toml` on the base branch as origin has it, like `verify`, `setup`, and `[agents]`. Add the section ([Configuration](./configuration)), commit it, and merge it into the base branch; a change only in your working tree counts for nothing.
 
-### `pulse go` skips an item: `needs a Claude agent (localhost spec tests)`
+### A worker cannot reach a localhost test server
 
-A spec test of the item's first wave matches a pattern of `[spec_tests]` with `localhost = true`, and a Codex worker may run without network (it has network only where your own Codex settings give it), so it cannot be counted on to reach that server. Add `claude` to `agent` in `.pulse/config.toml` (`claude:2,codex:2`, say), or build the item in a Claude Code session with `/pulse-build <n>`.
+`localhost = true` no longer changes agent selection. Pulse uses the configured worker slots, and the native harness decides whether a worker can reach the server. Read the actual failure in `.git/pulse/go/<n>.log` and check that harness's native settings in the item's worktree. An older run may still show `needs a Claude agent (localhost spec tests)` in its retained report.
 
 ### `pulse go` skips an item: `failed (pulse:failed)`
 
@@ -279,7 +297,11 @@ Use `pulse revoke <n>` in your terminal or revoke in the Map. It blocks locally 
 
 ### An agent of `pulse go` is refused a command
 
-A headless agent cannot answer a permission prompt, so it runs only what its template allows. The built-in Claude template allows `verify` up to its first option or path, five git commands, and the runners of `[spec_tests]`, and never `gh`: `pulse go` does everything on GitHub itself; the Codex template lets Codex write the shared git directory so it can commit. A template in `[agents]` copied from an older Pulse lacks both rights. See [Agent templates](./configuration#agent-templates) for what the rule covers and how to fix a template.
+Workers use a new native CLI in the item's worktree, or a separate directory for review and audit. The CLI reads its own settings there; Pulse does not copy the original clone's local settings or the calling chat's temporary permissions. It starts with closed stdin, so that chat cannot answer its permission prompts.
+
+For an explicit native permission, authentication or required-hook failure, read the report's phase, concrete cause, preserved branch and worktree, and next action. Resolve that prerequisite through the native harness's configuration or login. Pulse keeps the work and does not repeat the same failure automatically. If the item is recorded as failed, request `pulse resume <n>` in your terminal or the Map and wait for confirmation before running it again. Usage-limit waits keep their existing recovery path.
+
+An unavailable executable needs installation or a corrected `[agents]` path. A missing Pulse hook needs the Pulse installation repaired; a native policy that refuses a required hook needs its own authorized configuration change. Pulse neither overrides that policy nor starts another sandbox. For `worker_permissions` or an old permission placeholder, follow [the migration steps](./configuration#migrating-old-permission-settings) before restarting the run.
 
 ### `pulse go` leaves an item as failed
 

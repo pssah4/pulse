@@ -73,7 +73,8 @@ GRAPHICS_OK = f"\033_Gi={LOGO_ID};OK\033\\"
 LOGO_OFF = f"\033_Ga=d,d=i,i={LOGO_ID},q=2\033\\"        # its place on the screen
 LOGO_GONE = f"\033_Ga=d,d=I,i={LOGO_ID},q=2\033\\"       # its place and its data
 # what the map asks of a person, the most urgent first, in the color of its state
-NEXT = {"failing": "31", "your review": "33", "integration": "33", "waits for merge": "33",
+NEXT = {"failing": "31", "repair needed": "31", "publish plan": "33", "resume confirmed": "33", "confirm stopped": "33",
+        "your review": "33", "integration": "33", "waits for merge": "33",
         "spec rule": "90", "spec waits": "90", "last run": "90",
         "plan repair": "90", "plan needs you": "33", "needs a plan": "90", "starts next": "90", "queued": "90",
         "spec in progress": "90", "nothing open": "90", "held silent": "33", "on hold": "33"}
@@ -752,6 +753,9 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         """The current writer or the published result awaiting final integration."""
         n, result = i["number"], i.get("result")
         fix = ("failing", f"/pulse-build {n} takes it on in a session") if mine(i) else None
+        if (i.get("stop") or {}).get("status") == "requested":
+            kept = lifecycle.recovery(i)
+            return "waiting", kept["cause"], (kept["label"], kept["next"])
         if i.get("local_hold"):
             return "waiting", "on hold locally", None
         if i.get("hold"):
@@ -784,13 +788,18 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         decides; a row that waits for a blocker waits for nobody else (WP-60). A held draft is no row
         and says the same."""
         n, s = row["number"], row.get("stage", "")
-        if n in failed:
+        kept = lifecycle.recovery(by_number.get(n, row))
+        if kept.get("label") == "confirm stopped":
+            return "waiting", (kept["label"], kept["next"])
+        if n in failed and not kept:
             return "error", ("failing", f"/pulse-build {n} takes it on in a session")
         if row.get("draft"):                  # /pulse-ba or /pulse-re writes its spec (D-43)
             who = row.get("claimed_by") or next(iter(row["assignees"]), "")
             return "idle", ("spec in progress", f"{who or '/pulse-re'} writes the spec of #{n}")
         if row in groups["blocked"] and not ready.repairable(row, s):
             return "idle", None
+        if kept and not any(row.get(key) for key in ("hold", "local_hold", "claim", "claimed_holder", "assignees")):
+            return ("error" if row.get("failed") or row.get("result") else "waiting"), (kept["label"], kept["next"])
         if s.startswith("spec:"):
             return "idle", ("spec rule", f"/pulse-re on the spec of #{n}")
         if s.startswith("plan: "):
@@ -905,6 +914,9 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
                  ("base", result.get("base", "")[:12] or "none"),
                  ("checks", ", ".join(f"{name}: {value}" for name, value in sorted(result.get("gates", {}).items())) or "none"),
                  ("spec", i.get("spec") or "none"), ("plan", seen["plan"] or "none yet")]
+        kept = lifecycle.recovery(i)
+        if kept:
+            facts += [("cause", kept["cause"]), ("branch", kept["branch"]), ("next", kept["next"])]
         facts += [("action" if k == 0 else "", text) for k, text in enumerate(showing.get(n, []))]     # #215
         if "plan_blob" in seen:
             facts.append(("plan blob", seen["plan_blob"] or "local preview; publish before building"))
@@ -947,7 +959,7 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         for label, value in facts:
             pieces = wrap(value, w - 13) if label in ("goal", "stage", "plan", "plan blob", "plan issue", "action",
                          "plan state", "commit", "publication", "plan source", "plan failed", "refused",
-                         "effect", "output", "") else [value]
+                         "effect", "output", "cause", "branch", "next", "") else [value]
             if reads.get(label):                # a click on the row reads it (#180)
                 marks.update({top + len(details) + k: ("read", reads[label]) for k in range(len(pieces))})
             details += [f" {label if index == 0 else '':<12}{piece}" for index, piece in enumerate(pieces)]
@@ -994,6 +1006,8 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         done, remaining = len(progress.get("done", [])), len(progress.get("remaining", []))
         aims = [short(f"goal: {status} · {goal['objective']}", w - 2), f"scope: {scope_text} · {done} of "
                 f"{done + remaining} done", "holds: " + goal["reason"] if goal.get("reason") else "",
+                f"retry at {go._clock(goal['retry_after'])}: pulse go; earlier: pulse go --resume"
+                if goal.get("retry_after") is not None else
                 "resume: pulse go --resume" if goal["status"] == "paused" else ""]
     if item:
         return [fit(line, w) for line in out + inside(item)]
@@ -1019,18 +1033,24 @@ def render(vm: dict, frame: int = 0, color: int = True, width: int = WIDTH, sele
         if r.get("current") and not r.get("legacy") and r.get("state") == "decision":
             n = r.get("number")
             label = f"#{n} {by_number[n]['title']}" if n in by_number else f"#{n}"
+            kept = lifecycle.recovery(by_number.get(n, {}))
             needs.append((("item", n) if n in by_number else None, label,
-                          "enter opens" if live else f"pulse status {n}", ["You: " + (r.get("why") or f"decide #{n}") +
-                           (f"; the failure is {go.UNSENT}" if r.get("unsent") else "")],
+                          "enter opens" if live else f"pulse status {n}",
+                          (["You: " + (r.get("why") or f"decide #{n}") +
+                            (f"; the failure is {go.UNSENT}" if r.get("unsent") else "")]
+                           if not kept or kept["resume"] else []) +
+                          ([kept["cause"], "Preserved branch: " + kept["branch"], kept["next"]] if kept else []),
                           "33"))
     asked = [(i, lit[i["number"]]) for _, i in held if i["number"] in lit] + \
         [(x, (wants(x)[0], says(x)[0], wants(x)[1])) for x in rows]
     for i, (st, words, step) in asked:
         if step and NEXT.get(step[0]) in ("31", "33") and ("item", i["number"]) not in [e[0] for e in needs]:
             n, approves = i["number"], step[1] == f"pulse approve {i['number']}"   # a result: base changed is none
+            kept = lifecycle.recovery(by_number.get(n, i)) if step[0] in ("repair needed", "publish plan", "resume confirmed", "confirm stopped") else {}
             key_ = ("a approves" if approves else "enter opens") if live else \
                 (step[1] if approves else f"pulse status {n}")       # pulse status prints the commands (#215)
             needs.append((("item", n), f"#{n} {i['title']}", key_,
+                          [kept["cause"], "Preserved branch: " + kept["branch"], kept["next"]] if kept else
                           [words] if approves or step[0] == "held silent" else
                           [words, step[1]] if step[0] in ("failing", "integration", "plan needs you", "on hold") else [step[1]],
                           NEXT[step[0]]))
@@ -1405,6 +1425,11 @@ def _plan_observed(root: Path, item: dict, cfg: dict, sources: dict, report: dic
     prior = (report.get("items") or {}).get(str(item["number"])) or {}
     work = item.get("work") if isinstance(item.get("work"), dict) else prior.get("work") or {}
     failure = work.get("failure") or (prior.get("failure") if "work" not in item else None)
+    local_work = prior.get("work")
+    local_failure = local_work.get("failure") if isinstance(local_work, dict) else None
+    if isinstance(local_failure, dict) and local_failure.get("step") == "start" and \
+            prior.get("revision") == item.get("revision"):
+        failure = local_failure             # a CLI which never started could not update shared work
     if isinstance(failure, dict) and failure.get("phase") == "plan":
         failure = dict(failure)
         same = next((selection for _, _, selection in _plan_entries(observed)
@@ -1462,9 +1487,11 @@ def offers(vm: dict, seen: dict) -> list:
             for entry in _latest(vm.get("actions", [])).values()
             if entry["item"] == item["number"] and entry["status"] == "conflict" and entry["kind"] in LOCAL_ACTIONS]
     if item.get("type") in state.WORK:
-        choices = ["resume" if item.get("hold") or item.get("failed") else "defer"] \
+        choices = ["resume" if item.get("hold") or item.get("failed") or lifecycle.recovery(item).get("resume") else "defer"] \
             if item.get("state", "OPEN") == "OPEN" else []
-        if item.get("claim_token"):
+        if (item.get("stop") or {}).get("status") == "requested":
+            choices = [action for action in choices if action != "resume"]
+        elif item.get("claim_token"):
             choices.append("handoff")
         choices += ["discard", "delete"]
         out += [(action, *OFFER[action]) for action in choices]
@@ -1673,7 +1700,7 @@ def _cached_person(root: Path) -> str:
     return state.who(root, login) or "you"
 
 
-def action_preview(root: Path, item: dict, kind: str, *, person=None) -> dict:
+def action_preview(root: Path, item: dict, kind: str, *, person=None, stopped=False) -> dict:
     """Prepare a local intent from exactly the revision the person has observed."""
     number, revision = item["number"], item.get("revision")
     if not revision:
@@ -1702,15 +1729,31 @@ def action_preview(root: Path, item: dict, kind: str, *, person=None) -> dict:
         lines += [f"{gate}: {value}" for gate, value in sorted(item["result"].get("gates", {}).items())]
         lines += _result_notes(item)
     elif kind == "handoff":
+        stop = item.get("stop") or {}
         holder = item.get("claim_token") or (item.get("claim") or {}).get("holder")
-        if not holder:
-            raise state.StateError(f"#{number}: no observed claim to hand off; refresh the map")
-        payload = {"holder": holder, "reason": "Person requested a claim handoff", "work": item.get("work") or {}}
-        lines.append("Request the current writer to stop and preserve its work before the claim is released.")
+        if stopped:
+            if stop.get("status") != "requested" or holder and holder != stop.get("holder"):
+                raise state.StateError(f"#{number}: no matching pending stop; refresh the map")
+            work = lifecycle.handoff_work(root, item, number)
+            payload = {"holder": stop["holder"], "stopped": True,
+                       "reason": "Person confirms the requested writer has ended", "work": work}
+            lines += [f"You confirm writer {stop['holder']} has stopped.",
+                      f"Preserved branch: {work['branch']}", f"Preserved worktree: {work['worktree']}",
+                      "Existing holds and failures remain; this confirmation starts no agent."]
+        else:
+            if not holder:
+                raise state.StateError(f"#{number}: no observed claim to hand off; refresh the map")
+            payload = {"holder": holder, "reason": "Person requested a claim handoff", "work": item.get("work") or {}}
+            lines.append("Request the current writer to stop and preserve its work before the claim is released.")
     elif kind == "defer":
         lines.append("Pause this item locally now; share the hold in the background.")
     elif kind == "resume":
+        if (item.get("stop") or {}).get("status") == "requested":
+            raise state.StateError(lifecycle.recovery(item)["next"])
         lines.append("Resume after the shared state confirms this request.")
+        kept = lifecycle.recovery(item)
+        if kept:
+            lines += [f"Cause: {kept['cause']}", f"Preserved branch: {kept['branch']}", kept["next"]]
     elif kind == "revoke":
         lines.append("Withdraw approval of the observed result and base.")
     return {"kind": kind, "item": number, "expected": revision, "payload": payload, "person": person,
@@ -2023,7 +2066,9 @@ def _report_text(rep: dict) -> str:
              if isinstance(e, dict)]
     for n, entry in sorted(items, key=lambda x: str(x[1].get("at", "")), reverse=True):
         lines += ["", f"#{n} {entry.get('result', '')}"] + [
-            f"  {word}: {entry[k]}" for k, word in (("at", "time"), ("phase", "phase"), ("why", "why"), ("log", "log"))
+            f"  {word}: {entry[k]}" for k, word in (("at", "time"), ("phase", "phase"), ("why", "why"),
+                ("branch", "branch"), ("head", "head"), ("base_sha", "base"), ("merge", "integrated"),
+                ("next", "next"), ("log", "log"))
             if entry.get(k)]
     return "\n".join(lines)
 
@@ -2044,20 +2089,56 @@ def _publish_plan(root: Path, vm: dict, number: int, selection: dict) -> str:
     if observed["validation"]["findings"]:
         return f"#{number}: publication blocked: {observed['why']}"
     log = config.pulse_dir(root) / "go" / f"{number}.log"
+    read_fd, write_fd = None, None
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
         if log.parent.resolve() != log.parent or log.exists() and not _plan_log(root, number, str(log)):
             return f"#{number}: publication log is unavailable"
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         with open(log, "ab", opener=lambda path, _: os.open(path, flags, 0o600)) as output:
-            argv = [sys.executable, str(setup.PULSE_BIN), "publish-plan", str(number)]
+            read_fd, write_fd = os.pipe()
+            argv = [str(setup.PULSE_BIN), "publish-plan", str(number)]
             for key in ("worktree", "path", "content"):
                 argv += ["--" + key, selection[key]]
-            subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=output,
-                             stderr=subprocess.STDOUT, start_new_session=True)
+            argv += ["--started-fd", str(write_fd)]
+            try:
+                process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=output,
+                                           stderr=subprocess.STDOUT, start_new_session=True, pass_fds=(write_fd,))
+            except OSError as error:
+                output.write((str(error) + "\n").encode("utf-8", "replace"))
+                raise
+        os.close(write_fd)
+        write_fd = None
+        readable, _, _ = select.select([read_fd], [], [], 1.0)
+        if readable and os.read(read_fd, 1) == b"1":
+            return f"#{number}: plan publication started; not yet published; log: {log}"
+        if readable:
+            try:
+                code = process.wait(timeout=.05)
+            except subprocess.TimeoutExpired:
+                code = None
+            why = "plan publication could not start: CLI closed its startup channel" + \
+                (f" (exit {code})" if code is not None else "")
+        else:
+            why = "plan publication startup unconfirmed; inspect its log before retrying"
     except OSError as error:
-        return f"#{number}: plan publication could not start: {error}"
-    return f"#{number}: plan publication started; not yet published; log: {log}"
+        why = f"plan publication could not start: {error}"
+    finally:
+        for fd in (read_fd, write_fd):
+            if fd is not None:
+                os.close(fd)
+    failure = {"phase": "plan", "step": "start", "cause": ready.printable(why), "log": str(log),
+               "content": selection["content"], "checked_against": observed["validation"]["checked_against"]}
+    work = {"phase": "plan", "worktree": selection["worktree"], "common": str(config.common_dir(root)),
+            "branch": observed["selected"]["branch"], "head": observed["selected"]["head"],
+            "plan": {k: selection[k] for k in ("path", "content")},
+            "failure": failure}
+    rep = {"report": str(log.parent / "report.json"), "_external": True, "items": {}, "skipped": [], "failed": [],
+           "run": {"id": "publication-start", "pid": os.getpid(), "started": go._now(), "ended": go._now()}}
+    go._event(rep, "failed", {"number": number, "phase": "plan", "step": "start", "work": work,
+                              "published": False, "revision": item.get("revision"),
+                              "why": failure["cause"], "log": str(log)})
+    return f"#{number}: {failure['cause']}; log: {log}"
 
 
 def jump(root: Path, ident: str, env=os.environ) -> str:
@@ -2253,7 +2334,7 @@ def failures(root: Path, items=()) -> dict:
     clone keeps until the board has it says so first, where no cut takes it (FR-03 of #209)."""
     since = {i["number"]: max(i.get("claimed_at") or "", i.get("claimed_beat") or "") for i in items}
     try:
-        report = json.loads((config.pulse_dir(root) / "go" / "report.json").read_text(encoding="utf-8"))
+        report = go.last_run(root) or {}
         kept = go.unsent(root)
         return {int(n): (f"{go.UNSENT}: " if int(n) in kept else "") + (r.get("why") or "failed")
                 for n, r in report["items"].items()
@@ -2315,14 +2396,17 @@ def integrated(root: Path, base: str, titles: dict) -> list:
     merge commits "Merge item #n" (merge.integrate): who is the author git records for the merge, the name of the
     person whose clone integrated it; at is its commit time. Local git only; the map never waits for the network."""
     out, seen = [], set()
+    canonical = {item["merge"]: item["number"] for item in
+                 (state.stored(root) or {}).get("completed", {}).values() if item.get("done") and item.get("merge")}
     log = _git(str(root), "log", "--merges", f"--since={DONE_DAYS}.days.ago",
                "--format=%H%x1f%ct%x1f%cI%x1f%an%x1f%s", config.base_ref(root, base), "--")
     for line in log.split("\n"):              # never splitlines: git leaves \x0b, \x1c, U+2028 in a subject
         merge, stamp, at, who, subject = (line.split("\x1f") + ["", "", "", ""])[:5]
         m = re.fullmatch(r"Merge item #([1-9][0-9]{0,9})", subject)        # an issue number, never a huge int
-        if m and int(m.group(1)) not in seen:
-            seen.add(int(m.group(1)))
-            out.append({"number": int(m.group(1)), "title": titles.get(int(m.group(1)), ""), "who": clean(who),
+        number = canonical.get(merge) or (int(m.group(1)) if m else None)
+        if number and number not in seen:
+            seen.add(number)
+            out.append({"number": number, "title": titles.get(number, ""), "who": clean(who),
                         "at": at, "merge": merge, "stamp": int(stamp) if stamp.isdigit() else 0})
     return sorted(out, key=lambda row: row["stamp"], reverse=True)      # the moment, whatever its time zone
 

@@ -23,7 +23,7 @@ ID = re.compile(r"[0-9a-f]{32}\Z")
 DEFAULT_POLICY = {"revision": "default:auto:v1", "mode": "automatic", "proof": None, "until": None}
 KINDS = {"claim", "release", "defer", "stopped", "resume", "approve", "revoke",
          "result", "integrating", "integrated", "integration_aborted", "migrate", "handoff", "published", "failed",
-         "removal_begin", "removal_rebind", "removal_finalize", "removal_deleted", "policy", "autoapprove"}
+         "removal_begin", "removal_rebind", "removal_finalize", "removal_deleted", "policy", "autoapprove", "complete"}
 
 
 def _git(root, *args, text=None):
@@ -77,6 +77,11 @@ def _binding(value):
 def _gates(value):
     return isinstance(value, dict) and all(_text(key) and isinstance(status, str)
             and status in {"pass", "fail", "block", "none", "pending", "error"} for key, status in value.items())
+
+
+def _red_result(result):
+    return bool(result and (any(result["gates"].get(g) != "pass" for g in ("tests", "review", "audit"))
+                            or any(value != "pass" for value in result["gates"].values())))
 
 
 def _proof(value):
@@ -265,6 +270,21 @@ def _reduce(snapshot, op, item):
         removal["finalizer"] = holder
         removal["deleted"] = kind == "removal_deleted"
         return ""
+    if kind == "complete":
+        if (set(payload) != {"branch", "head", "base", "tree", "merge", "gates", "proof"}
+                or not _binding(payload) or not _sha(payload.get("tree")) or not _sha(payload.get("merge"))
+                or not _text(payload.get("branch")) or not _proof(payload.get("proof"))
+                or payload.get("gates") != dict.fromkeys(("tests", "review", "audit"), "pass")
+                or claim or reservation or item["hold"] or item.get("failed") or item.get("revoked") or removal
+                or (item.get("stop") or {}).get("status") == "requested"):
+            return "completion needs an unclaimed, unheld verified result and person proof"
+        result = {key: payload[key] for key in ("branch", "head", "base")}
+        result["gates"] = payload["gates"]
+        if item["done"]:
+            return "" if item["merge"] == payload["merge"] and all(
+                item["result"].get(k) == result[k] for k in ("branch", "head", "base")) else "a confirmed completion cannot be replaced"
+        item.update(result=result, merge=payload["merge"], done=True, approval=None)
+        return ""
     if item["done"]:
         return "item is complete"
     if kind == "removal_rebind":
@@ -285,6 +305,8 @@ def _reduce(snapshot, op, item):
                 for b in other["claim"]["files"]) for other in snapshot["items"].values()):
             return "legacy files overlap a current reservation"
     elif kind == "claim":
+        if item["stop"] and item["stop"]["status"] == "requested":
+            return "the previous writer's stop is not confirmed"
         if (item["hold"] or item.get("failed") or claim and not owns or not _text(holder)
                 or removal and payload.get("removal") != removal["operation"]["id"]):
             return "item is held or already claimed"
@@ -309,6 +331,20 @@ def _reduce(snapshot, op, item):
         item["claim"] = None
         if "work" in payload:
             item["work"] = payload["work"]
+    elif kind == "handoff" and payload.get("stopped") is True:
+        stop, work = item["stop"], payload.get("work")
+        if (not stop or stop["status"] != "requested" or stop["holder"] != holder
+                or claim and not owns or not _proof(payload.get("proof"))
+                or not isinstance(work, dict) or not work or not _text(payload.get("reason"))
+                or any(work.get(key) != (item.get("work") or {}).get(key)
+                       for key in ("branch", "head", "worktree"))):
+            return "stop confirmation needs its observed generation, retained work and person proof"
+        item.update(claim=None, approval=None, work=work)
+        if _red_result(item["result"]):
+            item["failed"] = True
+        stop.update(status="completed", work=work)
+        if reservation and reservation["item"] == op["item"]:
+            snapshot["integration"] = None
     elif kind in {"handoff", "failed"}:
         if (not owns or not _text(payload.get("reason")) or not isinstance(payload.get("work"), dict)
                 or kind == "handoff" and not _proof(payload.get("proof"))):
@@ -339,6 +375,15 @@ def _reduce(snapshot, op, item):
         if (claim or item["stop"] and item["stop"]["status"] != "completed"
                 or item["hold"] and item["hold_origin"] != payload.get("origin", "defer")):
             return "writer has not stopped or another hold remains active"
+        work, result = item.get("work") or {}, item.get("result")
+        red = _red_result(result)
+        if red or not result and (item.get("failed") or work.get("failure")):
+            cause = item.get("failure") or (work.get("failure") or {}).get("cause") or \
+                "result checks have not all passed"
+            item["work"] = {**work, "retry": {"operation": op["id"], "cause": cause,
+                                             **({"result": copy.deepcopy(result)} if red else {})}}
+        if red:
+            item.update(result=None, approval=None)
         item.update(hold=False, hold_origin="", failed=False, failure="")
     elif kind == "published":
         if (not owns or item["hold"] or item.get("failed") or not _sha(payload.get("head"))
@@ -354,6 +399,8 @@ def _reduce(snapshot, op, item):
             return "result requires gate evidence"
         item["result"] = {key: payload[key] for key in ("branch", "head", "base", "gates")}
         item["approval"] = None
+        if item.get("work"):
+            item["work"].pop("retry", None)
         if item.get("revoked") != {key: payload[key] for key in ("head", "base")}:
             item.pop("revoked", None)
     elif kind in {"approve", "autoapprove"}:

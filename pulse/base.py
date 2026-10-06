@@ -80,7 +80,7 @@ def _gates(root: Path) -> Path:
     return config.evidence_dir(root) / "gates"
 
 
-def vouch(root: Path, sha: str, gate: str, result: str | dict, by: str) -> None:
+def vouch(root: Path, sha: str, gate: str, result: str | dict, by: str, *, binding=None) -> None:
     """A gate of pulse go ended at commit sha here: its result goes into gates/<sha> of config.evidence_dir (IMP-03-13
     FR-05), outside the git dir a Codex phase writes (FIX-02-06-11), where the commit status is open to anyone with
     write access to the repository. Written through no link: a new file that takes the entry's place (L-2). A base
@@ -93,7 +93,10 @@ def vouch(root: Path, sha: str, gate: str, result: str | dict, by: str) -> None:
     try:
         fd = os.open(new, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as out:
-            out.write(json.dumps({**_read(path), "by": by, gate: result}))
+            previous = _read(path)
+            if binding is not None and previous.get("binding") != binding:
+                previous = {"binding": binding}  # a new context cannot relabel earlier passing gates
+            out.write(json.dumps({**previous, "by": by, gate: result}))
         os.replace(new, path)
     except OSError:
         new.unlink(missing_ok=True)

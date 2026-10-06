@@ -26,7 +26,7 @@ from pulse import config
 
 TTL = 30                 # refresh issue structure; canonical state is read independently
 POLL = 2                 # seconds between the free conditional checks for a change
-FORMAT = 19              # of the issue cache, raised when an item gains a field or load attaches differently
+FORMAT = 20              # includes canonical completion bindings, also after the issue closes
 # ponytail: comments ride along only for the claim marks (who holds an item, since when); a repo
 # with long issue threads pays for them in every full reload
 FIELDS = "number,title,state,labels,assignees,parent,blockedBy,blocking,body,url,updatedAt,comments,author"
@@ -653,7 +653,8 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
             order_info.clear()
             order_info.update({**seen, "positions": {int(number): position
                                                     for number, position in seen["positions"].items()}})
-        items = _overlay(root, items)
+        completed = {}
+        items = _overlay(root, items, completed=completed)
         from pulse import review
         authors = {}
         for item in items:
@@ -668,7 +669,7 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
         # The last displayed bindings are available to a later local CLI action.
         try:
             saved = json.loads(path.read_text(encoding="utf-8"))
-            _keep(path, {**saved, "items": items})
+            _keep(path, {**saved, "items": items, "completed": completed})
         except (OSError, ValueError):
             pass
         return items
@@ -704,9 +705,11 @@ def load(root: Path, repo_name: str, run=gh, fresh: bool = False, ttl: float = T
     return loaded(items, seen, {record["number"]: record for record in raw})
 
 
-def _overlay(root, entries):
+def _overlay(root, entries, *, completed=None):
     from pulse import alive, auto, shared
     revision, snapshot = shared.read(root)
+    if completed is not None:
+        completed.update({n: {"number": int(n), **item} for n, item in snapshot["items"].items() if item["done"]})
     policy = shared.policy(snapshot)
     try:
         auto._cache(root, policy)
@@ -726,7 +729,7 @@ def _overlay(root, entries):
             claim = current.get("claim") or {}
             phase, beat = (claim and alive.latest(entry.get("beats") or [], claim)) or (None, None)     # #195
             entry.update({key: current.get(key) for key in
-                          ("revision", "result", "approval", "claim", "stop", "work", "removal", "revoked")})
+                          ("revision", "result", "approval", "claim", "stop", "work", "removal", "revoked", "merge")})
             entry.update(shared_revision=revision, migration_required=False, hold=current["hold"],
                          failed=current.get("failed", False), failure=current.get("failure", ""),
                          claimed_holder=claim.get("session") or claim.get("holder"), claim_token=claim.get("holder"),
@@ -793,11 +796,13 @@ def sync_action(root, operation, run=None):
     """Authenticate durable person intent, then apply exactly its stable operation."""
     from pulse import auto, levers, shared
     run = gh if run is None else run
+    if operation.get("kind") == "complete" and not auto.person(os.environ, True):
+        raise StateError("only a person can synchronize a completion, in their own terminal")
     factual = operation.get("kind") == "stopped"
     if not factual and not (holder()["id"].startswith("terminal:") and auto.person(os.environ, True)
                             or levers.allowed(root, os.environ)):      # or a session under the person's grant (#197)
         raise StateError("person actions cannot be synchronized from an agent source")
-    if operation.get("kind") not in {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy"}:
+    if operation.get("kind") not in {"defer", "resume", "approve", "revoke", "handoff", "stopped", "policy", "complete"}:
         raise StateError("unknown person action")
     shared._operation(operation)
     repo_name = repo(root, run=run)
@@ -827,6 +832,9 @@ def sync_action(root, operation, run=None):
         # stopped generation remains mandatory, including across a replacement.
         return shared.update(root, {**operation, "expected": current.get("revision", "")})
     proof = _action_proof(repo_name, operation, actor, run)
+    if operation["kind"] == "complete":
+        from pulse import merge
+        return merge.complete(root, repo_name, {**operation, "payload": {**operation["payload"], "proof": proof}}, run)
     _, snapshot = shared.read(root)
     current = snapshot["items"].get(str(operation["item"]))
     if current is None:
@@ -834,6 +842,11 @@ def sync_action(root, operation, run=None):
         _migrate(root, repo_name, [entry for entry in entries if entry["number"] == operation["item"]], run)
         # Migration may advance the revision. The original expectation then
         # conflicts visibly; legacy reservations and holds stay preserved.
+    elif operation["kind"] == "handoff" and operation["payload"].get("stopped") is True and \
+            operation["id"] not in snapshot["operations"] and operation["expected"] == current["revision"]:
+        from pulse import lifecycle
+        if lifecycle.handoff_work(root, current, operation["item"]) != operation["payload"].get("work"):
+            raise StateError("preserved work changed since stop confirmation; refresh the item")
     elif operation["kind"] == "resume" and operation["id"] not in snapshot["operations"] and \
             operation["expected"] == current["revision"]:
         from pulse import lifecycle
@@ -846,6 +859,13 @@ def sync_action(root, operation, run=None):
                       record["result"]["status"] == "confirmed"]
             owners = {claim["actor"] for claim in claims
                       if claim.get("holder") == stop.get("holder") and claim.get("actor")}
+            for record in snapshot["operations"].values():
+                prior = record["operation"]
+                if (prior["item"] == operation["item"] and prior["kind"] == "handoff"
+                        and prior["payload"].get("stopped") is True
+                        and record["result"]["status"] == "confirmed"
+                        and record["result"]["data"].get("stop") == stop):
+                    owners = {(prior["payload"].get("proof") or {}).get("author", "")}
             lifecycle._resume_work(root, {"work": work, "retained": not work.get("remote"),
                 "holder": {"author": next(iter(owners)) if len(owners) == 1 else ""}}, actor)
     receipt = shared.update(root, {**operation, "payload": {**operation["payload"], "proof": proof}})
@@ -1307,6 +1327,8 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
     observed = next((entry for entry in entries if entry["number"] == n), None)
     if observed is None:
         return False, f"#{n} is closed or unavailable"
+    if (observed.get("stop") or {}).get("status") == "requested":
+        return False, f"#{n}: stop not confirmed; after the writer ends, a person runs pulse release --take {n} --stopped"
     if expected_spec is not ... and observed.get("spec") != expected_spec:
         return False, f"#{n}: spec changed before {phase or 'claim'}; refresh the item and its Plan"
     if labels is not None:
@@ -1323,6 +1345,8 @@ def claim(root: Path, repo_name: str, n: int, run=gh, who=None, take=False, bloc
     snapshot = shared.read(root)[1]
     current = snapshot["items"].get(str(n), {})
     previous = current.get("claim")
+    if (current.get("stop") or {}).get("status") == "requested":
+        return False, f"#{n}: stop not confirmed; refresh the item before claiming"
     if continuing and (previous != continuing or current.get("hold") or current.get("failed")):
         # A handoff/release cannot turn this narrow phase check into a fresh
         # acquisition without the complete legacy reservation check.

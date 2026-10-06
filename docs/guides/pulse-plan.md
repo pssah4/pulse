@@ -19,7 +19,7 @@ The architect handoff from RE carries a Dialog section for open questions. It ne
 
 Saved in `_devprocess/plans/{n}-{slug}.md` on the same item branch as the spec, with `issue:`, `spec:`, `files:` and `verify:` in the frontmatter. The Plan is self-contained: an agent that never saw the repository can build from it. Before an interactive build, refresh the claim so its files are reserved. A supervised planner returns the Plan to the runner, which manages the claim. If work must wait, publish the Plan and release the inactive claim.
 
-Runner agents execute a command of a Plan's `verify:` line only when `.pulse/config.toml` on the base names it too, in `verify`, `setup` (a setup command only without arguments, such as `npm ci`) or a `[spec_tests]` runner, or when it is `pulse check`. Every other line is left out and named in the item log. A check the agents need, such as a typecheck, goes into the configured `verify`.
+A Plan names the checks that prove the work. The native harness decides whether a worker may run them under its settings; the Plan grants no permission. Agents run targeted checks during implementation, and the supervisor runs the project's configured `verify` on the completed result. Include checks required by your pre-push hook in that command so the final gate covers them.
 
 | Section | Holds |
 |---|---|

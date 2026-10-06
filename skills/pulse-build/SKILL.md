@@ -281,6 +281,15 @@ A gate still red preserves the result and names the open findings.
    final policy uses the same gates and bindings; the agent never
    changes that person-owned setting.
 
+   If the project's own merge procedure already published this result,
+   tell the person to run `pulse done <n> --merge <full-merge-sha>` in
+   their terminal. It confirms that exact result and closes its record
+   through Pulse. Missing bound evidence gets the same command with
+   `--verify`: tests and a fresh review/audit only, without another
+   Plan, build, fix or merge. Existing local reports alone are not gate
+   evidence. Release inactive claims first; `done` cannot take another
+   writer's claim and remains a person-only command.
+
 5. After integration, sweep the Plan's decisions: the ones with a
    `read-when` a future agent will hit become decision records
    (the pulse-plan skill, kind `post-hoc`).

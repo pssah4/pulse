@@ -77,7 +77,7 @@ def _scope(text, selector=None, previous=None, explicit=True):
         kept = copy.deepcopy(previous)       # an "only" steer on named items narrows them, never widens (#222)
         kept["items"] = sorted(set(named) & set(items)) or kept["items"]
         return kept
-    epic = re.search(r"\bepic[\s-]*(#?[0-9]+)\b", text, re.I) if restricted else None
+    epic = re.search(r"\bepic[\s-]*(#?[0-9]+)\b", text, re.I) if restricted and not items else None
     if selector is None and epic:
         name = epic.group(1)
         selector = {"epic": name if name.startswith("#") else f"EPIC-{int(name):02d}"}
@@ -116,13 +116,31 @@ def control(root, action, expected, text=None):
             goal.update(status="resolving", criteria=[], reason="")
         else:
             goal["status"] = "paused" if action == "pause" else "active" if goal["criteria"] else "resolving"
+        goal.pop("retry_after", None)
         return goal
     return _edit(root, change, expected)
 
 
-def note(root, goal, why, pause=False):
+def note(root, goal, why, pause=False, retry_after=None):
     def change(current):
         current.update(status="paused" if pause or current["status"] == "paused" else "waiting", reason=_text(why))
+        if pause:
+            current.pop("retry_after", None)
+            if retry_after is not None:
+                current["retry_after"] = retry_after
+        return current
+    return _edit(root, change, goal["revision"], goal["id"])
+
+
+def retry(root, goal, now):
+    """Only a scheduled native limit retries; ordinary and person-requested pauses stay paused."""
+    at = goal.get("retry_after")
+    if goal["status"] != "paused" or type(at) not in (int, float) or at > now:
+        return goal
+
+    def change(current):
+        current.update(status="resolving", reason="")
+        current.pop("retry_after", None)
         return current
     return _edit(root, change, goal["revision"], goal["id"])
 

@@ -298,6 +298,12 @@ def plan_sources(root: Path, base: str = None) -> dict:
                 parts = meta.split()
                 if len(parts) == 3 and parts[0] in ("100644", "100755") and parts[2] == "0":
                     staged[path] = parts[1]
+            committed = {}
+            for row in _git(tree, "ls-tree", "-z", "HEAD", "--", PLANS + "/").split("\0"):
+                meta, _, path = row.partition("\t")
+                parts = meta.split()
+                if len(parts) == 3 and Path(path).parent.as_posix() == PLANS and path.endswith(".md"):
+                    committed[path] = parts[2]  # Match HEAD:path for every mode, including staged type changes.
             paths = {p.relative_to(tree).as_posix() for p in folder.glob("*.md")} | set(staged)
             for path in sorted(paths):
                 target = tree / path
@@ -308,8 +314,7 @@ def plan_sources(root: Path, base: str = None) -> dict:
                           "head": fields.get("HEAD", "")}
                 add(data, path, **source)
                 index = staged.get(path)
-                committed = _git(tree, "rev-parse", "--verify", "-q", f"HEAD:{path}").strip()
-                if index and index != committed:
+                if index and index != committed.get(path):
                     cached = _plan_bytes(tree, index)
                     if cached != data:
                         add(cached, path, **source, layer="index", blob=index)
@@ -607,7 +612,9 @@ def gates(root: Path, items: list, cfg: dict, found: dict = None, sources: dict 
         if i.get("type") not in state.WORK or i.get("assignees"):
             continue
         n = i["number"]
-        if i.get("hold"):
+        if (i.get("stop") or {}).get("status") == "requested":
+            out[n] = f"stop not confirmed: after the writer ends, run pulse release --take {n} --stopped"
+        elif i.get("hold"):
             out[n] = "on hold (pulse:hold)"
         elif i.get("failed"):
             out[n] = "failed (pulse:failed): inspect the preserved work before resuming"

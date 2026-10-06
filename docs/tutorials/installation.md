@@ -153,7 +153,7 @@ Claude Code keeps older version folders after an update, so the line picks the n
 
 This writes `~/.local/bin/pulse`, a short script that runs the newest Pulse of the agent that calls it: a Codex session its Codex copy, a Claude Code session its Claude Code copy, and your own terminal the newest of both. An update needs no new setup, and neither agent needs the other. If its report says `"on_path": false`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile: `~/.zshrc` for zsh, the macOS default; for bash, `~/.bash_profile` on macOS and `~/.bashrc` on Linux. The change reaches only shells started after it, so open a new terminal (restart VS Code if you work there) and check with `pulse --help`. Until then, `~/.local/bin/pulse` runs it by its full path.
 
-Update (Claude Code does not update this marketplace on its own), then restart Claude Code:
+Update manually, or enable marketplace auto-update as described above. Restart Claude Code after the update:
 
 ```bash
 claude plugin marketplace update pssah4-skills
@@ -349,7 +349,7 @@ In its default mode, Claude Code asks before each file it writes, until you allo
 }
 ```
 
-The rules for `approve-plan` and `done`, commands an older Pulse had, match the Codex rules. If the file exists, add the rules to its `permissions`. They hold for you alone; in `.claude/settings.json` they hold for everyone who clones the project, once each person trusts the folder. Claude Code keeps `.claude/settings.local.json` out of git only when it creates the file itself. If you create it by hand, `git status` lists it as untracked and a `git add -A` would commit it: add the line `.claude/settings.local.json` to your `.gitignore`. `/permissions` lists the rules in effect.
+The `done` rule protects the current personal completion command. The `approve-plan` rule covers an obsolete command from older versions. Both match the Codex rules. If the file exists, add the rules to its `permissions`. They hold for you alone; in `.claude/settings.json` they hold for everyone who clones the project, once each person trusts the folder. Claude Code keeps `.claude/settings.local.json` out of git only when it creates the file itself. If you create it by hand, `git status` lists it as untracked and a `git add -A` would commit it: add the line `.claude/settings.local.json` to your `.gitignore`. `/permissions` lists the rules in effect.
 
 A rule matches the command as the agent writes it: with `pulse` off your PATH, the Pulse hooks point the agent at the full path of the plugin copy, and `Bash(pulse *)` does not match it. Claude Code also asks before a command its own checks flag, even when a rule allows it, such as a `mkdir` with braces (`{epics,features}`). Allow it when asked.
 

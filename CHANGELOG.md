@@ -5,6 +5,35 @@ All notable changes to Pulse are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-10-06
+
+### Added
+
+- `pulse done` verifies a published project merge and completes its record through Pulse, with checks bound to the exact result and base (#258).
+
+### Changed
+
+- Claude Code and Codex jobs use their native harness permission settings. Pulse migrates its former default templates and identifies obsolete policy placeholders. Native failures preserve required output and offer a recovery action (#255).
+- Queue previews no longer reserve unclaimed work. Explicit claims still prevent conflicts between active sessions (#257).
+
+### Fixed
+
+- Explicitly named items keep their narrower goal scope when the same text mentions their parent Epic (#226).
+- Shared caches reject existing symlinks and non-directory entries before writes while preserving their contents (#224).
+- Run reports distinguish published work, failed checks and confirmed integration. Retry and approval waits preserve the current result and its recovery action (#252).
+- Native goal usage limits retain the goal and interpretation work, show the reset time and retry when it is due. Explicit native failures and manual pauses keep their own recovery paths (#220).
+- Manual goal controls preserve interpretation notes and worktrees while retaining the newer revision (#260).
+- Preserved Plans and unfinished work resume through their existing publication and repair paths. Startup and stopped-writer confirmation remain visible (#250, #251, #253).
+- Plan scans batch Git tree reads and reuse claim observations (#254).
+- Protected push targets follow Git destination precedence and stored upstream mappings (#241).
+- Protected pushes account for the working directory selected by native env wrappers, including short options and nested assignments (#263).
+- Lever grants bind to the effective origin repository (#200).
+
+### Upgrade notes
+
+- Start a new Claude Code or Codex session after updating the plugin. Existing native permission settings remain authoritative.
+- Review obsolete custom Pulse policy placeholders reported by the CLI and use the harness's own permission configuration.
+
 ## [0.4.1] - 2026-10-05
 
 ### Fixed
